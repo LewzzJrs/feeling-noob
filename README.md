@@ -1,0 +1,75 @@
+# feeling-noob
+
+A digital audio workstation for Windows, written in Rust.
+
+> **Status: pre-alpha.** Right now the app opens a window, lets you pick an audio output device, and plays a metronome. It is not usable for making music yet.
+
+## Goals
+
+The first usable version aims to cover the basics of recording and arranging:
+
+- Audio and instrument tracks with regions you can move, split, and repeat
+- Transport with loop, metronome, count-in, tempo, and time signature
+- Piano roll with note editing, velocity, and quantize
+- Mixer with volume, pan, mute, solo, inserts, and a send bus
+- VST3 instruments and effects
+- MIDI and audio recording
+- Project save/load with backups and autosave
+- Export to WAV
+- Keyboard-driven workflow
+
+The full plan is in [SPEC.md](SPEC.md). Features planned for later are in [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Requirements
+
+- Windows 10 or later
+- Rust stable with the MSVC toolchain (`stable-x86_64-pc-windows-msvc`), installed via [rustup](https://rustup.rs)
+- Visual Studio Build Tools with the "Desktop development with C++" workload (needed for the MSVC linker)
+
+## Build and run
+
+```powershell
+cargo run -p fnoob-app
+```
+
+Release build:
+
+```powershell
+cargo build --release -p fnoob-app
+```
+
+The executable is written to `target\release\fnoob-app.exe`.
+
+## Tests
+
+```powershell
+cargo test --workspace
+```
+
+```powershell
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+One test plays a short metronome on your default output device. It is skipped by default; run it with:
+
+```powershell
+cargo test -p fnoob-engine --test real_device -- --ignored
+```
+
+## Project layout
+
+| Crate | Purpose |
+|---|---|
+| `crates/fnoob-core` | Settings, time math, file helpers. No audio or UI code. |
+| `crates/fnoob-engine` | Audio engine: transport, metronome, audio device output. |
+| `crates/fnoob-app` | The desktop app (egui). |
+
+The audio callback never allocates, locks, or does file I/O. Debug builds and tests enforce the no-allocation rule with `assert_no_alloc`.
+
+Settings are stored in `%APPDATA%\feeling-noob\settings.json`.
+
+## License
+
+Copyright (C) 2026 LewzzJrs
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).
