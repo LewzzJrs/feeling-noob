@@ -2,7 +2,7 @@
 
 A digital audio workstation for Windows, written in Rust.
 
-> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, undo/redo, keyboard shortcuts, and project save/load. Regions only play a placeholder beep for now; there is no sound generation or recording yet.
+> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, resize, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, a built-in synth, a piano roll with quantize, MIDI keyboard input and MIDI recording, undo/redo, keyboard shortcuts, and project save/load. Audio recording, the mixer, plugins, and export are not there yet.
 
 ## Goals
 
@@ -67,7 +67,7 @@ cargo test -p fnoob-engine --test real_device -- --ignored
 | Crate | Purpose |
 |---|---|
 | `crates/fnoob-core` | Project model, editing, undo, project files, keymap, settings, time math. No audio or UI code. |
-| `crates/fnoob-engine` | Audio engine: render plan, transport, loop, count-in, metronome, audio device output. |
+| `crates/fnoob-engine` | Audio engine: render plan, transport, loop, count-in, metronome, Basic Synth, MIDI input, audio device output. |
 | `crates/fnoob-app` | The desktop app (egui). |
 
 The audio callback never allocates, locks, or does file I/O. Debug builds and tests enforce the no-allocation rule with `assert_no_alloc`.
