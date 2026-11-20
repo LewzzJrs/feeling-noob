@@ -1,16 +1,19 @@
 use crate::keys::take_commands;
+use crate::midi::Take;
+use crate::piano_roll::Editor;
 use crate::timeline::{LANE_HEIGHT, MAX_PIXELS_PER_TICK, MIN_PIXELS_PER_TICK};
-use eframe::egui::{self, Color32, Pos2, RichText};
+use eframe::egui::{self, Color32, Pos2, Rect, RichText};
 use fnoob_core::edit;
 use fnoob_core::history::History;
 use fnoob_core::io::{self, PROJECT_EXTENSION, PROJECT_FILE};
 use fnoob_core::keymap::{Command, shortcut_label};
 use fnoob_core::model::{Grid, Id, Project, Region, Track, TrackKind};
-use fnoob_core::settings::{Settings, default_settings_path};
+use fnoob_core::settings::{MidiInputChoice, Settings, default_settings_path};
 use fnoob_core::time::{
     MAX_BPM, MIN_BPM, Position, Timeline, grid_ticks, snap_floor, ticks_per_bar,
 };
 use fnoob_engine::device::{AudioOutput, OutputDeviceInfo, list_output_devices, open_output};
+use fnoob_engine::midi_in::{MidiConnection, MidiInputInfo};
 use fnoob_engine::{Command as EngineCommand, EngineHandle, RenderPlan, TransportState};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -24,10 +27,44 @@ pub enum Drag {
         primary: Id,
         anchor: Pos2,
     },
+    RegionResize {
+        origin: Project,
+        region: Id,
+        anchor: Pos2,
+    },
     Loop {
         origin: Project,
         anchor: u64,
     },
+    Notes {
+        origin: Project,
+        region: Id,
+        primary: usize,
+        anchor: Pos2,
+        resize: bool,
+    },
+    Velocity {
+        origin: Project,
+        index: usize,
+    },
+}
+
+impl Drag {
+    pub fn into_origin(self) -> Project {
+        match self {
+            Drag::Regions { origin, .. }
+            | Drag::RegionResize { origin, .. }
+            | Drag::Loop { origin, .. }
+            | Drag::Notes { origin, .. }
+            | Drag::Velocity { origin, .. } => origin,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Tracks,
+    Editor,
 }
 
 #[derive(Default)]
@@ -55,10 +92,14 @@ struct NewTracksDialog {
 }
 
 pub struct App {
-    settings: Settings,
+    pub(crate) settings: Settings,
     settings_path: Option<PathBuf>,
     devices: Vec<OutputDeviceInfo>,
-    audio: Option<(AudioOutput, EngineHandle)>,
+    pub(crate) midi_inputs: Vec<MidiInputInfo>,
+    pub(crate) midi: Option<MidiConnection>,
+    pub(crate) live_sent: Option<Option<Id>>,
+    pub(crate) take: Option<Take>,
+    pub(crate) audio: Option<(AudioOutput, EngineHandle)>,
     pub(crate) project: Project,
     saved: Project,
     project_dir: Option<PathBuf>,
@@ -68,14 +109,18 @@ pub struct App {
     pub(crate) view: View,
     pub(crate) drag: Option<Drag>,
     pub(crate) renaming: Option<(Id, String)>,
-    live_origin: Option<Project>,
+    pub(crate) editor: Editor,
+    pub(crate) focus: Focus,
+    editor_rect: Option<Rect>,
+    pub(crate) synth_window: Option<Id>,
+    live_origin: Option<(egui::Id, Project)>,
     stopped_tick: u64,
     show_settings: bool,
     new_tracks: Option<NewTracksDialog>,
     pending: Option<Pending>,
     allow_close: bool,
     title: String,
-    message: Option<String>,
+    pub(crate) message: Option<String>,
 }
 
 impl App {
@@ -98,6 +143,10 @@ impl App {
             settings,
             settings_path,
             devices: Vec::new(),
+            midi_inputs: Vec::new(),
+            midi: None,
+            live_sent: None,
+            take: None,
             audio: None,
             saved: project.clone(),
             project,
@@ -112,6 +161,10 @@ impl App {
             },
             drag: None,
             renaming: None,
+            editor: Editor::default(),
+            focus: Focus::Tracks,
+            editor_rect: None,
+            synth_window: None,
             live_origin: None,
             stopped_tick: 0,
             show_settings: false,
@@ -122,6 +175,7 @@ impl App {
             message,
         };
         app.refresh_devices();
+        app.refresh_midi_inputs();
         app.open_device();
         if let Some((output, _)) = &app.audio {
             app.project.sample_rate = output.sample_rate;
@@ -133,13 +187,13 @@ impl App {
         app
     }
 
-    fn sample_rate(&self) -> u32 {
+    pub(crate) fn sample_rate(&self) -> u32 {
         self.audio
             .as_ref()
             .map_or(self.project.sample_rate, |(o, _)| o.sample_rate)
     }
 
-    fn timeline(&self) -> Timeline {
+    pub(crate) fn timeline(&self) -> Timeline {
         Timeline {
             sample_rate: self.sample_rate(),
             bpm: self.project.tempo_bpm,
@@ -157,7 +211,7 @@ impl App {
         }
     }
 
-    fn transport_state(&self) -> TransportState {
+    pub(crate) fn transport_state(&self) -> TransportState {
         self.audio
             .as_ref()
             .map_or(TransportState::Stopped, |(_, e)| e.state())
@@ -180,6 +234,9 @@ impl App {
             Ok(audio) => self.audio = Some(audio),
             Err(e) => self.message = Some(e.to_string()),
         }
+        self.live_sent = None;
+        self.take = None;
+        self.connect_midi();
         self.locate(tick);
         self.check_sample_rate();
     }
@@ -200,15 +257,19 @@ impl App {
             return;
         }
         self.settings.output_device = id;
+        self.save_settings();
+        self.open_device();
+    }
+
+    fn save_settings(&mut self) {
         if let Some(path) = &self.settings_path
             && let Err(e) = self.settings.save(path)
         {
             self.message = Some(e.to_string());
         }
-        self.open_device();
     }
 
-    fn send(&mut self, command: EngineCommand) {
+    pub(crate) fn send(&mut self, command: EngineCommand) {
         if let Some((_, engine)) = &mut self.audio
             && engine.send(command).is_err()
         {
@@ -245,18 +306,38 @@ impl App {
         });
     }
 
-    fn live_edit(&mut self, response: &egui::Response, change: impl FnOnce(&mut Project)) {
+    pub(crate) fn live_edit(
+        &mut self,
+        response: &egui::Response,
+        change: impl FnOnce(&mut Project),
+    ) {
         if response.changed() {
-            if self.live_origin.is_none() {
-                self.live_origin = Some(self.project.clone());
+            if self
+                .live_origin
+                .as_ref()
+                .is_none_or(|(id, _)| *id != response.id)
+            {
+                self.commit_live_edit();
+                self.live_origin = Some((response.id, self.project.clone()));
             }
             change(&mut self.project);
             self.sync_plan();
         }
-        if (response.drag_stopped()
-            || response.lost_focus()
-            || !response.has_focus() && !response.dragged())
-            && let Some(origin) = self.live_origin.take()
+        let owns = self
+            .live_origin
+            .as_ref()
+            .is_some_and(|(id, _)| *id == response.id);
+        if owns
+            && (response.drag_stopped()
+                || response.lost_focus()
+                || !response.has_focus() && !response.dragged())
+        {
+            self.commit_live_edit();
+        }
+    }
+
+    fn commit_live_edit(&mut self) {
+        if let Some((_, origin)) = self.live_origin.take()
             && origin != self.project
         {
             self.history.record(origin);
@@ -271,6 +352,7 @@ impl App {
         {
             self.selection.track = None;
         }
+        self.editor.clamp_selection(&self.project);
         self.sync_plan();
     }
 
@@ -315,6 +397,9 @@ impl App {
     }
 
     pub(crate) fn run(&mut self, command: Command) {
+        if self.focus == Focus::Editor && self.editor_command(command) {
+            return;
+        }
         let regions = self.selection.regions.clone();
         let bar = ticks_per_bar(self.project.time_signature);
         let grid = grid_ticks(self.project.snap.grid, self.project.time_signature) as i64;
@@ -328,10 +413,7 @@ impl App {
             }
             Command::Record => {
                 if self.transport_state() == TransportState::Stopped {
-                    self.send(EngineCommand::Record);
-                    self.message = Some(
-                        "Recording is not available yet. Transport runs with count-in only.".into(),
-                    );
+                    self.start_recording();
                 } else {
                     self.send(EngineCommand::Stop);
                 }
@@ -351,8 +433,17 @@ impl App {
                 self.edit(|p| p.metronome.count_in_enabled = !p.metronome.count_in_enabled);
             }
             Command::ToggleMixer => self.not_yet("The mixer"),
-            Command::TogglePianoRoll | Command::ToggleEditor => self.not_yet("The piano roll"),
-            Command::Quantize => self.not_yet("Quantize"),
+            Command::TogglePianoRoll | Command::ToggleEditor => self.toggle_editor(),
+            Command::Quantize => {
+                if regions.is_empty() {
+                    self.editor_command(Command::Quantize);
+                } else {
+                    let grid = grid as u64;
+                    self.edit(|p| {
+                        edit::quantize_regions(p, &regions, grid);
+                    });
+                }
+            }
             Command::Bounce => self.not_yet("Bounce"),
             Command::ToggleTrackMute => {
                 if let Some(id) = self.selection.track {
@@ -477,6 +568,9 @@ impl App {
         self.drag = None;
         self.renaming = None;
         self.live_origin = None;
+        self.take = None;
+        self.editor = Editor::default();
+        self.synth_window = None;
         self.view.scroll_tick = 0.0;
         self.view.scroll_y = 0.0;
         self.sync_plan();
@@ -575,7 +669,7 @@ impl App {
                 self.menu_item(ui, "Save", Command::Save);
                 self.menu_item(ui, "Save As...", Command::SaveAs);
                 ui.separator();
-                if ui.button("Audio Settings...").clicked() {
+                if ui.button("Audio and MIDI Settings...").clicked() {
                     self.show_settings = true;
                     ui.close();
                 }
@@ -600,6 +694,7 @@ impl App {
                 self.menu_item(ui, "Mute Regions", Command::MuteRegions);
                 self.menu_item(ui, "Nudge Left", Command::NudgeLeft);
                 self.menu_item(ui, "Nudge Right", Command::NudgeRight);
+                self.menu_item(ui, "Quantize", Command::Quantize);
             });
             ui.menu_button("Track", |ui| {
                 self.menu_item(ui, "New Tracks...", Command::NewTracks);
@@ -615,6 +710,18 @@ impl App {
                         self.selection.track = None;
                         self.selection.regions.clear();
                     }
+                    ui.close();
+                }
+                let synth = selected.filter(|id| {
+                    self.project
+                        .track(*id)
+                        .is_some_and(|t| t.kind == TrackKind::Instrument)
+                });
+                if ui
+                    .add_enabled(synth.is_some(), egui::Button::new("Instrument Settings..."))
+                    .clicked()
+                {
+                    self.synth_window = synth;
                     ui.close();
                 }
                 ui.separator();
@@ -634,6 +741,8 @@ impl App {
                 self.menu_item(ui, "Count-in", Command::ToggleCountIn);
             });
             ui.menu_button("View", |ui| {
+                self.menu_item(ui, "Piano Roll", Command::TogglePianoRoll);
+                ui.separator();
                 self.menu_item(ui, "Zoom In", Command::ZoomIn);
                 self.menu_item(ui, "Zoom Out", Command::ZoomOut);
                 self.menu_item(ui, "Snap to Grid", Command::ToggleSnap);
@@ -769,8 +878,11 @@ impl App {
         ui.horizontal(|ui| {
             match &self.audio {
                 Some((output, _)) => ui.label(format!(
-                    "{}  |  {} Hz  |  {} ch",
-                    output.device_name, output.sample_rate, output.channels
+                    "{}  |  {} Hz  |  {} ch  |  MIDI: {}",
+                    output.device_name,
+                    output.sample_rate,
+                    output.channels,
+                    self.midi.as_ref().map_or("none", |m| m.name.as_str())
                 )),
                 None => ui.colored_label(ui.visuals().warn_fg_color, "No audio output"),
             };
@@ -786,7 +898,9 @@ impl App {
         let mut chosen = None;
         let mut refresh = false;
         let mut reopen = false;
-        egui::Window::new("Audio Settings")
+        let mut midi_choice = None;
+        let mut midi_refresh = false;
+        egui::Window::new("Audio and MIDI Settings")
             .open(&mut open)
             .resizable(false)
             .show(ctx, |ui| {
@@ -822,8 +936,61 @@ impl App {
                     refresh = ui.button("Refresh list").clicked();
                     reopen = ui.button("Reopen device").clicked();
                 });
+                ui.separator();
+                ui.label("MIDI input");
+                let choice = &self.settings.midi_input;
+                let selected = match choice {
+                    MidiInputChoice::FirstAvailable => "First available".to_owned(),
+                    MidiInputChoice::Off => "Off".to_owned(),
+                    MidiInputChoice::Port(id) => self
+                        .midi_inputs
+                        .iter()
+                        .find(|m| &m.id == id)
+                        .map_or_else(|| format!("Missing: {id}"), |m| m.name.clone()),
+                };
+                egui::ComboBox::from_id_salt("midi_input")
+                    .selected_text(selected)
+                    .width(320.0)
+                    .show_ui(ui, |ui| {
+                        for (label, option) in [
+                            ("First available", MidiInputChoice::FirstAvailable),
+                            ("Off", MidiInputChoice::Off),
+                        ] {
+                            if ui.selectable_label(*choice == option, label).clicked() {
+                                midi_choice = Some(option);
+                            }
+                        }
+                        for input in &self.midi_inputs {
+                            let option = MidiInputChoice::Port(input.id.clone());
+                            if ui
+                                .selectable_label(*choice == option, &input.name)
+                                .clicked()
+                            {
+                                midi_choice = Some(option);
+                            }
+                        }
+                    });
+                let status = match &self.midi {
+                    Some(connection) => format!("Connected: {}", connection.name),
+                    None => "Not connected".to_owned(),
+                };
+                ui.label(status);
+                midi_refresh = ui.button("Refresh MIDI inputs").clicked();
             });
         self.show_settings = open;
+        if midi_refresh {
+            self.message = None;
+            self.refresh_midi_inputs();
+            self.connect_midi();
+        }
+        if let Some(choice) = midi_choice
+            && choice != self.settings.midi_input
+        {
+            self.settings.midi_input = choice;
+            self.save_settings();
+            self.message = None;
+            self.connect_midi();
+        }
         if refresh {
             self.refresh_devices();
         }
@@ -936,6 +1103,25 @@ impl App {
         }
     }
 
+    fn update_focus(&mut self, ctx: &egui::Context) {
+        let pressed = ctx.input(|i| {
+            if i.pointer.any_pressed() {
+                i.pointer.interact_pos()
+            } else {
+                None
+            }
+        });
+        if let Some(pos) = pressed {
+            self.focus = match self.editor_rect {
+                Some(rect) if rect.contains(pos) => Focus::Editor,
+                _ => Focus::Tracks,
+            };
+        }
+        if !self.editor.open {
+            self.focus = Focus::Tracks;
+        }
+    }
+
     fn follow_playhead(&mut self, width: f32) {
         if self.transport_state() != TransportState::Playing || self.drag.is_some() {
             return;
@@ -952,10 +1138,11 @@ impl App {
             engine.collect_garbage();
             if let Some(kind) = output.take_error() {
                 self.message = Some(format!(
-                    "Audio device problem: {kind:?}. Reopen it in Audio Settings."
+                    "Audio device problem: {kind:?}. Reopen it in Audio and MIDI Settings."
                 ));
             }
         }
+        self.poll_take();
         if self.audio.is_none() {
             return;
         }
@@ -970,6 +1157,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.poll_engine();
         self.handle_close(&ctx);
+        self.update_focus(&ctx);
         if self.pending.is_none() && self.new_tracks.is_none() {
             for command in take_commands(&ctx) {
                 self.run(command);
@@ -978,6 +1166,15 @@ impl eframe::App for App {
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("control_bar").show(ui, |ui| self.control_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        self.editor_rect = None;
+        if self.editor.open {
+            let panel = egui::Panel::bottom("piano_roll")
+                .resizable(true)
+                .default_size(320.0)
+                .size_range(160.0..=900.0)
+                .show(ui, |ui| self.piano_roll(ui));
+            self.editor_rect = Some(panel.response.rect);
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
@@ -985,13 +1182,16 @@ impl eframe::App for App {
                 self.tracks_area(ui);
             });
         self.settings_window(&ctx);
+        self.synth_settings_window(&ctx);
         self.new_tracks_window(&ctx);
         self.confirm_window(&ctx);
         self.update_title(&ctx);
         debug_assert!(
             (MIN_PIXELS_PER_TICK..=MAX_PIXELS_PER_TICK).contains(&self.view.pixels_per_tick)
         );
-        if self.transport_state() != TransportState::Stopped {
+        self.sync_live_track();
+        self.update_preview();
+        if self.transport_state() != TransportState::Stopped || self.editor.preview.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
     }

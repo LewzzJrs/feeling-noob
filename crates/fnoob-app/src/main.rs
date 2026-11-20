@@ -1,7 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod instrument;
 mod keys;
+mod midi;
+mod piano_roll;
 mod timeline;
 
 #[cfg(debug_assertions)]

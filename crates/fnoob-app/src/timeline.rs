@@ -1,7 +1,7 @@
 use crate::app::{App, Drag};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder,
-    Vec2,
+    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
+    UiBuilder, Vec2,
 };
 use fnoob_core::edit;
 use fnoob_core::model::{Id, TrackKind};
@@ -13,6 +13,7 @@ pub const RULER_HEIGHT: f32 = 34.0;
 pub const LANE_HEIGHT: f32 = 60.0;
 pub const MIN_PIXELS_PER_TICK: f32 = 0.002;
 pub const MAX_PIXELS_PER_TICK: f32 = 0.5;
+const EDGE: f32 = 6.0;
 
 const TRACK_PALETTE: [Color32; 8] = [
     Color32::from_rgb(86, 156, 214),
@@ -38,7 +39,9 @@ pub enum UiAction {
     ClearRegions,
     CreateRegion { track: Id, tick: u64 },
     DragRegionsStart { primary: Id, pointer: Pos2 },
+    ResizeRegionStart { region: Id, pointer: Pos2 },
     DragRegionsUpdate { pointer: Pos2 },
+    OpenEditor(Id),
     DragLoopStart { tick: u64 },
     DragLoopUpdate { tick: u64 },
     DragEnd,
@@ -288,6 +291,31 @@ impl App {
                     Stroke::new(1.0, base)
                 };
                 painter.rect_stroke(rect, CornerRadius::same(4), border, StrokeKind::Inside);
+                let notes = region.notes();
+                if let (Some(low), Some(high)) = (
+                    notes.iter().map(|n| n.pitch).min(),
+                    notes.iter().map(|n| n.pitch).max(),
+                ) {
+                    let body = Rect::from_x_y_ranges(
+                        rect.x_range(),
+                        rect.top() + 18.0..=rect.bottom() - 4.0,
+                    );
+                    let span = f32::from(high - low).max(12.0);
+                    let note_painter = ui.painter_at(body.intersect(g.lanes));
+                    for note in notes {
+                        let start = region.start_tick + note.start_tick;
+                        if start >= region.end_tick() {
+                            continue;
+                        }
+                        let end = (start + note.length_tick).min(region.end_tick());
+                        let y = body.bottom() - body.height() * f32::from(note.pitch - low) / span;
+                        note_painter.hline(
+                            g.x(start)..=g.x(end).max(g.x(start) + 1.0),
+                            y,
+                            Stroke::new(2.0, Color32::from_black_alpha(170)),
+                        );
+                    }
+                }
                 let label = if region.muted {
                     format!("{} (muted)", region.name)
                 } else {
@@ -305,13 +333,29 @@ impl App {
                     ui.scope_id().with(("region", region.id)),
                     Sense::click_and_drag(),
                 );
+                let near_edge =
+                    |pos: Pos2| pos.x >= rect.right() - EDGE && rect.width() > 3.0 * EDGE;
+                let response = if response.hover_pos().is_some_and(near_edge) {
+                    response.on_hover_cursor(CursorIcon::ResizeHorizontal)
+                } else {
+                    response
+                };
                 if response.drag_started() {
                     if let Some(pointer) = response.interact_pointer_pos() {
-                        actions.push(UiAction::DragRegionsStart {
-                            primary: region.id,
-                            pointer,
-                        });
+                        if near_edge(pointer) {
+                            actions.push(UiAction::ResizeRegionStart {
+                                region: region.id,
+                                pointer,
+                            });
+                        } else {
+                            actions.push(UiAction::DragRegionsStart {
+                                primary: region.id,
+                                pointer,
+                            });
+                        }
                     }
+                } else if response.double_clicked() {
+                    actions.push(UiAction::OpenEditor(region.id));
                 } else if response.dragged() {
                     if let Some(pointer) = response.interact_pointer_pos() {
                         actions.push(UiAction::DragRegionsUpdate { pointer });
@@ -474,7 +518,19 @@ impl App {
                     anchor: pointer,
                 });
             }
-            UiAction::DragRegionsUpdate { pointer } => self.update_region_drag(pointer),
+            UiAction::ResizeRegionStart { region, pointer } => {
+                self.selection.regions = vec![region];
+                self.drag = Some(Drag::RegionResize {
+                    origin: self.project.clone(),
+                    region,
+                    anchor: pointer,
+                });
+            }
+            UiAction::DragRegionsUpdate { pointer } => match self.drag {
+                Some(Drag::RegionResize { .. }) => self.update_region_resize(pointer),
+                _ => self.update_region_drag(pointer),
+            },
+            UiAction::OpenEditor(region) => self.open_editor(region),
             UiAction::DragLoopStart { tick } => {
                 self.drag = Some(Drag::Loop {
                     origin: self.project.clone(),
@@ -572,6 +628,35 @@ impl App {
         }
     }
 
+    fn update_region_resize(&mut self, pointer: Pos2) {
+        let Some(Drag::RegionResize {
+            origin,
+            region,
+            anchor,
+        }) = &self.drag
+        else {
+            return;
+        };
+        let (mut project, region, anchor) = (origin.clone(), *region, *anchor);
+        let Some((_, original)) = origin.find_region(region) else {
+            return;
+        };
+        let (start, end) = (original.start_tick, original.end_tick());
+        let delta = ((pointer.x - anchor.x) / self.view.pixels_per_tick) as i64;
+        let wanted = (end as i64 + delta).max(start as i64 + 1) as u64;
+        let minimum = if self.project.snap.enabled {
+            grid_ticks(self.project.snap.grid, self.project.time_signature)
+        } else {
+            1
+        };
+        let new_end = self.snapped(wanted).max(start + minimum);
+        edit::resize_region(&mut project, region, new_end - start);
+        if project != self.project {
+            self.project = project;
+            self.sync_plan();
+        }
+    }
+
     fn update_loop_drag(&mut self, tick: u64) {
         let Some(Drag::Loop { origin, anchor }) = &self.drag else {
             return;
@@ -591,11 +676,12 @@ impl App {
         }
     }
 
-    fn finish_drag(&mut self) {
-        if let Some(Drag::Regions { origin, .. } | Drag::Loop { origin, .. }) = self.drag.take()
-            && origin != self.project
-        {
-            self.history.record(origin);
+    pub(crate) fn finish_drag(&mut self) {
+        if let Some(drag) = self.drag.take() {
+            let origin = drag.into_origin();
+            if origin != self.project {
+                self.history.record(origin);
+            }
         }
     }
 }
