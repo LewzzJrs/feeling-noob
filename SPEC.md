@@ -97,7 +97,7 @@ Everything is listed in `docs/ROADMAP.md`.
 ## 3. Folders and modules
 
 ```
-D:\PROJECT\daw-windows\
+feeling-noob\
 ├── Cargo.toml                 workspace
 ├── LICENSE                    GPLv3 text
 ├── SPEC.md
