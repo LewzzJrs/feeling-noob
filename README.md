@@ -2,7 +2,7 @@
 
 A digital audio workstation for Windows, written in Rust.
 
-> **Status: pre-alpha.** Right now the app opens a window, lets you pick an audio output device, and plays a metronome. It is not usable for making music yet.
+> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, undo/redo, keyboard shortcuts, and project save/load. Regions only play a placeholder beep for now; there is no sound generation or recording yet.
 
 ## Goals
 
@@ -30,6 +30,12 @@ The full plan is in [SPEC.md](SPEC.md). Features planned for later are in [docs/
 
 ```powershell
 cargo run -p fnoob-app
+```
+
+To open a project folder directly:
+
+```powershell
+cargo run -p fnoob-app -- "C:\path\to\MySong.fnoob"
 ```
 
 Release build:
@@ -60,8 +66,8 @@ cargo test -p fnoob-engine --test real_device -- --ignored
 
 | Crate | Purpose |
 |---|---|
-| `crates/fnoob-core` | Settings, time math, file helpers. No audio or UI code. |
-| `crates/fnoob-engine` | Audio engine: transport, metronome, audio device output. |
+| `crates/fnoob-core` | Project model, editing, undo, project files, keymap, settings, time math. No audio or UI code. |
+| `crates/fnoob-engine` | Audio engine: render plan, transport, loop, count-in, metronome, audio device output. |
 | `crates/fnoob-app` | The desktop app (egui). |
 
 The audio callback never allocates, locks, or does file I/O. Debug builds and tests enforce the no-allocation rule with `assert_no_alloc`.
