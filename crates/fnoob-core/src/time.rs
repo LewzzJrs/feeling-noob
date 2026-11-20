@@ -1,5 +1,6 @@
-pub const MIN_BPM: f64 = 5.0;
-pub const MAX_BPM: f64 = 990.0;
+
+pub const MIN_BPM: f64 = 20.0;
+pub const MAX_BPM: f64 = 400.0;
 
 pub fn clamp_bpm(bpm: f64) -> f64 {
     if bpm.is_nan() {
