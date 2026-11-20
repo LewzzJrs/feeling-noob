@@ -74,11 +74,85 @@ impl TrackKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Waveform {
+    Sine,
+    Saw,
+    Square,
+}
+
+impl Waveform {
+    pub const ALL: [Waveform; 3] = [Waveform::Sine, Waveform::Saw, Waveform::Square];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Waveform::Sine => "Sine",
+            Waveform::Saw => "Saw",
+            Waveform::Square => "Square",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SynthParams {
+    pub waveform: Waveform,
+    pub attack_ms: f32,
+    pub decay_ms: f32,
+    pub sustain: f32,
+    pub release_ms: f32,
+    pub level_db: f32,
+}
+
+pub const MAX_ENVELOPE_MS: f32 = 10_000.0;
+pub const MIN_LEVEL_DB: f32 = -60.0;
+pub const MAX_LEVEL_DB: f32 = 6.0;
+
+impl SynthParams {
+    pub fn is_valid(&self) -> bool {
+        let time = 0.0..=MAX_ENVELOPE_MS;
+        time.contains(&self.attack_ms)
+            && time.contains(&self.decay_ms)
+            && time.contains(&self.release_ms)
+            && (0.0..=1.0).contains(&self.sustain)
+            && (MIN_LEVEL_DB..=MAX_LEVEL_DB).contains(&self.level_db)
+    }
+}
+
+impl Default for SynthParams {
+    fn default() -> Self {
+        Self {
+            waveform: Waveform::Saw,
+            attack_ms: 5.0,
+            decay_ms: 100.0,
+            sustain: 0.7,
+            release_ms: 200.0,
+            level_db: -12.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Instrument {
+    BasicSynth(SynthParams),
+}
+
+impl Default for Instrument {
+    fn default() -> Self {
+        Self::BasicSynth(SynthParams::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub pitch: u8,
     pub velocity: u8,
     pub start_tick: u64,
     pub length_tick: u64,
+}
+
+impl Note {
+    pub fn end_tick(&self) -> u64 {
+        self.start_tick + self.length_tick
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,9 +174,21 @@ impl Region {
     pub fn end_tick(&self) -> u64 {
         self.start_tick + self.length_tick
     }
+
+    pub fn notes(&self) -> &[Note] {
+        match &self.content {
+            RegionContent::Midi { notes } => notes,
+        }
+    }
+
+    pub fn notes_mut(&mut self) -> &mut Vec<Note> {
+        match &mut self.content {
+            RegionContent::Midi { notes } => notes,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     pub id: Id,
     pub name: String,
@@ -111,7 +197,19 @@ pub struct Track {
     pub mute: bool,
     pub solo: bool,
     pub record_enabled: bool,
+    #[serde(default)]
+    pub instrument: Option<Instrument>,
     pub regions: Vec<Region>,
+}
+
+impl Track {
+    pub fn synth(&self) -> Option<SynthParams> {
+        match (&self.kind, &self.instrument) {
+            (TrackKind::Instrument, Some(Instrument::BasicSynth(params))) => Some(*params),
+            (TrackKind::Instrument, None) => Some(SynthParams::default()),
+            (TrackKind::Audio, _) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

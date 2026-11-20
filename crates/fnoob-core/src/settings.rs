@@ -8,6 +8,15 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Settings {
     pub output_device: Option<String>,
+    pub midi_input: MidiInputChoice,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MidiInputChoice {
+    #[default]
+    FirstAvailable,
+    Off,
+    Port(String),
 }
 
 #[derive(Debug)]
@@ -85,6 +94,7 @@ mod tests {
         let path = scratch_file("roundtrip");
         let settings = Settings {
             output_device: Some("wasapi:{0.0.0.00000000}.{abc}".into()),
+            midi_input: MidiInputChoice::Port("Keyboard 1".into()),
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);

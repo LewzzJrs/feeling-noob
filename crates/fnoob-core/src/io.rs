@@ -1,5 +1,5 @@
 use crate::fsutil::write_atomic;
-use crate::model::{FORMAT_VERSION, Project, RegionContent};
+use crate::model::{FORMAT_VERSION, Instrument, Project, RegionContent};
 use crate::time::{MAX_BPM, MIN_BPM};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -96,6 +96,11 @@ pub fn validate(project: &Project) -> Result<(), String> {
     for track in &project.tracks {
         if !ids.insert(track.id) {
             return Err(format!("duplicate id {}", track.id));
+        }
+        if let Some(Instrument::BasicSynth(params)) = &track.instrument
+            && !params.is_valid()
+        {
+            return Err(format!("track {} has invalid synth settings", track.id));
         }
         for region in &track.regions {
             if !ids.insert(region.id) {
@@ -196,12 +201,34 @@ mod tests {
                     length_tick: 1,
                 });
             },
+            |p| {
+                if let Some(Instrument::BasicSynth(s)) = &mut p.tracks[0].instrument {
+                    s.sustain = 2.0;
+                }
+            },
+            |p| {
+                if let Some(Instrument::BasicSynth(s)) = &mut p.tracks[0].instrument {
+                    s.attack_ms = f32::NAN;
+                }
+            },
         ];
         for (i, break_it) in cases.into_iter().enumerate() {
             let mut p = sample_project();
             break_it(&mut p);
             assert!(validate(&p).is_err(), "case {i} should be invalid");
         }
+    }
+
+    #[test]
+    fn track_without_instrument_field_still_loads() {
+        let mut value = serde_json::to_value(sample_project()).unwrap();
+        value["tracks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("instrument");
+        let project = from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(project.tracks[0].instrument, None);
+        assert!(project.tracks[0].synth().is_some());
     }
 
     #[test]

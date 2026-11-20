@@ -1,4 +1,7 @@
-use crate::model::{Id, Project, Region, RegionContent, TRACK_COLORS, Track, TrackKind};
+use crate::model::{
+    Id, Instrument, Note, Project, Region, RegionContent, TRACK_COLORS, Track, TrackKind,
+};
+use crate::time::{snap_floor, snap_round};
 
 pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
     let number = project.tracks.iter().filter(|t| t.kind == kind).count() + 1;
@@ -12,6 +15,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         mute: false,
         solo: false,
         record_enabled: false,
+        instrument: (kind == TrackKind::Instrument).then(Instrument::default),
         regions: Vec::new(),
     });
     id
@@ -223,6 +227,220 @@ pub fn set_loop(project: &mut Project, start_tick: u64, end_tick: u64) -> bool {
     true
 }
 
+pub fn resize_region(project: &mut Project, id: Id, length_tick: u64) -> bool {
+    if length_tick == 0 {
+        return false;
+    }
+    match region_mut(project, id) {
+        Some(region) if region.length_tick != length_tick => {
+            region.length_tick = length_tick;
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn region_mut(project: &mut Project, id: Id) -> Option<&mut Region> {
+    project
+        .tracks
+        .iter_mut()
+        .flat_map(|t| t.regions.iter_mut())
+        .find(|r| r.id == id)
+}
+
+fn is_valid_note(note: &Note) -> bool {
+    note.pitch <= 127 && (1..=127).contains(&note.velocity) && note.length_tick > 0
+}
+
+pub fn add_note(project: &mut Project, region_id: Id, note: Note) -> Option<usize> {
+    if !is_valid_note(&note) {
+        return None;
+    }
+    let notes = region_mut(project, region_id)?.notes_mut();
+    notes.push(note);
+    Some(notes.len() - 1)
+}
+
+pub fn delete_notes(project: &mut Project, region_id: Id, indices: &[usize]) -> usize {
+    let Some(region) = region_mut(project, region_id) else {
+        return 0;
+    };
+    let notes = region.notes_mut();
+    let before = notes.len();
+    let mut index = 0;
+    notes.retain(|_| {
+        let keep = !indices.contains(&index);
+        index += 1;
+        keep
+    });
+    before - notes.len()
+}
+
+fn selected_notes<'a>(
+    notes: &'a mut [Note],
+    indices: &'a [usize],
+) -> impl Iterator<Item = &'a mut Note> {
+    notes
+        .iter_mut()
+        .enumerate()
+        .filter(|(i, _)| indices.contains(i))
+        .map(|(_, n)| n)
+}
+
+pub fn move_notes(
+    project: &mut Project,
+    region_id: Id,
+    indices: &[usize],
+    delta_ticks: i64,
+    delta_pitch: i32,
+) -> bool {
+    let Some(region) = region_mut(project, region_id) else {
+        return false;
+    };
+    let notes = region.notes_mut();
+    let picked: Vec<Note> = notes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| indices.contains(i))
+        .map(|(_, n)| *n)
+        .collect();
+    let (Some(min_start), Some(min_pitch), Some(max_pitch)) = (
+        picked.iter().map(|n| n.start_tick).min(),
+        picked.iter().map(|n| n.pitch).min(),
+        picked.iter().map(|n| n.pitch).max(),
+    ) else {
+        return false;
+    };
+    let delta_ticks = delta_ticks.max(-(min_start as i64));
+    let delta_pitch = delta_pitch.clamp(-i32::from(min_pitch), 127 - i32::from(max_pitch));
+    if delta_ticks == 0 && delta_pitch == 0 {
+        return false;
+    }
+    for note in selected_notes(notes, indices) {
+        note.start_tick = (note.start_tick as i64 + delta_ticks) as u64;
+        note.pitch = (i32::from(note.pitch) + delta_pitch) as u8;
+    }
+    true
+}
+
+pub fn resize_notes(project: &mut Project, region_id: Id, indices: &[usize], delta: i64) -> bool {
+    let Some(region) = region_mut(project, region_id) else {
+        return false;
+    };
+    let mut changed = false;
+    for note in selected_notes(region.notes_mut(), indices) {
+        let length = (note.length_tick as i64 + delta).max(1) as u64;
+        changed |= length != note.length_tick;
+        note.length_tick = length;
+    }
+    changed
+}
+
+pub fn set_notes_velocity(project: &mut Project, region_id: Id, indices: &[usize], velocity: u8) {
+    let velocity = velocity.clamp(1, 127);
+    if let Some(region) = region_mut(project, region_id) {
+        for note in selected_notes(region.notes_mut(), indices) {
+            note.velocity = velocity;
+        }
+    }
+}
+
+fn quantize_region(region: &mut Region, indices: Option<&[usize]>, grid: u64) -> bool {
+    let start = region.start_tick;
+    let mut changed = false;
+    for (i, note) in region.notes_mut().iter_mut().enumerate() {
+        if indices.is_some_and(|picked| !picked.contains(&i)) {
+            continue;
+        }
+        let snapped = snap_round(start + note.start_tick, grid).saturating_sub(start);
+        changed |= snapped != note.start_tick;
+        note.start_tick = snapped;
+    }
+    changed
+}
+
+pub fn quantize_notes(project: &mut Project, region_id: Id, indices: &[usize], grid: u64) -> bool {
+    region_mut(project, region_id).is_some_and(|r| quantize_region(r, Some(indices), grid))
+}
+
+pub fn quantize_regions(project: &mut Project, ids: &[Id], grid: u64) -> bool {
+    let mut changed = false;
+    for region in regions_mut(project, ids) {
+        changed |= quantize_region(region, None, grid);
+    }
+    changed
+}
+
+pub fn copy_notes(project: &Project, region_id: Id, indices: &[usize]) -> Vec<Note> {
+    let Some((_, region)) = project.find_region(region_id) else {
+        return Vec::new();
+    };
+    let mut copied: Vec<Note> = region
+        .notes()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| indices.contains(i))
+        .map(|(_, n)| *n)
+        .collect();
+    copied.sort_by_key(|n| (n.start_tick, n.pitch));
+    copied
+}
+
+pub fn paste_notes(
+    project: &mut Project,
+    region_id: Id,
+    at_tick: u64,
+    clip: &[Note],
+) -> Vec<usize> {
+    let Some(first) = clip.iter().map(|n| n.start_tick).min() else {
+        return Vec::new();
+    };
+    let Some(region) = region_mut(project, region_id) else {
+        return Vec::new();
+    };
+    let notes = region.notes_mut();
+    let start = notes.len();
+    notes.extend(clip.iter().map(|n| Note {
+        start_tick: at_tick + (n.start_tick - first),
+        ..*n
+    }));
+    (start..notes.len()).collect()
+}
+
+pub fn add_recorded_take(
+    project: &mut Project,
+    track_id: Id,
+    notes: &[Note],
+    loop_range: Option<(u64, u64)>,
+    bar: u64,
+) -> Option<Id> {
+    let (start, end) = match loop_range {
+        Some(range) => range,
+        None => {
+            let first = notes.iter().map(|n| n.start_tick).min()?;
+            let last = notes.iter().map(Note::end_tick).max()?;
+            let start = snap_floor(first, bar);
+            let end = snap_floor(last + bar - 1, bar).max(start + bar);
+            (start, end)
+        }
+    };
+    let relative: Vec<Note> = notes
+        .iter()
+        .filter(|n| is_valid_note(n) && n.start_tick >= start && n.start_tick < end)
+        .map(|n| Note {
+            start_tick: n.start_tick - start,
+            length_tick: n.length_tick.min(end - n.start_tick),
+            ..*n
+        })
+        .collect();
+    if relative.is_empty() {
+        return None;
+    }
+    let id = add_midi_region(project, track_id, start, end - start)?;
+    *region_mut(project, id)?.notes_mut() = relative;
+    Some(id)
+}
+
 pub fn all_region_ids(project: &Project) -> Vec<Id> {
     project
         .tracks
@@ -253,7 +471,134 @@ fn regions_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Note;
+
+    fn note(pitch: u8, start_tick: u64, length_tick: u64) -> Note {
+        Note {
+            pitch,
+            velocity: 100,
+            start_tick,
+            length_tick,
+        }
+    }
+
+    fn notes(p: &Project, id: Id) -> Vec<Note> {
+        region(p, id).notes().to_vec()
+    }
+
+    #[test]
+    fn new_instrument_tracks_get_basic_synth() {
+        let mut p = Project::new("t", 48_000);
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        let audio = add_track(&mut p, TrackKind::Audio);
+        assert_eq!(
+            p.track(inst).unwrap().instrument,
+            Some(Instrument::default())
+        );
+        assert_eq!(p.track(audio).unwrap().instrument, None);
+    }
+
+    #[test]
+    fn add_and_delete_notes() {
+        let (mut p, _, id) = project_with_region();
+        assert_eq!(add_note(&mut p, id, note(60, 0, 240)), Some(0));
+        assert_eq!(add_note(&mut p, id, note(64, 240, 240)), Some(1));
+        assert_eq!(add_note(&mut p, id, note(200, 0, 240)), None);
+        assert_eq!(add_note(&mut p, id, note(60, 0, 0)), None);
+        assert_eq!(delete_notes(&mut p, id, &[0]), 1);
+        assert_eq!(notes(&p, id), [note(64, 240, 240)]);
+    }
+
+    #[test]
+    fn move_notes_is_clamped() {
+        let (mut p, _, id) = project_with_region();
+        add_note(&mut p, id, note(60, 100, 240));
+        add_note(&mut p, id, note(120, 500, 240));
+        assert!(move_notes(&mut p, id, &[0, 1], -1000, 20));
+        assert_eq!(notes(&p, id), [note(67, 0, 240), note(127, 400, 240)]);
+        assert!(!move_notes(&mut p, id, &[0, 1], -5, 3));
+    }
+
+    #[test]
+    fn resize_keeps_minimum_length() {
+        let (mut p, _, id) = project_with_region();
+        add_note(&mut p, id, note(60, 0, 240));
+        assert!(resize_notes(&mut p, id, &[0], 120));
+        assert_eq!(notes(&p, id)[0].length_tick, 360);
+        assert!(resize_notes(&mut p, id, &[0], -10_000));
+        assert_eq!(notes(&p, id)[0].length_tick, 1);
+    }
+
+    #[test]
+    fn velocity_is_clamped() {
+        let (mut p, _, id) = project_with_region();
+        add_note(&mut p, id, note(60, 0, 240));
+        set_notes_velocity(&mut p, id, &[0], 0);
+        assert_eq!(notes(&p, id)[0].velocity, 1);
+        set_notes_velocity(&mut p, id, &[0], 200);
+        assert_eq!(notes(&p, id)[0].velocity, 127);
+    }
+
+    #[test]
+    fn quantize_uses_song_grid() {
+        let mut p = Project::new("t", 48_000);
+        let track = add_track(&mut p, TrackKind::Instrument);
+        let id = add_midi_region(&mut p, track, 100, 3840).unwrap();
+        add_note(&mut p, id, note(60, 10, 100));
+        add_note(&mut p, id, note(62, 900, 100));
+        add_note(&mut p, id, note(64, 1300, 100));
+        assert!(quantize_notes(&mut p, id, &[0, 1], 240));
+        let starts: Vec<u64> = notes(&p, id).iter().map(|n| n.start_tick).collect();
+        assert_eq!(starts, [0, 860, 1300]);
+        assert!(quantize_regions(&mut p, &[id], 240));
+        assert_eq!(notes(&p, id)[2].start_tick, 1340);
+        assert!(!quantize_regions(&mut p, &[id], 240));
+    }
+
+    #[test]
+    fn copy_and_paste_notes() {
+        let (mut p, _, id) = project_with_region();
+        add_note(&mut p, id, note(64, 500, 10));
+        add_note(&mut p, id, note(60, 300, 10));
+        let clip = copy_notes(&p, id, &[0, 1]);
+        assert_eq!(paste_notes(&mut p, id, 1000, &clip), [2, 3]);
+        assert_eq!(notes(&p, id)[2..], [note(60, 1000, 10), note(64, 1200, 10)]);
+    }
+
+    #[test]
+    fn region_resize_needs_length() {
+        let (mut p, _, id) = project_with_region();
+        assert!(!resize_region(&mut p, id, 0));
+        assert!(resize_region(&mut p, id, 960));
+        assert_eq!(region(&p, id).length_tick, 960);
+        assert!(!resize_region(&mut p, id, 960));
+    }
+
+    #[test]
+    fn recorded_take_without_loop_rounds_to_bars() {
+        let mut p = Project::new("t", 48_000);
+        let track = add_track(&mut p, TrackKind::Instrument);
+        let take = [note(60, 4000, 500), note(62, 8000, 100)];
+        let id = add_recorded_take(&mut p, track, &take, None, 3840).unwrap();
+        let r = region(&p, id);
+        assert_eq!((r.start_tick, r.length_tick), (3840, 2 * 3840));
+        assert_eq!(r.notes(), [note(60, 160, 500), note(62, 4160, 100)]);
+        assert_eq!(add_recorded_take(&mut p, track, &[], None, 3840), None);
+    }
+
+    #[test]
+    fn recorded_take_with_loop_fills_loop_and_clips() {
+        let mut p = Project::new("t", 48_000);
+        let track = add_track(&mut p, TrackKind::Instrument);
+        let take = [
+            note(60, 3840, 100),
+            note(62, 7000, 2000),
+            note(64, 100, 100),
+        ];
+        let id = add_recorded_take(&mut p, track, &take, Some((3840, 7680)), 3840).unwrap();
+        let r = region(&p, id);
+        assert_eq!((r.start_tick, r.length_tick), (3840, 3840));
+        assert_eq!(r.notes(), [note(60, 0, 100), note(62, 3160, 680)]);
+    }
 
     fn project_with_region() -> (Project, Id, Id) {
         let mut p = Project::new("t", 48_000);
