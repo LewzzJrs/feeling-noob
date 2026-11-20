@@ -9,6 +9,7 @@ assert_no_alloc = "1.1.2"
 eframe = "0.37"
 fnoob-core = { version = "0.1.0", path = "../fnoob-core" }
 fnoob-engine = { version = "0.1.0", path = "../fnoob-engine" }
+rfd = "0.18.0"
 
 [lints]
 workspace = true

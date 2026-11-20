@@ -1,4 +1,5 @@
-use crate::processor::{self, EngineHandle, TransportSettings};
+use crate::plan::RenderPlan;
+use crate::processor::{self, EngineHandle};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, ErrorKind, SampleFormat};
 use rtrb::{Consumer, RingBuffer};
@@ -96,7 +97,7 @@ impl AudioOutput {
 
 pub fn open_output(
     device_id: Option<&str>,
-    settings: TransportSettings,
+    plan: impl FnOnce(u32) -> RenderPlan,
 ) -> Result<(AudioOutput, EngineHandle), DeviceError> {
     let device = find_device(device_id)?;
     let supported = device.default_output_config()?;
@@ -104,7 +105,11 @@ pub fn open_output(
         return Err(DeviceError::UnsupportedFormat(supported.sample_format()));
     }
     let config = supported.config();
-    let (mut processor, handle) = processor::create(config.sample_rate, config.channels, settings);
+    let (mut processor, handle) = processor::create(
+        config.sample_rate,
+        config.channels,
+        Box::new(plan(config.sample_rate)),
+    );
     let (mut error_tx, error_rx) = RingBuffer::new(ERROR_CAPACITY);
     let stream = device.build_output_stream(
         config,

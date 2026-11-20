@@ -1,0 +1,601 @@
+use crate::app::{App, Drag};
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder,
+    Vec2,
+};
+use fnoob_core::edit;
+use fnoob_core::model::{Id, TrackKind};
+use fnoob_core::time::{grid_ticks, snap_floor, snap_round, ticks_per_bar};
+
+pub const HEADER_WIDTH: f32 = 210.0;
+pub const LOOP_ROW: f32 = 12.0;
+pub const RULER_HEIGHT: f32 = 34.0;
+pub const LANE_HEIGHT: f32 = 60.0;
+pub const MIN_PIXELS_PER_TICK: f32 = 0.002;
+pub const MAX_PIXELS_PER_TICK: f32 = 0.5;
+
+const TRACK_PALETTE: [Color32; 8] = [
+    Color32::from_rgb(86, 156, 214),
+    Color32::from_rgb(214, 118, 86),
+    Color32::from_rgb(120, 190, 110),
+    Color32::from_rgb(196, 120, 200),
+    Color32::from_rgb(220, 190, 90),
+    Color32::from_rgb(90, 200, 190),
+    Color32::from_rgb(230, 110, 150),
+    Color32::from_rgb(150, 150, 230),
+];
+const LOOP_ON: Color32 = Color32::from_rgb(64, 170, 150);
+const LOOP_OFF: Color32 = Color32::from_rgb(80, 80, 86);
+const PLAYHEAD: Color32 = Color32::from_rgb(240, 240, 240);
+
+pub fn track_color(index: u8) -> Color32 {
+    TRACK_PALETTE[usize::from(index) % TRACK_PALETTE.len()]
+}
+
+pub enum UiAction {
+    SelectTrack(Id),
+    SelectRegion { id: Id, toggle: bool },
+    ClearRegions,
+    CreateRegion { track: Id, tick: u64 },
+    DragRegionsStart { primary: Id, pointer: Pos2 },
+    DragRegionsUpdate { pointer: Pos2 },
+    DragLoopStart { tick: u64 },
+    DragLoopUpdate { tick: u64 },
+    DragEnd,
+    ToggleLoop,
+    Locate(u64),
+    ToggleMute(Id),
+    ToggleSolo(Id),
+    ToggleRecord(Id),
+    StartRename(Id),
+    Rename { id: Id, name: String },
+    CancelRename,
+    Scroll { ticks: f32, pixels: f32 },
+    Zoom(f32),
+}
+
+struct Geometry {
+    ruler: Rect,
+    lanes: Rect,
+    headers: Rect,
+    pixels_per_tick: f32,
+    scroll_tick: f32,
+    scroll_y: f32,
+}
+
+impl Geometry {
+    fn x(&self, tick: u64) -> f32 {
+        self.lanes.left() + (tick as f32 - self.scroll_tick) * self.pixels_per_tick
+    }
+
+    fn tick(&self, x: f32) -> u64 {
+        ((x - self.lanes.left()) / self.pixels_per_tick + self.scroll_tick).max(0.0) as u64
+    }
+
+    fn lane_top(&self, index: usize) -> f32 {
+        self.lanes.top() + index as f32 * LANE_HEIGHT - self.scroll_y
+    }
+}
+
+impl App {
+    fn snapped(&self, tick: u64) -> u64 {
+        if self.project.snap.enabled {
+            snap_round(
+                tick,
+                grid_ticks(self.project.snap.grid, self.project.time_signature),
+            )
+        } else {
+            tick
+        }
+    }
+
+    pub fn tracks_area(&mut self, ui: &mut egui::Ui) {
+        let (area, area_response) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        let geometry = Geometry {
+            ruler: Rect::from_min_max(
+                Pos2::new(area.left() + HEADER_WIDTH, area.top()),
+                Pos2::new(area.right(), area.top() + RULER_HEIGHT),
+            ),
+            lanes: Rect::from_min_max(
+                Pos2::new(area.left() + HEADER_WIDTH, area.top() + RULER_HEIGHT),
+                area.max,
+            ),
+            headers: Rect::from_min_max(
+                Pos2::new(area.left(), area.top() + RULER_HEIGHT),
+                Pos2::new(area.left() + HEADER_WIDTH, area.bottom()),
+            ),
+            pixels_per_tick: self.view.pixels_per_tick,
+            scroll_tick: self.view.scroll_tick,
+            scroll_y: self.view.scroll_y,
+        };
+        let mut actions = Vec::new();
+        if area_response.hovered() {
+            let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+            if zoom != 1.0 {
+                actions.push(UiAction::Zoom(zoom));
+            } else if scroll != Vec2::ZERO {
+                actions.push(UiAction::Scroll {
+                    ticks: -scroll.x / geometry.pixels_per_tick,
+                    pixels: -scroll.y,
+                });
+            }
+        }
+        let painter = ui.painter_at(area);
+        painter.rect_filled(area, 0.0, ui.visuals().extreme_bg_color);
+        self.draw_lanes(ui, &geometry, &mut actions);
+        self.draw_ruler(ui, &geometry, &mut actions);
+        self.draw_headers(ui, &geometry, &mut actions);
+        let playhead = geometry.x(self.playhead_tick());
+        if playhead >= geometry.lanes.left() {
+            painter.vline(
+                playhead,
+                geometry.ruler.top()..=area.bottom(),
+                Stroke::new(1.5, PLAYHEAD),
+            );
+        }
+        for action in actions {
+            self.apply_ui_action(action);
+        }
+    }
+
+    fn draw_ruler(&self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
+        let painter = ui.painter_at(g.ruler);
+        let visuals = ui.visuals();
+        painter.rect_filled(g.ruler, 0.0, visuals.faint_bg_color);
+        let loop_row = Rect::from_min_size(g.ruler.min, Vec2::new(g.ruler.width(), LOOP_ROW));
+        let bar_row = Rect::from_min_max(Pos2::new(g.ruler.left(), loop_row.bottom()), g.ruler.max);
+        let range = self.project.loop_range;
+        let loop_rect = Rect::from_x_y_ranges(
+            g.x(range.start_tick)..=g.x(range.end_tick),
+            loop_row.top() + 2.0..=loop_row.bottom() - 2.0,
+        );
+        let loop_color = if range.enabled { LOOP_ON } else { LOOP_OFF };
+        painter.rect_filled(loop_rect, CornerRadius::same(2), loop_color);
+        let bar = ticks_per_bar(self.project.time_signature);
+        let bar_px = bar as f32 * g.pixels_per_tick;
+        let label_every = ((48.0 / bar_px).ceil() as u64).max(1);
+        let first_bar = snap_floor(g.tick(g.ruler.left()), bar) / bar;
+        let last_bar = g.tick(g.ruler.right()) / bar + 1;
+        let text_color = visuals.text_color();
+        for index in first_bar..=last_bar {
+            let x = g.x(index * bar);
+            let labeled = index % label_every == 0;
+            let top = if labeled {
+                bar_row.top()
+            } else {
+                bar_row.center().y
+            };
+            painter.vline(
+                x,
+                top..=bar_row.bottom(),
+                Stroke::new(1.0, visuals.weak_text_color()),
+            );
+            if labeled {
+                painter.text(
+                    Pos2::new(x + 3.0, bar_row.top() + 2.0),
+                    Align2::LEFT_TOP,
+                    (index + 1).to_string(),
+                    FontId::proportional(12.0),
+                    text_color,
+                );
+            }
+        }
+        let loop_response = ui.interact(
+            loop_row,
+            ui.scope_id().with("loop_row"),
+            Sense::click_and_drag(),
+        );
+        if let Some(pos) = loop_response.interact_pointer_pos() {
+            let tick = self.snapped(g.tick(pos.x));
+            if loop_response.drag_started() {
+                actions.push(UiAction::DragLoopStart { tick });
+            } else if loop_response.dragged() {
+                actions.push(UiAction::DragLoopUpdate { tick });
+            }
+        }
+        if loop_response.drag_stopped() {
+            actions.push(UiAction::DragEnd);
+        } else if loop_response.clicked() {
+            actions.push(UiAction::ToggleLoop);
+        }
+        let bar_response = ui.interact(
+            bar_row,
+            ui.scope_id().with("bar_row"),
+            Sense::click_and_drag(),
+        );
+        if (bar_response.clicked() || bar_response.dragged())
+            && let Some(pos) = bar_response.interact_pointer_pos()
+        {
+            actions.push(UiAction::Locate(self.snapped(g.tick(pos.x))));
+        }
+    }
+
+    fn draw_lanes(&self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
+        let painter = ui.painter_at(g.lanes);
+        let visuals = ui.visuals().clone();
+        let bar = ticks_per_bar(self.project.time_signature);
+        let first_bar = snap_floor(g.tick(g.lanes.left()), bar) / bar;
+        let last_bar = g.tick(g.lanes.right()) / bar + 1;
+        for index in first_bar..=last_bar {
+            painter.vline(
+                g.x(index * bar),
+                g.lanes.y_range(),
+                Stroke::new(1.0, visuals.faint_bg_color),
+            );
+        }
+        let range = self.project.loop_range;
+        if range.enabled {
+            let shade = Rect::from_x_y_ranges(
+                g.x(range.start_tick)..=g.x(range.end_tick),
+                g.lanes.y_range(),
+            );
+            painter.rect_filled(shade, 0.0, LOOP_ON.gamma_multiply(0.08));
+        }
+        for (index, track) in self.project.tracks.iter().enumerate() {
+            let top = g.lane_top(index);
+            let lane = Rect::from_x_y_ranges(g.lanes.x_range(), top..=top + LANE_HEIGHT);
+            if lane.bottom() < g.lanes.top() || lane.top() > g.lanes.bottom() {
+                continue;
+            }
+            if self.selection.track == Some(track.id) {
+                painter.rect_filled(lane, 0.0, visuals.selection.bg_fill.gamma_multiply(0.15));
+            }
+            painter.hline(
+                g.lanes.x_range(),
+                lane.bottom(),
+                Stroke::new(1.0, visuals.faint_bg_color),
+            );
+            let lane_response = ui.interact(
+                lane.intersect(g.lanes),
+                ui.scope_id().with(("lane", track.id)),
+                Sense::click(),
+            );
+            if lane_response.double_clicked() && track.kind == TrackKind::Instrument {
+                if let Some(pos) = lane_response.interact_pointer_pos() {
+                    let tick = snap_floor(
+                        g.tick(pos.x),
+                        grid_ticks(self.project.snap.grid, self.project.time_signature),
+                    );
+                    actions.push(UiAction::CreateRegion {
+                        track: track.id,
+                        tick,
+                    });
+                }
+            } else if lane_response.clicked() {
+                actions.push(UiAction::SelectTrack(track.id));
+                actions.push(UiAction::ClearRegions);
+            }
+            let audible = self.project.is_track_audible(track);
+            for region in &track.regions {
+                let rect = Rect::from_x_y_ranges(
+                    g.x(region.start_tick)
+                        ..=g.x(region.end_tick()).max(g.x(region.start_tick) + 4.0),
+                    lane.top() + 3.0..=lane.bottom() - 3.0,
+                );
+                if rect.right() < g.lanes.left() || rect.left() > g.lanes.right() {
+                    continue;
+                }
+                let selected = self.selection.regions.contains(&region.id);
+                let base = if region.muted || !audible {
+                    Color32::from_gray(90)
+                } else {
+                    track_color(track.color)
+                };
+                painter.rect_filled(rect, CornerRadius::same(4), base.gamma_multiply(0.75));
+                let border = if selected {
+                    Stroke::new(2.0, Color32::WHITE)
+                } else {
+                    Stroke::new(1.0, base)
+                };
+                painter.rect_stroke(rect, CornerRadius::same(4), border, StrokeKind::Inside);
+                let label = if region.muted {
+                    format!("{} (muted)", region.name)
+                } else {
+                    region.name.clone()
+                };
+                ui.painter_at(rect.intersect(g.lanes)).text(
+                    rect.left_top() + Vec2::new(6.0, 4.0),
+                    Align2::LEFT_TOP,
+                    label,
+                    FontId::proportional(12.0),
+                    Color32::BLACK,
+                );
+                let response = ui.interact(
+                    rect.intersect(g.lanes),
+                    ui.scope_id().with(("region", region.id)),
+                    Sense::click_and_drag(),
+                );
+                if response.drag_started() {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        actions.push(UiAction::DragRegionsStart {
+                            primary: region.id,
+                            pointer,
+                        });
+                    }
+                } else if response.dragged() {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        actions.push(UiAction::DragRegionsUpdate { pointer });
+                    }
+                } else if response.clicked() {
+                    let toggle = ui.input(|i| i.modifiers.ctrl);
+                    actions.push(UiAction::SelectTrack(track.id));
+                    actions.push(UiAction::SelectRegion {
+                        id: region.id,
+                        toggle,
+                    });
+                }
+                if response.drag_stopped() {
+                    actions.push(UiAction::DragEnd);
+                }
+            }
+        }
+    }
+
+    fn draw_headers(&mut self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
+        let painter = ui.painter_at(g.headers);
+        painter.rect_filled(g.headers, 0.0, ui.visuals().panel_fill);
+        let corner = Rect::from_min_max(
+            Pos2::new(g.headers.left(), g.ruler.top()),
+            Pos2::new(g.headers.right(), g.ruler.bottom()),
+        );
+        ui.painter_at(corner)
+            .rect_filled(corner, 0.0, ui.visuals().panel_fill);
+        let mut renaming = self.renaming.take();
+        for (index, track) in self.project.tracks.iter().enumerate() {
+            let top = g.lane_top(index);
+            let row = Rect::from_x_y_ranges(g.headers.x_range(), top..=top + LANE_HEIGHT);
+            if row.bottom() < g.headers.top() || row.top() > g.headers.bottom() {
+                continue;
+            }
+            let selected = self.selection.track == Some(track.id);
+            let row_response = ui.interact(
+                row.intersect(g.headers),
+                ui.scope_id().with(("header", track.id)),
+                Sense::click(),
+            );
+            if row_response.clicked() {
+                actions.push(UiAction::SelectTrack(track.id));
+            }
+            let fill = if selected {
+                ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+            } else {
+                ui.visuals().faint_bg_color
+            };
+            painter.rect_filled(row.shrink2(Vec2::new(0.0, 1.0)), 0.0, fill);
+            painter.rect_filled(
+                Rect::from_min_size(row.min, Vec2::new(5.0, LANE_HEIGHT)),
+                0.0,
+                track_color(track.color),
+            );
+            let mut child =
+                ui.new_child(UiBuilder::new().max_rect(row.shrink2(Vec2::new(12.0, 6.0))));
+            child.set_clip_rect(g.headers);
+            child.vertical(|ui| {
+                match &mut renaming {
+                    Some((id, text)) if *id == track.id => {
+                        let edit = ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
+                        edit.request_focus();
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            actions.push(UiAction::CancelRename);
+                        } else if edit.lost_focus() {
+                            actions.push(UiAction::Rename {
+                                id: track.id,
+                                name: text.clone(),
+                            });
+                        }
+                    }
+                    _ => {
+                        let kind = match track.kind {
+                            TrackKind::Audio => "Audio",
+                            TrackKind::Instrument => "Instrument",
+                        };
+                        let name = ui
+                            .add(
+                                egui::Label::new(egui::RichText::new(&track.name).strong())
+                                    .sense(Sense::click()),
+                            )
+                            .on_hover_text(format!("{kind} track. Double-click to rename."));
+                        if name.double_clicked() {
+                            actions.push(UiAction::StartRename(track.id));
+                        } else if name.clicked() {
+                            actions.push(UiAction::SelectTrack(track.id));
+                        }
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(track.mute, "M")
+                        .on_hover_text("Mute")
+                        .clicked()
+                    {
+                        actions.push(UiAction::ToggleMute(track.id));
+                    }
+                    if ui
+                        .selectable_label(track.solo, "S")
+                        .on_hover_text("Solo")
+                        .clicked()
+                    {
+                        actions.push(UiAction::ToggleSolo(track.id));
+                    }
+                    let record = egui::Button::selectable(
+                        track.record_enabled,
+                        egui::RichText::new("R").color(if track.record_enabled {
+                            Color32::from_rgb(230, 70, 70)
+                        } else {
+                            ui.visuals().text_color()
+                        }),
+                    );
+                    if ui.add(record).on_hover_text("Record enable").clicked() {
+                        actions.push(UiAction::ToggleRecord(track.id));
+                    }
+                });
+            });
+        }
+        if renaming.is_some()
+            && !actions
+                .iter()
+                .any(|a| matches!(a, UiAction::Rename { .. } | UiAction::CancelRename))
+        {
+            self.renaming = renaming;
+        }
+    }
+
+    pub fn apply_ui_action(&mut self, action: UiAction) {
+        match action {
+            UiAction::SelectTrack(id) => self.selection.track = Some(id),
+            UiAction::SelectRegion { id, toggle } => {
+                if toggle {
+                    if let Some(i) = self.selection.regions.iter().position(|&r| r == id) {
+                        self.selection.regions.remove(i);
+                    } else {
+                        self.selection.regions.push(id);
+                    }
+                } else {
+                    self.selection.regions = vec![id];
+                }
+            }
+            UiAction::ClearRegions => self.selection.regions.clear(),
+            UiAction::CreateRegion { track, tick } => {
+                let length = ticks_per_bar(self.project.time_signature);
+                let mut created = None;
+                self.edit(|p| created = edit::add_midi_region(p, track, tick, length));
+                if let Some(id) = created {
+                    self.selection.track = Some(track);
+                    self.selection.regions = vec![id];
+                }
+            }
+            UiAction::DragRegionsStart { primary, pointer } => {
+                if !self.selection.regions.contains(&primary) {
+                    self.selection.regions = vec![primary];
+                }
+                self.drag = Some(Drag::Regions {
+                    origin: self.project.clone(),
+                    primary,
+                    anchor: pointer,
+                });
+            }
+            UiAction::DragRegionsUpdate { pointer } => self.update_region_drag(pointer),
+            UiAction::DragLoopStart { tick } => {
+                self.drag = Some(Drag::Loop {
+                    origin: self.project.clone(),
+                    anchor: tick,
+                });
+            }
+            UiAction::DragLoopUpdate { tick } => self.update_loop_drag(tick),
+            UiAction::DragEnd => self.finish_drag(),
+            UiAction::ToggleLoop => self.edit(|p| p.loop_range.enabled = !p.loop_range.enabled),
+            UiAction::Locate(tick) => self.locate(tick),
+            UiAction::ToggleMute(id) => self.edit_track(id, |t| t.mute = !t.mute),
+            UiAction::ToggleSolo(id) => self.edit_track(id, |t| t.solo = !t.solo),
+            UiAction::ToggleRecord(id) => {
+                self.edit_track(id, |t| t.record_enabled = !t.record_enabled)
+            }
+            UiAction::StartRename(id) => {
+                if let Some(track) = self.project.track(id) {
+                    self.renaming = Some((id, track.name.clone()));
+                }
+            }
+            UiAction::Rename { id, name } => {
+                let name = name.trim().to_owned();
+                if !name.is_empty() {
+                    self.edit_track(id, |t| t.name = name);
+                }
+            }
+            UiAction::CancelRename => {}
+            UiAction::Scroll { ticks, pixels } => {
+                self.view.scroll_tick = (self.view.scroll_tick + ticks).max(0.0);
+                let content = self.project.tracks.len() as f32 * LANE_HEIGHT;
+                self.view.scroll_y =
+                    (self.view.scroll_y + pixels).clamp(0.0, (content - LANE_HEIGHT).max(0.0));
+            }
+            UiAction::Zoom(factor) => self.zoom(factor),
+        }
+    }
+
+    pub fn zoom(&mut self, factor: f32) {
+        self.view.pixels_per_tick =
+            (self.view.pixels_per_tick * factor).clamp(MIN_PIXELS_PER_TICK, MAX_PIXELS_PER_TICK);
+    }
+
+    fn update_region_drag(&mut self, pointer: Pos2) {
+        let Some(Drag::Regions {
+            origin,
+            primary,
+            anchor,
+        }) = &self.drag
+        else {
+            return;
+        };
+        let (origin, primary, anchor) = (origin.clone(), *primary, *anchor);
+        let Some((primary_track, primary_region)) = origin.find_region(primary) else {
+            return;
+        };
+        let delta_ticks = ((pointer.x - anchor.x) / self.view.pixels_per_tick) as i64;
+        let wanted = (primary_region.start_tick as i64 + delta_ticks).max(0) as u64;
+        let delta = self.snapped(wanted) as i64 - primary_region.start_tick as i64;
+        let lane_delta = ((pointer.y - anchor.y) / LANE_HEIGHT).round() as i64;
+        let ids = self.selection.regions.clone();
+        let source_index = origin
+            .tracks
+            .iter()
+            .position(|t| t.id == primary_track.id)
+            .unwrap_or(0);
+        let target =
+            (source_index as i64 + lane_delta).clamp(0, origin.tracks.len() as i64 - 1) as usize;
+        let mut project = origin.clone();
+        let min_start = ids
+            .iter()
+            .filter_map(|id| origin.find_region(*id).map(|(_, r)| r.start_tick))
+            .min()
+            .unwrap_or(0);
+        let delta = delta.max(-(min_start as i64));
+        for id in &ids {
+            let Some((track, region)) = origin.find_region(*id) else {
+                continue;
+            };
+            let start = (region.start_tick as i64 + delta) as u64;
+            let track_id = if ids.len() == 1 && origin.tracks[target].kind == track.kind {
+                origin.tracks[target].id
+            } else {
+                track.id
+            };
+            edit::move_region(&mut project, *id, start, track_id);
+        }
+        if project != self.project {
+            self.project = project;
+            if ids.len() == 1
+                && let Some((track, _)) = self.project.find_region(primary)
+            {
+                self.selection.track = Some(track.id);
+            }
+            self.sync_plan();
+        }
+    }
+
+    fn update_loop_drag(&mut self, tick: u64) {
+        let Some(Drag::Loop { origin, anchor }) = &self.drag else {
+            return;
+        };
+        let (mut project, anchor) = (origin.clone(), *anchor);
+        let grid = grid_ticks(project.snap.grid, project.time_signature);
+        let (start, end) = if tick >= anchor {
+            (anchor, tick)
+        } else {
+            (tick, anchor)
+        };
+        let end = end.max(start + grid);
+        edit::set_loop(&mut project, start, end);
+        if project != self.project {
+            self.project = project;
+            self.sync_plan();
+        }
+    }
+
+    fn finish_drag(&mut self) {
+        if let Some(Drag::Regions { origin, .. } | Drag::Loop { origin, .. }) = self.drag.take()
+            && origin != self.project
+        {
+            self.history.record(origin);
+        }
+    }
+}
