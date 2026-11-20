@@ -4,9 +4,6 @@ const CLICK_SECONDS: f32 = 0.03;
 const ACCENT_HZ: f32 = 1568.0;
 const NORMAL_HZ: f32 = 1046.5;
 const CLICK_LEVEL: f32 = 0.5;
-const BEEP_SECONDS: f32 = 0.12;
-const BEEP_HZ: f32 = 659.3;
-const BEEP_LEVEL: f32 = 0.3;
 
 pub struct OneShot {
     buffer: Vec<f32>,
@@ -84,10 +81,6 @@ impl Metronome {
     }
 }
 
-pub fn beep(sample_rate: u32) -> OneShot {
-    OneShot::tone(sample_rate, BEEP_HZ, BEEP_SECONDS, BEEP_LEVEL)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,7 +108,7 @@ mod tests {
 
     #[test]
     fn retrigger_restarts() {
-        let mut b = beep(48_000);
+        let mut b = OneShot::tone(48_000, 440.0, 0.1, 0.5);
         b.trigger();
         let first: Vec<f32> = (0..50).map(|_| b.next_sample()).collect();
         b.trigger();

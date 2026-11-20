@@ -1,5 +1,23 @@
-use fnoob_core::model::{Project, TrackKind};
+use crate::synth::Synth;
+use fnoob_core::model::{Id, Project};
 use fnoob_core::time::{Timeline, ticks_per_beat};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlannedNote {
+    pub start: u64,
+    pub end: u64,
+    pub pitch: u8,
+    pub velocity: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackPlan {
+    pub id: Id,
+    pub audible: bool,
+    pub notes: Vec<PlannedNote>,
+    pub synth: Synth,
+    pub cursor: usize,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderPlan {
@@ -9,7 +27,52 @@ pub struct RenderPlan {
     pub metronome: bool,
     pub count_in_beats: u64,
     pub loop_range: Option<(u64, u64)>,
-    pub beeps: Vec<u64>,
+    pub tracks: Vec<TrackPlan>,
+}
+
+fn track_plans(project: &Project, timeline: Timeline) -> Vec<TrackPlan> {
+    project
+        .tracks
+        .iter()
+        .filter_map(|track| {
+            let params = track.synth()?;
+            let audible = project.is_track_audible(track);
+            let mut notes: Vec<PlannedNote> = if audible {
+                track
+                    .regions
+                    .iter()
+                    .filter(|r| !r.muted)
+                    .flat_map(|region| {
+                        region
+                            .notes()
+                            .iter()
+                            .filter(|n| n.start_tick < region.length_tick)
+                            .map(move |n| {
+                                let start = region.start_tick + n.start_tick;
+                                let end = (start + n.length_tick).min(region.end_tick());
+                                PlannedNote {
+                                    start: timeline.tick_to_sample(start),
+                                    end: timeline.tick_to_sample(end),
+                                    pitch: n.pitch,
+                                    velocity: n.velocity,
+                                }
+                            })
+                    })
+                    .filter(|n| n.end > n.start)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            notes.sort_unstable_by_key(|n| (n.start, n.pitch));
+            Some(TrackPlan {
+                id: track.id,
+                audible,
+                notes,
+                synth: Synth::new(&params, timeline.sample_rate),
+                cursor: 0,
+            })
+        })
+        .collect()
 }
 
 impl RenderPlan {
@@ -22,16 +85,6 @@ impl RenderPlan {
         let ts = project.time_signature;
         let beats_per_bar = u64::from(ts.numerator.max(1));
         let loop_range = project.loop_range;
-        let mut beeps: Vec<u64> = project
-            .tracks
-            .iter()
-            .filter(|t| t.kind == TrackKind::Instrument && project.is_track_audible(t))
-            .flat_map(|t| t.regions.iter())
-            .filter(|r| !r.muted)
-            .map(|r| timeline.tick_to_sample(r.start_tick))
-            .collect();
-        beeps.sort_unstable();
-        beeps.dedup();
         Self {
             samples_per_tick,
             samples_per_beat: ticks_per_beat(ts) as f64 * samples_per_tick,
@@ -51,40 +104,77 @@ impl RenderPlan {
                     )
                 })
                 .filter(|(start, end)| end > start),
-            beeps,
+            tracks: track_plans(project, timeline),
         }
     }
 
     pub fn idle(sample_rate: u32) -> Self {
         Self::from_project(&Project::new("", sample_rate), sample_rate)
     }
+
+    pub fn track_mut(&mut self, id: Id) -> Option<&mut TrackPlan> {
+        self.tracks.iter_mut().find(|t| t.id == id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fnoob_core::edit::{add_midi_region, add_track};
-    use fnoob_core::model::TimeSignature;
+    use fnoob_core::edit::{add_midi_region, add_note, add_track};
+    use fnoob_core::model::{Note, TimeSignature, TrackKind};
+
+    fn note(pitch: u8, start_tick: u64, length_tick: u64) -> Note {
+        Note {
+            pitch,
+            velocity: 100,
+            start_tick,
+            length_tick,
+        }
+    }
 
     #[test]
-    fn beeps_follow_audible_instrument_regions() {
+    fn notes_are_placed_in_samples_and_clipped_to_region() {
+        let mut p = Project::new("t", 48_000);
+        let audio = add_track(&mut p, TrackKind::Audio);
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        let region = add_midi_region(&mut p, inst, 960, 960).unwrap();
+        add_note(&mut p, region, note(64, 480, 960));
+        add_note(&mut p, region, note(60, 0, 240));
+        add_note(&mut p, region, note(62, 960, 240));
+        let plan = RenderPlan::from_project(&p, 48_000);
+        assert_eq!(plan.tracks.len(), 1);
+        assert_ne!(plan.tracks[0].id, audio);
+        let starts: Vec<(u64, u64, u8)> = plan.tracks[0]
+            .notes
+            .iter()
+            .map(|n| (n.start, n.end, n.pitch))
+            .collect();
+        assert_eq!(starts, [(24_000, 30_000, 60), (36_000, 48_000, 64)]);
+    }
+
+    #[test]
+    fn muted_regions_and_tracks_have_no_notes() {
         let mut p = Project::new("t", 48_000);
         let a = add_track(&mut p, TrackKind::Instrument);
         let b = add_track(&mut p, TrackKind::Instrument);
-        add_midi_region(&mut p, a, 960, 960);
-        let muted = add_midi_region(&mut p, a, 1920, 960).unwrap();
-        add_midi_region(&mut p, b, 3840, 960);
-        p.tracks[0]
-            .regions
-            .iter_mut()
-            .find(|r| r.id == muted)
-            .unwrap()
-            .muted = true;
-        assert_eq!(RenderPlan::from_project(&p, 48_000).beeps, [24_000, 96_000]);
+        let ra = add_midi_region(&mut p, a, 0, 960).unwrap();
+        let rb = add_midi_region(&mut p, b, 0, 960).unwrap();
+        add_note(&mut p, ra, note(60, 0, 100));
+        add_note(&mut p, rb, note(60, 0, 100));
+        let counts = |p: &Project| -> Vec<usize> {
+            RenderPlan::from_project(p, 48_000)
+                .tracks
+                .iter()
+                .map(|t| t.notes.len())
+                .collect()
+        };
+        assert_eq!(counts(&p), [1, 1]);
         p.tracks[1].solo = true;
-        assert_eq!(RenderPlan::from_project(&p, 48_000).beeps, [96_000]);
-        p.tracks[1].mute = true;
-        assert!(RenderPlan::from_project(&p, 48_000).beeps.is_empty());
+        assert_eq!(counts(&p), [0, 1]);
+        p.tracks[1].regions[0].muted = true;
+        assert_eq!(counts(&p), [0, 0]);
+        let plan = RenderPlan::from_project(&p, 48_000);
+        assert!(!plan.tracks[0].audible && plan.tracks[1].audible);
     }
 
     #[test]
