@@ -155,12 +155,45 @@ impl Note {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub const MIN_GAIN_DB: f32 = -60.0;
+pub const MAX_GAIN_DB: f32 = 24.0;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RegionContent {
-    Midi { notes: Vec<Note> },
+    Midi {
+        notes: Vec<Note>,
+    },
+    Audio {
+        file_id: Id,
+        offset_frames: u64,
+        gain_db: f32,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioFile {
+    pub id: Id,
+    pub path: String,
+    pub channels: u16,
+    pub frames: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioInput {
+    pub first_channel: u16,
+    pub channels: u16,
+}
+
+impl Default for AudioInput {
+    fn default() -> Self {
+        Self {
+            first_channel: 0,
+            channels: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Region {
     pub id: Id,
     pub name: String,
@@ -178,12 +211,28 @@ impl Region {
     pub fn notes(&self) -> &[Note] {
         match &self.content {
             RegionContent::Midi { notes } => notes,
+            RegionContent::Audio { .. } => &[],
         }
     }
 
-    pub fn notes_mut(&mut self) -> &mut Vec<Note> {
+    pub fn notes_mut(&mut self) -> Option<&mut Vec<Note>> {
         match &mut self.content {
-            RegionContent::Midi { notes } => notes,
+            RegionContent::Midi { notes } => Some(notes),
+            RegionContent::Audio { .. } => None,
+        }
+    }
+
+    pub fn audio_file(&self) -> Option<Id> {
+        match self.content {
+            RegionContent::Audio { file_id, .. } => Some(file_id),
+            RegionContent::Midi { .. } => None,
+        }
+    }
+
+    pub fn kind(&self) -> TrackKind {
+        match self.content {
+            RegionContent::Midi { .. } => TrackKind::Instrument,
+            RegionContent::Audio { .. } => TrackKind::Audio,
         }
     }
 }
@@ -197,6 +246,10 @@ pub struct Track {
     pub mute: bool,
     pub solo: bool,
     pub record_enabled: bool,
+    #[serde(default)]
+    pub input_monitoring: bool,
+    #[serde(default)]
+    pub audio_input: Option<AudioInput>,
     #[serde(default)]
     pub instrument: Option<Instrument>,
     pub regions: Vec<Region>,
@@ -225,6 +278,8 @@ pub struct Project {
     pub metronome: MetronomeSettings,
     pub snap: Snap,
     pub next_id: Id,
+    #[serde(default)]
+    pub audio_files: Vec<AudioFile>,
     pub tracks: Vec<Track>,
 }
 
@@ -255,6 +310,7 @@ impl Project {
                 grid: Grid::Bar,
             },
             next_id: 1,
+            audio_files: Vec::new(),
             tracks: Vec::new(),
         }
     }
@@ -263,6 +319,10 @@ impl Project {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    pub fn audio_file(&self, id: Id) -> Option<&AudioFile> {
+        self.audio_files.iter().find(|f| f.id == id)
     }
 
     pub fn track(&self, id: Id) -> Option<&Track> {

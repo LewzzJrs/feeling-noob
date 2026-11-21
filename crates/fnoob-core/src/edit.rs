@@ -1,7 +1,8 @@
 use crate::model::{
-    Id, Instrument, Note, Project, Region, RegionContent, TRACK_COLORS, Track, TrackKind,
+    AudioFile, AudioInput, Id, Instrument, Note, Project, Region, RegionContent, TRACK_COLORS,
+    Track, TrackKind,
 };
-use crate::time::{snap_floor, snap_round};
+use crate::time::{Timeline, snap_floor, snap_round};
 
 pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
     let number = project.tracks.iter().filter(|t| t.kind == kind).count() + 1;
@@ -15,6 +16,8 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         mute: false,
         solo: false,
         record_enabled: false,
+        input_monitoring: false,
+        audio_input: (kind == TrackKind::Audio).then(AudioInput::default),
         instrument: (kind == TrackKind::Instrument).then(Instrument::default),
         regions: Vec::new(),
     });
@@ -103,8 +106,34 @@ pub fn nudge_regions(project: &mut Project, ids: &[Id], delta: i64) -> bool {
     true
 }
 
-fn split_notes(region: &mut Region, cut: u64) -> RegionContent {
+fn project_timeline(project: &Project) -> Timeline {
+    Timeline {
+        sample_rate: project.sample_rate,
+        bpm: project.tempo_bpm,
+    }
+}
+
+pub fn ticks_to_frames(project: &Project, start_tick: u64, ticks: u64) -> u64 {
+    let timeline = project_timeline(project);
+    timeline.tick_to_sample(start_tick + ticks) - timeline.tick_to_sample(start_tick)
+}
+
+pub fn frames_to_ticks(project: &Project, frames: u64) -> u64 {
+    let ticks = frames as f64 / project_timeline(project).samples_per_tick();
+    (ticks.ceil() as u64).max(1)
+}
+
+fn split_content(region: &mut Region, cut: u64, cut_frames: u64) -> RegionContent {
     match &mut region.content {
+        RegionContent::Audio {
+            file_id,
+            offset_frames,
+            gain_db,
+        } => RegionContent::Audio {
+            file_id: *file_id,
+            offset_frames: *offset_frames + cut_frames,
+            gain_db: *gain_db,
+        },
         RegionContent::Midi { notes } => {
             let mut right = Vec::new();
             notes.retain_mut(|note| {
@@ -136,9 +165,11 @@ pub fn split_regions_at(project: &mut Project, ids: &[Id], tick: u64) -> Vec<Id>
             .collect();
         for index in candidates {
             let id = project.alloc_id();
+            let start = project.tracks[track_index].regions[index].start_tick;
+            let cut_frames = ticks_to_frames(project, start, tick - start);
             let region = &mut project.tracks[track_index].regions[index];
             let cut = tick - region.start_tick;
-            let content = split_notes(region, cut);
+            let content = split_content(region, cut, cut_frames);
             let right = Region {
                 id,
                 name: region.name.clone(),
@@ -190,12 +221,13 @@ pub fn paste_regions(
     let Some(first) = clip.iter().map(|r| r.start_tick).min() else {
         return Vec::new();
     };
-    if project.track(track_id).map(|t| t.kind) != Some(TrackKind::Instrument) {
+    let Some(kind) = project.track(track_id).map(|t| t.kind) else {
         return Vec::new();
-    }
+    };
     let mut created = Vec::new();
     let pasted: Vec<Region> = clip
         .iter()
+        .filter(|r| r.kind() == kind)
         .map(|r| {
             let mut copy = r.clone();
             copy.id = project.alloc_id();
@@ -248,6 +280,10 @@ pub fn region_mut(project: &mut Project, id: Id) -> Option<&mut Region> {
         .find(|r| r.id == id)
 }
 
+fn notes_of(project: &mut Project, region_id: Id) -> Option<&mut Vec<Note>> {
+    region_mut(project, region_id)?.notes_mut()
+}
+
 fn is_valid_note(note: &Note) -> bool {
     note.pitch <= 127 && (1..=127).contains(&note.velocity) && note.length_tick > 0
 }
@@ -256,16 +292,59 @@ pub fn add_note(project: &mut Project, region_id: Id, note: Note) -> Option<usiz
     if !is_valid_note(&note) {
         return None;
     }
-    let notes = region_mut(project, region_id)?.notes_mut();
+    let notes = notes_of(project, region_id)?;
     notes.push(note);
     Some(notes.len() - 1)
 }
 
+pub fn add_audio_file(project: &mut Project, path: String, channels: u16, frames: u64) -> Id {
+    let id = project.alloc_id();
+    project.audio_files.push(AudioFile {
+        id,
+        path,
+        channels,
+        frames,
+    });
+    id
+}
+
+pub fn add_audio_region(
+    project: &mut Project,
+    track_id: Id,
+    start_tick: u64,
+    file_id: Id,
+    offset_frames: u64,
+) -> Option<Id> {
+    let frames = project.audio_file(file_id)?.frames;
+    if offset_frames >= frames || project.track(track_id)?.kind != TrackKind::Audio {
+        return None;
+    }
+    let length_tick = frames_to_ticks(project, frames - offset_frames);
+    let name = project.audio_file(file_id).map_or_else(String::new, |f| {
+        std::path::Path::new(&f.path)
+            .file_stem()
+            .map_or_else(String::new, |s| s.to_string_lossy().into_owned())
+    });
+    let id = project.alloc_id();
+    project.track_mut(track_id)?.regions.push(Region {
+        id,
+        name,
+        start_tick,
+        length_tick,
+        muted: false,
+        content: RegionContent::Audio {
+            file_id,
+            offset_frames,
+            gain_db: 0.0,
+        },
+    });
+    Some(id)
+}
+
 pub fn delete_notes(project: &mut Project, region_id: Id, indices: &[usize]) -> usize {
-    let Some(region) = region_mut(project, region_id) else {
+    let Some(notes) = notes_of(project, region_id) else {
         return 0;
     };
-    let notes = region.notes_mut();
     let before = notes.len();
     let mut index = 0;
     notes.retain(|_| {
@@ -294,10 +373,9 @@ pub fn move_notes(
     delta_ticks: i64,
     delta_pitch: i32,
 ) -> bool {
-    let Some(region) = region_mut(project, region_id) else {
+    let Some(notes) = notes_of(project, region_id) else {
         return false;
     };
-    let notes = region.notes_mut();
     let picked: Vec<Note> = notes
         .iter()
         .enumerate()
@@ -324,11 +402,11 @@ pub fn move_notes(
 }
 
 pub fn resize_notes(project: &mut Project, region_id: Id, indices: &[usize], delta: i64) -> bool {
-    let Some(region) = region_mut(project, region_id) else {
+    let Some(notes) = notes_of(project, region_id) else {
         return false;
     };
     let mut changed = false;
-    for note in selected_notes(region.notes_mut(), indices) {
+    for note in selected_notes(notes, indices) {
         let length = (note.length_tick as i64 + delta).max(1) as u64;
         changed |= length != note.length_tick;
         note.length_tick = length;
@@ -338,8 +416,8 @@ pub fn resize_notes(project: &mut Project, region_id: Id, indices: &[usize], del
 
 pub fn set_notes_velocity(project: &mut Project, region_id: Id, indices: &[usize], velocity: u8) {
     let velocity = velocity.clamp(1, 127);
-    if let Some(region) = region_mut(project, region_id) {
-        for note in selected_notes(region.notes_mut(), indices) {
+    if let Some(notes) = notes_of(project, region_id) {
+        for note in selected_notes(notes, indices) {
             note.velocity = velocity;
         }
     }
@@ -348,7 +426,10 @@ pub fn set_notes_velocity(project: &mut Project, region_id: Id, indices: &[usize
 fn quantize_region(region: &mut Region, indices: Option<&[usize]>, grid: u64) -> bool {
     let start = region.start_tick;
     let mut changed = false;
-    for (i, note) in region.notes_mut().iter_mut().enumerate() {
+    let Some(notes) = region.notes_mut() else {
+        return false;
+    };
+    for (i, note) in notes.iter_mut().enumerate() {
         if indices.is_some_and(|picked| !picked.contains(&i)) {
             continue;
         }
@@ -395,10 +476,9 @@ pub fn paste_notes(
     let Some(first) = clip.iter().map(|n| n.start_tick).min() else {
         return Vec::new();
     };
-    let Some(region) = region_mut(project, region_id) else {
+    let Some(notes) = notes_of(project, region_id) else {
         return Vec::new();
     };
-    let notes = region.notes_mut();
     let start = notes.len();
     notes.extend(clip.iter().map(|n| Note {
         start_tick: at_tick + (n.start_tick - first),
@@ -437,7 +517,7 @@ pub fn add_recorded_take(
         return None;
     }
     let id = add_midi_region(project, track_id, start, end - start)?;
-    *region_mut(project, id)?.notes_mut() = relative;
+    *notes_of(project, id)? = relative;
     Some(id)
 }
 
@@ -634,7 +714,7 @@ mod tests {
     #[test]
     fn split_divides_region_and_notes() {
         let (mut p, _, id) = project_with_region();
-        let RegionContent::Midi { notes } = &mut p.tracks[0].regions[0].content;
+        let notes = p.tracks[0].regions[0].notes_mut().unwrap();
         notes.push(Note {
             pitch: 60,
             velocity: 100,
@@ -651,13 +731,78 @@ mod tests {
         assert_eq!(created.len(), 1);
         let left = region(&p, id);
         assert_eq!((left.start_tick, left.length_tick), (3840, 1920));
-        let RegionContent::Midi { notes } = &left.content;
+        let notes = left.notes();
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].length_tick, 1920);
         let right = region(&p, created[0]);
         assert_eq!((right.start_tick, right.length_tick), (5760, 1920));
-        let RegionContent::Midi { notes } = &right.content;
-        assert_eq!(notes[0].start_tick, 580);
+        assert_eq!(right.notes()[0].start_tick, 580);
+    }
+
+    fn project_with_audio() -> (Project, Id, Id, Id) {
+        let mut p = Project::new("t", 48_000);
+        let track = add_track(&mut p, TrackKind::Audio);
+        let file = add_audio_file(&mut p, "audio/take.wav".into(), 1, 96_000);
+        let region = add_audio_region(&mut p, track, 3840, file, 0).unwrap();
+        (p, track, file, region)
+    }
+
+    #[test]
+    fn audio_region_length_follows_file() {
+        let (p, track, _, id) = project_with_audio();
+        let r = region(&p, id);
+        assert_eq!((r.start_tick, r.length_tick), (3840, 3840));
+        assert_eq!(r.name, "take");
+        assert_eq!(
+            p.track(track).unwrap().audio_input,
+            Some(AudioInput::default())
+        );
+    }
+
+    #[test]
+    fn audio_regions_only_on_audio_tracks_and_known_files() {
+        let (mut p, _, file, _) = project_with_audio();
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        let audio = add_track(&mut p, TrackKind::Audio);
+        assert_eq!(add_audio_region(&mut p, inst, 0, file, 0), None);
+        assert_eq!(add_audio_region(&mut p, audio, 0, 999, 0), None);
+        assert_eq!(add_audio_region(&mut p, audio, 0, file, 96_000), None);
+    }
+
+    #[test]
+    fn split_audio_moves_offset() {
+        let (mut p, _, file, id) = project_with_audio();
+        let created = split_regions_at(&mut p, &[id], 3840 + 960);
+        let right = region(&p, created[0]);
+        assert_eq!(right.start_tick, 4800);
+        assert_eq!(
+            right.content,
+            RegionContent::Audio {
+                file_id: file,
+                offset_frames: 24_000,
+                gain_db: 0.0
+            }
+        );
+        assert_eq!(region(&p, id).length_tick, 960);
+    }
+
+    #[test]
+    fn paste_only_onto_matching_track_kind() {
+        let (mut p, audio, _, id) = project_with_audio();
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        let midi = add_midi_region(&mut p, inst, 0, 960).unwrap();
+        let clip = copy_regions(&p, &[id, midi]);
+        let pasted = paste_regions(&mut p, audio, 0, &clip);
+        assert_eq!(pasted.len(), 1);
+        assert_eq!(region(&p, pasted[0]).kind(), TrackKind::Audio);
+        assert_eq!(paste_regions(&mut p, inst, 0, &clip).len(), 1);
+    }
+
+    #[test]
+    fn note_edits_ignore_audio_regions() {
+        let (mut p, _, _, id) = project_with_audio();
+        assert_eq!(add_note(&mut p, id, note(60, 0, 10)), None);
+        assert!(!quantize_regions(&mut p, &[id], 240));
     }
 
     #[test]

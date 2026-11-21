@@ -8,8 +8,20 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Settings {
     pub output_device: Option<String>,
+    pub input_device: InputChoice,
+    pub buffer_frames: Option<u32>,
     pub midi_input: MidiInputChoice,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputChoice {
+    #[default]
+    SystemDefault,
+    Off,
+    Device(String),
+}
+
+pub const BUFFER_SIZES: [u32; 5] = [128, 256, 512, 1024, 2048];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MidiInputChoice {
@@ -94,6 +106,8 @@ mod tests {
         let path = scratch_file("roundtrip");
         let settings = Settings {
             output_device: Some("wasapi:{0.0.0.00000000}.{abc}".into()),
+            input_device: InputChoice::Device("wasapi:{in}".into()),
+            buffer_frames: Some(256),
             midi_input: MidiInputChoice::Port("Keyboard 1".into()),
         };
         settings.save(&path).unwrap();
