@@ -1,6 +1,8 @@
+use crate::audio_data::{AudioData, AudioPool};
 use crate::synth::Synth;
-use fnoob_core::model::{Id, Project};
+use fnoob_core::model::{AudioInput, Id, Project, RegionContent, TrackKind};
 use fnoob_core::time::{Timeline, ticks_per_beat};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlannedNote {
@@ -20,6 +22,26 @@ pub struct TrackPlan {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Clip {
+    pub start: u64,
+    pub end: u64,
+    pub offset: u64,
+    pub gain: f32,
+    pub data: Arc<AudioData>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioTrackPlan {
+    pub id: Id,
+    pub audible: bool,
+    pub clips: Vec<Clip>,
+    pub cursor: usize,
+    pub input: AudioInput,
+    pub monitor: bool,
+    pub record: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RenderPlan {
     pub samples_per_tick: f64,
     pub samples_per_beat: f64,
@@ -28,6 +50,58 @@ pub struct RenderPlan {
     pub count_in_beats: u64,
     pub loop_range: Option<(u64, u64)>,
     pub tracks: Vec<TrackPlan>,
+    pub audio_tracks: Vec<AudioTrackPlan>,
+    pub records_audio: bool,
+}
+
+fn audio_track_plans(
+    project: &Project,
+    timeline: Timeline,
+    pool: &AudioPool,
+) -> Vec<AudioTrackPlan> {
+    project
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .map(|track| {
+            let audible = project.is_track_audible(track);
+            let mut clips: Vec<Clip> = track
+                .regions
+                .iter()
+                .filter(|r| audible && !r.muted)
+                .filter_map(|region| {
+                    let RegionContent::Audio {
+                        file_id,
+                        offset_frames,
+                        gain_db,
+                    } = region.content
+                    else {
+                        return None;
+                    };
+                    let data = pool.get(&file_id)?;
+                    let start = timeline.tick_to_sample(region.start_tick);
+                    let end = timeline.tick_to_sample(region.end_tick());
+                    (end > start && offset_frames < data.frames).then(|| Clip {
+                        start,
+                        end,
+                        offset: offset_frames,
+                        gain: 10f32.powf(gain_db / 20.0),
+                        data: Arc::clone(data),
+                    })
+                })
+                .collect();
+            clips.sort_by_key(|c| c.start);
+            AudioTrackPlan {
+                id: track.id,
+                audible,
+                clips,
+                cursor: 0,
+                input: track.audio_input.unwrap_or_default(),
+                monitor: track.input_monitoring && audible,
+                record: track.record_enabled,
+            }
+        })
+        .collect()
 }
 
 fn track_plans(project: &Project, timeline: Timeline) -> Vec<TrackPlan> {
@@ -77,6 +151,10 @@ fn track_plans(project: &Project, timeline: Timeline) -> Vec<TrackPlan> {
 
 impl RenderPlan {
     pub fn from_project(project: &Project, sample_rate: u32) -> Self {
+        Self::with_audio(project, sample_rate, &AudioPool::new())
+    }
+
+    pub fn with_audio(project: &Project, sample_rate: u32, pool: &AudioPool) -> Self {
         let timeline = Timeline {
             sample_rate,
             bpm: project.tempo_bpm,
@@ -105,6 +183,11 @@ impl RenderPlan {
                 })
                 .filter(|(start, end)| end > start),
             tracks: track_plans(project, timeline),
+            audio_tracks: audio_track_plans(project, timeline, pool),
+            records_audio: project
+                .tracks
+                .iter()
+                .any(|t| t.kind == TrackKind::Audio && t.record_enabled),
         }
     }
 
