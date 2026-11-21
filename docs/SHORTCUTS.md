@@ -9,15 +9,13 @@ Each entry: file, what was skipped, when it needs fixing.
 | # | File | What was skipped | When to fix |
 |---|---|---|---|
 | S1 | `crates/fnoob-engine/src/device.rs` | Only the `f32` sample format is supported. Devices with other formats are rejected with an error. WASAPI shared mode is almost always `f32`. | When a device gets rejected. |
-| S2 | `crates/fnoob-engine/src/device.rs` | Always uses the device's default config (sample rate, channels, buffer size). Buffer size cannot be chosen yet. | Phase 5, when recording latency is measured. |
+| S2 | `crates/fnoob-engine/src/device.rs` (`stream_config`) | The chosen buffer size is used only when the device reports a size range that contains it. In WASAPI shared mode Windows often fixes the size, so the setting may have no effect. | When WASAPI exclusive mode is added (roadmap). |
 | S3 | `crates/fnoob-engine/src/device.rs` | Stream errors only keep the `ErrorKind`; the detailed message is lost. No automatic reconnect; the user clicks "Reopen device" in the settings window. | Phase 8, or earlier if it happens often. |
 | S6 | `crates/fnoob-app/src/main.rs` | The window icon is still the default `eframe` icon. | Phase 8 (original icon). |
 | S7 | `crates/fnoob-core/src/fsutil.rs`, `settings.rs`, `io.rs` (tests) | Tests use folders in `%TEMP%` named by PID instead of the `tempfile` crate. | If tests start colliding when run in parallel. |
 | S9 | `crates/fnoob-app/src/app.rs` (`sync_plan`) | The whole render plan is rebuilt and sent on every edit, including every frame of a drag. | When large projects feel slow (Phase 7 check). |
-| S10 | `crates/fnoob-app/src/midi.rs` (`start_recording`) | Record captures MIDI only. Audio tracks are not recorded yet. | Phase 5. |
 | S11 | `crates/fnoob-app/src/app.rs` | Count-in length is fixed at the project value (default 1 bar); there is no UI to change it. | Phase 7 (Project Settings dialog). |
 | S12 | `crates/fnoob-app/src/app.rs` (`open`) | Open uses a folder picker for the `.fnoob` folder. No recent projects list. | Phase 7. |
-| S13 | `crates/fnoob-app/src/app.rs` (`check_sample_rate`) | A project/device sample rate mismatch only shows a warning; playback is not blocked. Harmless until audio files exist. | Phase 5. |
 | S14 | `crates/fnoob-app/src/timeline.rs` (`update_region_drag`) | Dragging regions to another track only works for a single region; multi-region drags move horizontally only. | When multi-track moves are needed. |
 | S15 | `crates/fnoob-app/src/timeline.rs` (`update_region_resize`) | Only the right edge of a region can be dragged. The left edge (trim the start) is not supported. | When trimming starts is needed. |
 | S16 | `crates/fnoob-core/src/history.rs` | Undo stores a full copy of the project per step (planned in `SPEC.md` 4.6). | If memory use becomes a problem. |
@@ -30,6 +28,14 @@ Each entry: file, what was skipped, when it needs fixing.
 | S23 | `crates/fnoob-engine/src/processor.rs` (`set_plan`) | A voice that is already sounding keeps its old end time when its note is moved or deleted during playback. | If it confuses users. |
 | S24 | `crates/fnoob-app/src/piano_roll.rs` | No rubber-band selection and no separate pointer/pencil tools: clicking empty space always adds a note. Notes moved past the region end are kept but do not play. | When the editor gets more tools. |
 | S25 | `crates/fnoob-engine/src/processor.rs` (`Recorder`) | While loop recording, a key held across the loop end is cut at the loop end and not restarted at the loop start. | If players need held notes across the loop. |
+| S26 | `crates/fnoob-engine/src/processor.rs` (`read_input_frame`, `trim_input_backlog`) | Input and output streams are not clock-synced. Missing input samples become silence and an input backlog over 8192 frames is dropped. Slow or separate devices can leave gaps in recordings. | If recordings with two different devices are needed. |
+| S27 | `crates/fnoob-engine/src/processor.rs` (`clip_frame`) | Overlapping audio regions on one track are mixed together instead of the later one covering the earlier one. | If overlapping regions confuse users. |
+| S28 | `crates/fnoob-app/src/audio.rs` | Recorded and imported WAV files stay in `audio/` when their regions are deleted or undone. | Phase 7 (clean up unused files on save, with a prompt). |
+| S29 | `crates/fnoob-engine/src/audio_data.rs` | Whole audio files are loaded into memory (planned in `SPEC.md` 5.5). Long projects use a lot of RAM. | Roadmap (disk streaming). |
+| S30 | `crates/fnoob-app/src/audio.rs` (`finish_audio_take`) | Latency compensation uses the latency reported by the audio driver. It has not been checked with a loopback cable. | When a loopback measurement is possible. |
+| S31 | `crates/fnoob-app/src/audio.rs` (`prepare_audio_take`, `import_audio`) | Recording and importing audio need a saved project folder; there is no temporary folder for untitled projects. | Phase 7. |
+| S32 | `crates/fnoob-app/src/timeline.rs` | Audio regions have no fades, and their gain can only be changed in `project.json`. | Phase 6 (mixer) or later. |
+| S33 | `crates/fnoob-app/src/timeline.rs` (`input_options`) | The input channel list follows the currently open input device; with no input open it shows 2 channels. | When devices with many inputs are tested. |
 
 ## Fixed
 
@@ -38,3 +44,5 @@ Each entry: file, what was skipped, when it needs fixing.
 | S4 | Phase 3 | Tempo, metronome, and meter now live in the `Project` model. |
 | S5 | Phase 3 | Keymap added; the position display shows bar.beat.division.tick. |
 | S8 | Phase 4 | The placeholder beep is gone; MIDI regions play their notes through the Basic Synth. |
+| S10 | Phase 5 | Record captures audio on armed audio tracks as well as MIDI. |
+| S13 | Phase 5 | Playback and recording are blocked when the project and device sample rates differ. |

@@ -2,7 +2,7 @@
 
 A digital audio workstation for Windows, written in Rust.
 
-> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, resize, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, a built-in synth, a piano roll with quantize, MIDI keyboard input and MIDI recording, undo/redo, keyboard shortcuts, and project save/load. Audio recording, the mixer, plugins, and export are not there yet.
+> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, resize, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, a built-in synth, a piano roll with quantize, MIDI keyboard input and MIDI recording, audio recording and WAV import with waveforms and input monitoring, undo/redo, keyboard shortcuts, and project save/load. The mixer, plugins, autosave, and export are not there yet.
 
 ## Goals
 
@@ -56,10 +56,10 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-One test plays a short metronome on your default output device. It is skipped by default; run it with:
+Two tests use real devices: one plays a short metronome on the default output, the other reads the default input and prints the reported latency. They are skipped by default; run them with:
 
 ```powershell
-cargo test -p fnoob-engine --test real_device -- --ignored
+cargo test -p fnoob-engine --test real_device -- --ignored --nocapture
 ```
 
 ## Project layout
@@ -67,7 +67,7 @@ cargo test -p fnoob-engine --test real_device -- --ignored
 | Crate | Purpose |
 |---|---|
 | `crates/fnoob-core` | Project model, editing, undo, project files, keymap, settings, time math. No audio or UI code. |
-| `crates/fnoob-engine` | Audio engine: render plan, transport, loop, count-in, metronome, Basic Synth, MIDI input, audio device output. |
+| `crates/fnoob-engine` | Audio engine: render plan, transport, loop, count-in, metronome, Basic Synth, MIDI input, audio clips, audio input and recording to WAV, audio devices. |
 | `crates/fnoob-app` | The desktop app (egui). |
 
 The audio callback never allocates, locks, or does file I/O. Debug builds and tests enforce the no-allocation rule with `assert_no_alloc`.

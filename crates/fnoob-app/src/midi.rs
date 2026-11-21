@@ -93,8 +93,16 @@ impl App {
         if self.audio.is_none() {
             return;
         }
+        let records_audio = match self.prepare_audio_take() {
+            Ok(audio) => audio,
+            Err(e) => {
+                self.message = Some(e);
+                return;
+            }
+        };
         let range = self.project.loop_range;
-        let loop_range = range.enabled.then_some((range.start_tick, range.end_tick));
+        let loop_range =
+            (range.enabled && !records_audio).then_some((range.start_tick, range.end_tick));
         if let Some((start, end)) = loop_range {
             let tick = self.playhead_tick();
             if tick < start || tick >= end {
@@ -112,10 +120,15 @@ impl App {
                     started: false,
                     waited: 0,
                 });
-                self.message = Some(format!("Recording MIDI on {}.", name.unwrap_or_default()));
+                self.message = Some(format!(
+                    "Recording{} MIDI on {}.",
+                    if records_audio { " audio and" } else { "" },
+                    name.unwrap_or_default()
+                ));
             }
+            None if records_audio => self.message = Some("Recording audio.".into()),
             None => {
-                self.message = Some("No instrument track to record on. Transport runs only.".into())
+                self.message = Some("No track is armed for recording. Transport runs only.".into())
             }
         }
         self.send(EngineCommand::Record);

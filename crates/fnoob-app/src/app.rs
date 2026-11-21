@@ -8,13 +8,19 @@ use fnoob_core::history::History;
 use fnoob_core::io::{self, PROJECT_EXTENSION, PROJECT_FILE};
 use fnoob_core::keymap::{Command, shortcut_label};
 use fnoob_core::model::{Grid, Id, Project, Region, Track, TrackKind};
-use fnoob_core::settings::{MidiInputChoice, Settings, default_settings_path};
+use fnoob_core::settings::{
+    BUFFER_SIZES, InputChoice, MidiInputChoice, Settings, default_settings_path,
+};
 use fnoob_core::time::{
     MAX_BPM, MIN_BPM, Position, Timeline, grid_ticks, snap_floor, ticks_per_bar,
 };
-use fnoob_engine::device::{AudioOutput, OutputDeviceInfo, list_output_devices, open_output};
+use fnoob_engine::audio_data::AudioPool;
+use fnoob_engine::device::{
+    AudioInputStream, AudioOutput, DeviceInfo, OutputDeviceInfo, list_output_devices, open_output,
+};
 use fnoob_engine::midi_in::{MidiConnection, MidiInputInfo};
 use fnoob_engine::{Command as EngineCommand, EngineHandle, RenderPlan, TransportState};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -100,9 +106,14 @@ pub struct App {
     pub(crate) live_sent: Option<Option<Id>>,
     pub(crate) take: Option<Take>,
     pub(crate) audio: Option<(AudioOutput, EngineHandle)>,
+    pub(crate) input_devices: Vec<DeviceInfo>,
+    pub(crate) input: Option<AudioInputStream>,
+    pub(crate) pool: AudioPool,
+    pub(crate) missing: HashSet<Id>,
+    pub(crate) audio_take: Option<crate::audio::AudioTake>,
     pub(crate) project: Project,
     saved: Project,
-    project_dir: Option<PathBuf>,
+    pub(crate) project_dir: Option<PathBuf>,
     pub(crate) history: History,
     pub(crate) selection: Selection,
     clipboard: Vec<Region>,
@@ -143,6 +154,11 @@ impl App {
             settings,
             settings_path,
             devices: Vec::new(),
+            input_devices: Vec::new(),
+            input: None,
+            pool: AudioPool::new(),
+            missing: HashSet::new(),
+            audio_take: None,
             midi_inputs: Vec::new(),
             midi: None,
             live_sent: None,
@@ -176,6 +192,7 @@ impl App {
         };
         app.refresh_devices();
         app.refresh_midi_inputs();
+        app.refresh_input_devices();
         app.open_device();
         if let Some((output, _)) = &app.audio {
             app.project.sample_rate = output.sample_rate;
@@ -226,19 +243,37 @@ impl App {
 
     fn open_device(&mut self) {
         let tick = self.playhead_tick();
+        self.audio_take = None;
+        self.input = None;
         self.audio = None;
-        let project = &self.project;
-        match open_output(self.settings.output_device.as_deref(), |rate| {
-            RenderPlan::from_project(project, rate)
-        }) {
+        let (project, pool) = (&self.project, &self.pool);
+        match open_output(
+            self.settings.output_device.as_deref(),
+            self.settings.buffer_frames,
+            |rate| RenderPlan::with_audio(project, rate, pool),
+        ) {
             Ok(audio) => self.audio = Some(audio),
             Err(e) => self.message = Some(e.to_string()),
         }
         self.live_sent = None;
         self.take = None;
         self.connect_midi();
+        self.open_input_device();
         self.locate(tick);
         self.check_sample_rate();
+    }
+
+    pub(crate) fn rate_matches(&mut self) -> bool {
+        match &self.audio {
+            Some((output, _)) if output.sample_rate != self.project.sample_rate => {
+                self.message = Some(format!(
+                    "Playback is blocked: the project runs at {} Hz but the device runs at {} Hz. Choose a device at {} Hz.",
+                    self.project.sample_rate, output.sample_rate, self.project.sample_rate
+                ));
+                false
+            }
+            _ => true,
+        }
     }
 
     fn check_sample_rate(&mut self) {
@@ -279,7 +314,7 @@ impl App {
 
     pub(crate) fn sync_plan(&mut self) {
         let rate = self.sample_rate();
-        let plan = Box::new(RenderPlan::from_project(&self.project, rate));
+        let plan = Box::new(RenderPlan::with_audio(&self.project, rate, &self.pool));
         self.send(EngineCommand::SetPlan(plan));
     }
 
@@ -356,21 +391,16 @@ impl App {
         self.sync_plan();
     }
 
-    fn selected_or_first_instrument(&self) -> Option<Id> {
-        self.selection
-            .track
-            .filter(|id| {
-                self.project
-                    .track(*id)
-                    .is_some_and(|t| t.kind == TrackKind::Instrument)
-            })
-            .or_else(|| {
-                self.project
-                    .tracks
-                    .iter()
-                    .find(|t| t.kind == TrackKind::Instrument)
-                    .map(|t| t.id)
-            })
+    fn paste_target(&self) -> Option<Id> {
+        let kind = self.clipboard.first()?.kind();
+        let matches = |id: &Id| self.project.track(*id).is_some_and(|t| t.kind == kind);
+        self.selection.track.filter(matches).or_else(|| {
+            self.project
+                .tracks
+                .iter()
+                .find(|t| t.kind == kind)
+                .map(|t| t.id)
+        })
     }
 
     fn select_track_offset(&mut self, offset: i64) {
@@ -405,14 +435,16 @@ impl App {
         let grid = grid_ticks(self.project.snap.grid, self.project.time_signature) as i64;
         match command {
             Command::PlayStop => {
-                if self.transport_state() == TransportState::Stopped {
-                    self.send(EngineCommand::Play);
-                } else {
+                if self.transport_state() != TransportState::Stopped {
                     self.send(EngineCommand::Stop);
+                } else if self.rate_matches() {
+                    self.send(EngineCommand::Play);
                 }
             }
             Command::Record => {
-                if self.transport_state() == TransportState::Stopped {
+                if self.transport_state() != TransportState::Stopped {
+                    self.send(EngineCommand::Stop);
+                } else if self.rate_matches() {
                     self.start_recording();
                 } else {
                     self.send(EngineCommand::Stop);
@@ -505,8 +537,8 @@ impl App {
                 });
                 self.selection.regions.clear();
             }
-            Command::Paste => match self.selected_or_first_instrument() {
-                Some(track) if !self.clipboard.is_empty() => {
+            Command::Paste => match self.paste_target() {
+                Some(track) => {
                     let tick = self.playhead_tick();
                     let clip = self.clipboard.clone();
                     let mut created = Vec::new();
@@ -514,8 +546,8 @@ impl App {
                     self.selection.track = Some(track);
                     self.selection.regions = created;
                 }
-                Some(_) => {}
-                None => self.message = Some("Paste needs an instrument track.".into()),
+                None if self.clipboard.is_empty() => {}
+                None => self.message = Some("Paste needs a track of the same kind.".into()),
             },
             Command::SelectAll => self.selection.regions = edit::all_region_ids(&self.project),
             Command::Delete => {
@@ -569,10 +601,14 @@ impl App {
         self.renaming = None;
         self.live_origin = None;
         self.take = None;
+        self.audio_take = None;
         self.editor = Editor::default();
         self.synth_window = None;
         self.view.scroll_tick = 0.0;
         self.view.scroll_y = 0.0;
+        self.pool.clear();
+        self.missing.clear();
+        self.load_audio_files();
         self.sync_plan();
         self.locate(0);
         self.check_sample_rate();
@@ -625,11 +661,20 @@ impl App {
             ));
             return false;
         }
+        if let Err(e) = self.copy_audio_files(&dir) {
+            self.message = Some(format!("Save failed: {e}"));
+            return false;
+        }
         if let Some(name) = dir.file_stem().and_then(|s| s.to_str()) {
             self.project.name = name.to_owned();
         }
         if self.save_to(&dir) {
             self.project_dir = Some(dir);
+            let missing: Vec<Id> = self.missing.drain().collect();
+            if !missing.is_empty() {
+                self.load_audio_files();
+                self.sync_plan();
+            }
             true
         } else {
             false
@@ -668,6 +713,11 @@ impl App {
                 self.menu_item(ui, "Open...", Command::Open);
                 self.menu_item(ui, "Save", Command::Save);
                 self.menu_item(ui, "Save As...", Command::SaveAs);
+                ui.separator();
+                if ui.button("Import Audio File...").clicked() {
+                    self.import_audio();
+                    ui.close();
+                }
                 ui.separator();
                 if ui.button("Audio and MIDI Settings...").clicked() {
                     self.show_settings = true;
@@ -781,6 +831,7 @@ impl App {
                     .selectable_label(state != TransportState::Stopped, play)
                     .clicked()
                     && state == TransportState::Stopped
+                    && self.rate_matches()
                 {
                     self.send(EngineCommand::Play);
                 }
@@ -878,10 +929,13 @@ impl App {
         ui.horizontal(|ui| {
             match &self.audio {
                 Some((output, _)) => ui.label(format!(
-                    "{}  |  {} Hz  |  {} ch  |  MIDI: {}",
+                    "{}  |  {} Hz  |  {} ch  |  In: {}  |  MIDI: {}",
                     output.device_name,
                     output.sample_rate,
                     output.channels,
+                    self.input
+                        .as_ref()
+                        .map_or("none", |i| i.device_name.as_str()),
                     self.midi.as_ref().map_or("none", |m| m.name.as_str())
                 )),
                 None => ui.colored_label(ui.visuals().warn_fg_color, "No audio output"),
@@ -900,6 +954,8 @@ impl App {
         let mut reopen = false;
         let mut midi_choice = None;
         let mut midi_refresh = false;
+        let mut input_choice = None;
+        let mut buffer_choice = None;
         egui::Window::new("Audio and MIDI Settings")
             .open(&mut open)
             .resizable(false)
@@ -932,9 +988,69 @@ impl App {
                             }
                         }
                     });
+                ui.label("Input device");
+                let input = &self.settings.input_device;
+                let selected = match input {
+                    InputChoice::SystemDefault => "System default".to_owned(),
+                    InputChoice::Off => "Off".to_owned(),
+                    InputChoice::Device(id) => self
+                        .input_devices
+                        .iter()
+                        .find(|d| &d.id == id)
+                        .map_or_else(|| format!("Missing: {id}"), |d| d.name.clone()),
+                };
+                egui::ComboBox::from_id_salt("input_device")
+                    .selected_text(selected)
+                    .width(320.0)
+                    .show_ui(ui, |ui| {
+                        for (label, option) in [
+                            ("System default", InputChoice::SystemDefault),
+                            ("Off", InputChoice::Off),
+                        ] {
+                            if ui.selectable_label(*input == option, label).clicked() {
+                                input_choice = Some(option);
+                            }
+                        }
+                        for device in &self.input_devices {
+                            let option = InputChoice::Device(device.id.clone());
+                            if ui.selectable_label(*input == option, &device.name).clicked() {
+                                input_choice = Some(option);
+                            }
+                        }
+                    });
+                ui.label("Buffer size");
+                let buffer = self.settings.buffer_frames;
+                egui::ComboBox::from_id_salt("buffer_size")
+                    .selected_text(buffer.map_or("Device default".to_owned(), |b| {
+                        format!("{b} samples")
+                    }))
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(buffer.is_none(), "Device default").clicked() {
+                            buffer_choice = Some(None);
+                        }
+                        for size in BUFFER_SIZES {
+                            if ui
+                                .selectable_label(buffer == Some(size), format!("{size} samples"))
+                                .clicked()
+                            {
+                                buffer_choice = Some(Some(size));
+                            }
+                        }
+                    });
+                if let Some((output, _)) = &self.audio {
+                    let rate = f64::from(output.sample_rate) / 1000.0;
+                    let out = output.latency_frames();
+                    let inp = self.input.as_ref().map_or(0, |i| i.latency_frames());
+                    ui.label(format!(
+                        "Latency: output {:.1} ms, input {:.1} ms. Recordings are shifted by {} samples.",
+                        out as f64 / rate,
+                        inp as f64 / rate,
+                        out + inp
+                    ));
+                }
                 ui.horizontal(|ui| {
                     refresh = ui.button("Refresh list").clicked();
-                    reopen = ui.button("Reopen device").clicked();
+                    reopen = ui.button("Reopen devices").clicked();
                 });
                 ui.separator();
                 ui.label("MIDI input");
@@ -991,8 +1107,25 @@ impl App {
             self.message = None;
             self.connect_midi();
         }
+        if let Some(choice) = input_choice
+            && choice != self.settings.input_device
+        {
+            self.settings.input_device = choice;
+            self.save_settings();
+            self.message = None;
+            self.open_input_device();
+        }
+        if let Some(choice) = buffer_choice
+            && choice != self.settings.buffer_frames
+        {
+            self.settings.buffer_frames = choice;
+            self.save_settings();
+            self.message = None;
+            self.open_device();
+        }
         if refresh {
             self.refresh_devices();
+            self.refresh_input_devices();
         }
         if reopen {
             self.message = None;
@@ -1142,7 +1275,15 @@ impl App {
                 ));
             }
         }
+        if let Some(input) = &mut self.input
+            && let Some(kind) = input.take_error()
+        {
+            self.message = Some(format!(
+                "Audio input problem: {kind:?}. Reopen it in Audio and MIDI Settings."
+            ));
+        }
         self.poll_take();
+        self.poll_audio_take();
         if self.audio.is_none() {
             return;
         }

@@ -4,7 +4,7 @@ use eframe::egui::{
     UiBuilder, Vec2,
 };
 use fnoob_core::edit;
-use fnoob_core::model::{Id, TrackKind};
+use fnoob_core::model::{AudioInput, Id, Region, RegionContent, TrackKind};
 use fnoob_core::time::{grid_ticks, snap_floor, snap_round, ticks_per_bar};
 
 pub const HEADER_WIDTH: f32 = 210.0;
@@ -50,6 +50,8 @@ pub enum UiAction {
     ToggleMute(Id),
     ToggleSolo(Id),
     ToggleRecord(Id),
+    ToggleMonitor(Id),
+    SetInput { id: Id, input: AudioInput },
     StartRename(Id),
     Rename { id: Id, name: String },
     CancelRename,
@@ -279,7 +281,12 @@ impl App {
                     continue;
                 }
                 let selected = self.selection.regions.contains(&region.id);
-                let base = if region.muted || !audible {
+                let missing = region
+                    .audio_file()
+                    .is_some_and(|id| !self.pool.contains_key(&id));
+                let base = if missing {
+                    Color32::from_rgb(150, 60, 60)
+                } else if region.muted || !audible {
                     Color32::from_gray(90)
                 } else {
                     track_color(track.color)
@@ -291,6 +298,7 @@ impl App {
                     Stroke::new(1.0, base)
                 };
                 painter.rect_stroke(rect, CornerRadius::same(4), border, StrokeKind::Inside);
+                self.draw_waveform(ui, g, region, rect);
                 let notes = region.notes();
                 if let (Some(low), Some(high)) = (
                     notes.iter().map(|n| n.pitch).min(),
@@ -316,7 +324,9 @@ impl App {
                         );
                     }
                 }
-                let label = if region.muted {
+                let label = if missing {
+                    format!("{} (missing file)", region.name)
+                } else if region.muted {
                     format!("{} (muted)", region.name)
                 } else {
                     region.name.clone()
@@ -472,6 +482,32 @@ impl App {
                     if ui.add(record).on_hover_text("Record enable").clicked() {
                         actions.push(UiAction::ToggleRecord(track.id));
                     }
+                    if track.kind == TrackKind::Audio {
+                        if ui
+                            .selectable_label(track.input_monitoring, "I")
+                            .on_hover_text("Input monitoring")
+                            .clicked()
+                        {
+                            actions.push(UiAction::ToggleMonitor(track.id));
+                        }
+                        let current = track.audio_input.unwrap_or_default();
+                        egui::ComboBox::from_id_salt(("input", track.id))
+                            .width(62.0)
+                            .selected_text(input_label(current))
+                            .show_ui(ui, |ui| {
+                                for option in input_options(self.input_channels()) {
+                                    if ui
+                                        .selectable_label(option == current, input_label(option))
+                                        .clicked()
+                                    {
+                                        actions.push(UiAction::SetInput {
+                                            id: track.id,
+                                            input: option,
+                                        });
+                                    }
+                                }
+                            });
+                    }
                 });
             });
         }
@@ -530,7 +566,23 @@ impl App {
                 Some(Drag::RegionResize { .. }) => self.update_region_resize(pointer),
                 _ => self.update_region_drag(pointer),
             },
-            UiAction::OpenEditor(region) => self.open_editor(region),
+            UiAction::OpenEditor(region) => {
+                if self
+                    .project
+                    .find_region(region)
+                    .is_some_and(|(_, r)| r.audio_file().is_some())
+                {
+                    self.message = Some("Audio regions have no piano roll.".into());
+                } else {
+                    self.open_editor(region);
+                }
+            }
+            UiAction::ToggleMonitor(id) => {
+                self.edit_track(id, |t| t.input_monitoring = !t.input_monitoring)
+            }
+            UiAction::SetInput { id, input } => {
+                self.edit_track(id, |t| t.audio_input = Some(input));
+            }
             UiAction::DragLoopStart { tick } => {
                 self.drag = Some(Drag::Loop {
                     origin: self.project.clone(),
@@ -565,6 +617,43 @@ impl App {
                     (self.view.scroll_y + pixels).clamp(0.0, (content - LANE_HEIGHT).max(0.0));
             }
             UiAction::Zoom(factor) => self.zoom(factor),
+        }
+    }
+
+    fn draw_waveform(&self, ui: &egui::Ui, g: &Geometry, region: &Region, rect: Rect) {
+        let RegionContent::Audio {
+            file_id,
+            offset_frames,
+            gain_db,
+        } = region.content
+        else {
+            return;
+        };
+        let Some(data) = self.pool.get(&file_id) else {
+            return;
+        };
+        let body = Rect::from_x_y_ranges(rect.x_range(), rect.top() + 18.0..=rect.bottom() - 3.0);
+        let visible = body.intersect(g.lanes);
+        if visible.width() <= 0.0 {
+            return;
+        }
+        let painter = ui.painter_at(visible);
+        let timeline = self.timeline();
+        let region_start = timeline.tick_to_sample(region.start_tick);
+        let gain = 10f32.powf(gain_db / 20.0);
+        let frame_at = |x: f32| {
+            let sample = timeline.tick_to_sample(g.tick(x));
+            offset_frames + sample.saturating_sub(region_start)
+        };
+        let stroke = Stroke::new(1.0, Color32::from_black_alpha(170));
+        let mut x = visible.left();
+        while x < visible.right() {
+            let peak = (data.peak(frame_at(x), frame_at(x + 2.0)) * gain).min(1.0);
+            let half = body.height() * 0.5 * peak;
+            if half >= 0.5 {
+                painter.vline(x, body.center().y - half..=body.center().y + half, stroke);
+            }
+            x += 2.0;
         }
     }
 
@@ -683,5 +772,40 @@ impl App {
                 self.history.record(origin);
             }
         }
+    }
+}
+
+fn input_label(input: AudioInput) -> String {
+    let first = input.first_channel + 1;
+    if input.channels > 1 {
+        format!("In {first}-{}", first + 1)
+    } else {
+        format!("In {first}")
+    }
+}
+
+fn input_options(channels: u16) -> Vec<AudioInput> {
+    let mono = (0..channels).map(|first_channel| AudioInput {
+        first_channel,
+        channels: 1,
+    });
+    let stereo = (0..channels.saturating_sub(1))
+        .step_by(2)
+        .map(|first_channel| AudioInput {
+            first_channel,
+            channels: 2,
+        });
+    mono.chain(stereo).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_choices_cover_mono_and_stereo_pairs() {
+        let labels: Vec<String> = input_options(4).into_iter().map(input_label).collect();
+        assert_eq!(labels, ["In 1", "In 2", "In 3", "In 4", "In 1-2", "In 3-4"]);
+        assert_eq!(input_options(1).len(), 1);
     }
 }
