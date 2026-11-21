@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use fnoob_core::model::Id;
+use fnoob_core::settings::RecordFormat;
 
 pub const PEAK_BLOCK: usize = 256;
 pub const MAX_FILE_CHANNELS: u16 = 32;
@@ -117,12 +118,17 @@ pub fn load_wav(path: &Path, project_rate: u32) -> Result<AudioData, AudioFileEr
     Ok(data)
 }
 
-pub fn wav_spec(channels: u16, sample_rate: u32) -> hound::WavSpec {
+pub fn wav_spec(channels: u16, sample_rate: u32, format: RecordFormat) -> hound::WavSpec {
+    let (bits_per_sample, sample_format) = match format {
+        RecordFormat::Int16 => (16, hound::SampleFormat::Int),
+        RecordFormat::Int24 => (24, hound::SampleFormat::Int),
+        RecordFormat::Float32 => (32, hound::SampleFormat::Float),
+    };
     hound::WavSpec {
         channels,
         sample_rate,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
+        bits_per_sample,
+        sample_format,
     }
 }
 
@@ -172,7 +178,8 @@ mod tests {
     #[test]
     fn float_round_trip_and_rate_check() {
         let path = scratch("float");
-        let mut w = hound::WavWriter::create(&path, wav_spec(1, 44_100)).unwrap();
+        let mut w =
+            hound::WavWriter::create(&path, wav_spec(1, 44_100, RecordFormat::Float32)).unwrap();
         for v in [0.1f32, -0.2, 0.3] {
             w.write_sample(v).unwrap();
         }

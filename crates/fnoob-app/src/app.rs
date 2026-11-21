@@ -9,7 +9,7 @@ use fnoob_core::io::{self, PROJECT_EXTENSION, PROJECT_FILE};
 use fnoob_core::keymap::{Command, shortcut_label};
 use fnoob_core::model::{Grid, Id, Project, Region, Track, TrackKind};
 use fnoob_core::settings::{
-    BUFFER_SIZES, InputChoice, MidiInputChoice, Settings, default_settings_path,
+    BUFFER_SIZES, InputChoice, MidiInputChoice, RecordFormat, Settings, default_settings_path,
 };
 use fnoob_core::time::{
     MAX_BPM, MIN_BPM, Position, Timeline, grid_ticks, snap_floor, ticks_per_bar,
@@ -956,6 +956,7 @@ impl App {
         let mut midi_refresh = false;
         let mut input_choice = None;
         let mut buffer_choice = None;
+        let mut format_choice = None;
         egui::Window::new("Audio and MIDI Settings")
             .open(&mut open)
             .resizable(false)
@@ -1037,6 +1038,17 @@ impl App {
                             }
                         }
                     });
+                ui.label("Recording format");
+                let format = self.settings.record_format;
+                egui::ComboBox::from_id_salt("record_format")
+                    .selected_text(format.label())
+                    .show_ui(ui, |ui| {
+                        for option in RecordFormat::ALL {
+                            if ui.selectable_label(format == option, option.label()).clicked() {
+                                format_choice = Some(option);
+                            }
+                        }
+                    });
                 if let Some((output, _)) = &self.audio {
                     let rate = f64::from(output.sample_rate) / 1000.0;
                     let out = output.latency_frames();
@@ -1114,6 +1126,12 @@ impl App {
             self.save_settings();
             self.message = None;
             self.open_input_device();
+        }
+        if let Some(choice) = format_choice
+            && choice != self.settings.record_format
+        {
+            self.settings.record_format = choice;
+            self.save_settings();
         }
         if let Some(choice) = buffer_choice
             && choice != self.settings.buffer_frames

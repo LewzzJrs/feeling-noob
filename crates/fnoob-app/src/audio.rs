@@ -146,7 +146,8 @@ impl App {
             });
             tracks.push((id, rel));
         }
-        let (recorder, sink) = start_recording(channels, rate, targets)?;
+        let (recorder, sink) =
+            start_recording(channels, rate, self.settings.record_format, targets)?;
         self.send(EngineCommand::SetRecordSink(sink));
         self.audio_take = Some(AudioTake {
             recorder,

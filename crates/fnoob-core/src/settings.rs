@@ -10,7 +10,28 @@ pub struct Settings {
     pub output_device: Option<String>,
     pub input_device: InputChoice,
     pub buffer_frames: Option<u32>,
+    pub record_format: RecordFormat,
     pub midi_input: MidiInputChoice,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordFormat {
+    Int16,
+    Int24,
+    #[default]
+    Float32,
+}
+
+impl RecordFormat {
+    pub const ALL: [RecordFormat; 3] = [Self::Int16, Self::Int24, Self::Float32];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Int16 => "16-bit",
+            Self::Int24 => "24-bit",
+            Self::Float32 => "32-bit float",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +129,7 @@ mod tests {
             output_device: Some("wasapi:{0.0.0.00000000}.{abc}".into()),
             input_device: InputChoice::Device("wasapi:{in}".into()),
             buffer_frames: Some(256),
+            record_format: RecordFormat::Int24,
             midi_input: MidiInputChoice::Port("Keyboard 1".into()),
         };
         settings.save(&path).unwrap();
