@@ -118,7 +118,7 @@ impl App {
         }
     }
 
-    fn sampler_controls(&mut self, ui: &mut Ui, track: Id, params: SamplerParams) {
+    pub(crate) fn sampler_controls(&mut self, ui: &mut Ui, track: Id, params: SamplerParams) {
         ui.horizontal(|ui| {
             ui.label("Sample");
             ui.label(RichText::new(self.sample_name(params.file)).strong());
@@ -178,7 +178,7 @@ impl App {
         }
     }
 
-    fn drum_controls(&mut self, ui: &mut Ui, track: Id, params: DrumParams) {
+    pub(crate) fn drum_controls(&mut self, ui: &mut Ui, track: Id, params: DrumParams) {
         let mut next = params;
         let mut responses = vec![
             ui.add(
@@ -270,7 +270,7 @@ impl App {
         }
     }
 
-    fn synth_controls(&mut self, ui: &mut Ui, track: Id, params: SynthParams) {
+    pub(crate) fn synth_controls(&mut self, ui: &mut Ui, track: Id, params: SynthParams) {
         let mut waveform = params.waveform;
         ui.horizontal(|ui| {
             ui.label("Waveform");

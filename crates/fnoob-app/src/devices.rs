@@ -3,7 +3,7 @@ use eframe::egui::{self, Response, Slider, Ui};
 use fnoob_core::effects::{BuiltinEffect, DelaySync, MAX_DELAY_MS};
 use fnoob_core::model::{Id, Instrument, PluginSlot, Project};
 
-fn slot_mut(project: &mut Project, id: Id) -> Option<&mut PluginSlot> {
+pub(crate) fn slot_mut(project: &mut Project, id: Id) -> Option<&mut PluginSlot> {
     project
         .tracks
         .iter_mut()
@@ -133,7 +133,7 @@ pub fn effect_controls(ui: &mut Ui, effect: &mut BuiltinEffect) -> Vec<Response>
             responses.push(slider(ui, &mut p.makeup_db, 0.0..=24.0, "Makeup", " dB"));
         }
         BuiltinEffect::Delay(p) => {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Time");
                 for sync in DelaySync::ALL {
                     let response = ui.selectable_value(&mut p.sync, sync, sync.label());

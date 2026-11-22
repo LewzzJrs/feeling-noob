@@ -109,6 +109,7 @@ impl App {
         self.mixer_open = !self.mixer_open;
         if self.mixer_open {
             self.editor.open = false;
+            self.devices_open = false;
         }
     }
 
@@ -309,7 +310,11 @@ fn short(name: &str) -> String {
 }
 
 impl App {
-    fn plugin_choices(&self, ui: &mut egui::Ui, instruments: bool) -> Option<CatalogEntry> {
+    pub(crate) fn plugin_choices(
+        &self,
+        ui: &mut egui::Ui,
+        instruments: bool,
+    ) -> Option<CatalogEntry> {
         let mut chosen = None;
         let entries: Vec<&CatalogEntry> = self
             .plugins

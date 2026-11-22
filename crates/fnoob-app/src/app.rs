@@ -143,6 +143,8 @@ pub struct App {
     pub(crate) renaming: Option<(Id, String)>,
     pub(crate) editor: Editor,
     pub(crate) mixer_open: bool,
+    pub(crate) devices_open: bool,
+    pub(crate) chain_target: crate::chain::ChainTarget,
     pub(crate) browser: crate::browser::Browser,
     pub(crate) inspector: crate::inspector::Inspector,
     pub(crate) automation_view: bool,
@@ -222,6 +224,8 @@ impl App {
             renaming: None,
             editor: Editor::default(),
             mixer_open: false,
+            devices_open: false,
+            chain_target: crate::chain::ChainTarget::default(),
             browser: crate::browser::Browser::shown(),
             inspector: crate::inspector::Inspector::shown(),
             automation_view: false,
@@ -650,6 +654,7 @@ impl App {
             Command::ToggleAutomation => self.automation_view = !self.automation_view,
             Command::ToggleMusicalTyping => self.toggle_musical_typing(),
             Command::ToggleClipGrid => self.session.open = !self.session.open,
+            Command::ToggleDevices => self.toggle_devices(),
             Command::DuplicateTrack if self.session.open && self.duplicate_selected_clip() => {}
             Command::DuplicateTrack => {
                 if let Some(track) = self.selection.track {
@@ -955,6 +960,7 @@ impl App {
             ui.menu_button("View", |ui| {
                 self.menu_item(ui, "Clip Grid", Command::ToggleClipGrid);
                 self.menu_item(ui, "Mixer", Command::ToggleMixer);
+                self.menu_item(ui, "Devices", Command::ToggleDevices);
                 self.menu_item(ui, "Piano Roll", Command::TogglePianoRoll);
                 self.menu_item(ui, "Automation", Command::ToggleAutomation);
                 if ui.button("Browser").clicked() {
@@ -1041,6 +1047,14 @@ impl App {
                 Command::TogglePianoRoll,
             );
             self.tool_button(ui, mixer, "Mixer", "Show the mixer", Command::ToggleMixer);
+            let devices = self.devices_open;
+            self.tool_button(
+                ui,
+                devices,
+                "Devices",
+                "Show the device chain of the selected track (Shift+Tab)",
+                Command::ToggleDevices,
+            );
             self.tool_button(
                 ui,
                 automation,
@@ -1674,6 +1688,12 @@ impl eframe::App for App {
                 .default_size(400.0)
                 .size_range(260.0..=900.0)
                 .show(ui, |ui| self.mixer(ui));
+        } else if self.devices_open {
+            egui::Panel::bottom("devices")
+                .resizable(true)
+                .default_size(300.0)
+                .size_range(180.0..=900.0)
+                .show(ui, |ui| self.device_chain(ui));
         } else if self.editor.open {
             let panel = egui::Panel::bottom("piano_roll")
                 .resizable(true)

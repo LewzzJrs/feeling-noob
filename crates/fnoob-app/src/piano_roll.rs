@@ -184,6 +184,7 @@ impl App {
         self.editor.selected.clear();
         self.editor.open = true;
         self.mixer_open = false;
+        self.devices_open = false;
     }
 
     pub(crate) fn toggle_editor(&mut self) {
@@ -202,6 +203,7 @@ impl App {
             _ => self.editor.open = true,
         }
         self.mixer_open = false;
+        self.devices_open = false;
     }
 
     fn preview(&mut self, track: Id, pitch: u8, velocity: u8) {
