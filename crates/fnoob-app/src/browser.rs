@@ -138,9 +138,13 @@ impl App {
                 self.selection.track = Some(target);
             }
             BrowserItem::Builtin(effect) => {
-                let Some(target) = track.or(self.selection.track) else {
-                    self.message = Some("Select a track first, or drop the effect on one.".into());
-                    return;
+                let target = match track {
+                    Some(id) => id,
+                    None => {
+                        let mut created = 0;
+                        self.edit(|p| created = fnoob_core::edit::add_track(p, TrackKind::Audio));
+                        created
+                    }
                 };
                 let used = self
                     .project
@@ -154,9 +158,13 @@ impl App {
                 self.selection.track = Some(target);
             }
             BrowserItem::Effect(entry) => {
-                let Some(target) = track.or(self.selection.track) else {
-                    self.message = Some("Select a track first, or drop the effect on one.".into());
-                    return;
+                let target = match track {
+                    Some(id) => id,
+                    None => {
+                        let mut created = 0;
+                        self.edit(|p| created = fnoob_core::edit::add_track(p, TrackKind::Audio));
+                        created
+                    }
                 };
                 let used = self
                     .project

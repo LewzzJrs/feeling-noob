@@ -317,7 +317,7 @@ impl App {
                 Err(e) => problems.push(e),
             }
         }
-        let first_track = target.filter(|id| {
+        let same_track = target.filter(|id| {
             self.project
                 .track(*id)
                 .is_some_and(|t| t.kind == TrackKind::Audio)
@@ -328,13 +328,14 @@ impl App {
             .map(|(rel, data)| (rel.clone(), data.channels, data.frames))
             .collect();
         self.edit(|p| {
-            for (index, (rel, channels, frames)) in specs.iter().enumerate() {
-                let track = match (index, first_track) {
-                    (0, Some(track)) => track,
-                    _ => edit::add_track(p, TrackKind::Audio),
-                };
+            let mut at = tick;
+            for (rel, channels, frames) in &specs {
+                let track = same_track.unwrap_or_else(|| edit::add_track(p, TrackKind::Audio));
                 let file_id = edit::add_audio_file(p, rel.clone(), *channels, *frames);
-                if let Some(region) = edit::add_audio_region(p, track, tick, file_id, 0) {
+                if let Some(region) = edit::add_audio_region(p, track, at, file_id, 0) {
+                    if same_track.is_some() {
+                        at += edit::frames_to_ticks(p, *frames);
+                    }
                     created.push((track, region, file_id));
                 }
             }

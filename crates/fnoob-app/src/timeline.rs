@@ -255,21 +255,9 @@ impl App {
             );
         }
         self.handle_file_drop(ui, &geometry, area, &mut actions);
+        let pointer = ui.input(|i| i.pointer.latest_pos());
         if let Some(item) = area_response.dnd_release_payload::<crate::browser::BrowserItem>() {
-            let pointer = ui.input(|i| i.pointer.latest_pos());
-            let inside = pointer.filter(|p| geometry.lanes.contains(*p));
-            let track = inside.and_then(|p| {
-                let index =
-                    ((p.y - geometry.lanes.top() + geometry.scroll_y) / LANE_HEIGHT).floor();
-                (index >= 0.0)
-                    .then(|| self.project.tracks.get(index as usize))
-                    .flatten()
-                    .map(|t| t.id)
-            });
-            let tick = inside.map_or_else(
-                || self.playhead_tick(),
-                |p| self.snapped(geometry.tick(p.x)),
-            );
+            let (track, tick) = self.drop_point(&geometry, pointer);
             actions.push(UiAction::BrowserDrop {
                 item: (*item).clone(),
                 track,
@@ -280,12 +268,7 @@ impl App {
             .dnd_hover_payload::<crate::browser::BrowserItem>()
             .is_some()
         {
-            ui.painter_at(area).rect_stroke(
-                geometry.lanes,
-                0.0,
-                Stroke::new(2.0, MARKER),
-                StrokeKind::Inside,
-            );
+            self.paint_drop_target(ui, &geometry, area, pointer);
         }
         for action in actions {
             self.apply_ui_action(action);
@@ -307,34 +290,74 @@ impl App {
             )
         });
         if hovering {
-            let painter = ui.painter_at(area);
-            painter.rect_filled(area, 0.0, Color32::from_black_alpha(120));
-            painter.text(
-                area.center(),
-                Align2::CENTER_CENTER,
-                "Drop WAV files to import them, or a .fnoob folder to open it",
-                FontId::proportional(18.0),
-                Color32::WHITE,
+            ui.painter_at(area).text(
+                Pos2::new(area.center().x, g.lanes.top() + 8.0),
+                Align2::CENTER_TOP,
+                "Drop on a track to add to it, or below the tracks for a new track",
+                FontId::proportional(15.0),
+                ui.visuals().strong_text_color(),
             );
+            self.paint_drop_target(ui, g, area, pointer);
         }
         let paths: Vec<PathBuf> = dropped.iter().map(|f| f.path().to_path_buf()).collect();
         if paths.is_empty() {
             return;
         }
-        let inside = pointer.filter(|p| g.lanes.contains(*p));
-        let track = inside.and_then(|p| {
-            let index = ((p.y - g.lanes.top() + g.scroll_y) / LANE_HEIGHT).floor();
-            (index >= 0.0)
-                .then(|| self.project.tracks.get(index as usize))
-                .flatten()
-                .map(|t| t.id)
-        });
-        let tick = inside.map_or_else(|| self.playhead_tick(), |p| self.snapped(g.tick(p.x)));
-        actions.push(UiAction::DropFiles {
-            paths,
-            track: track.or(self.selection.track),
-            tick,
-        });
+        let (track, tick) = self.drop_point(g, pointer);
+        actions.push(UiAction::DropFiles { paths, track, tick });
+    }
+
+    fn drop_point(&self, g: &Geometry, pointer: Option<Pos2>) -> (Option<Id>, u64) {
+        let Some(p) = pointer.filter(|p| {
+            (g.lanes.top()..=g.lanes.bottom()).contains(&p.y)
+                && (g.headers.left()..=g.lanes.right()).contains(&p.x)
+        }) else {
+            return (None, self.playhead_tick());
+        };
+        let index = ((p.y - g.lanes.top() + g.scroll_y) / LANE_HEIGHT).floor();
+        let track = (index >= 0.0)
+            .then(|| self.project.tracks.get(index as usize))
+            .flatten()
+            .map(|t| t.id);
+        let tick = if p.x >= g.lanes.left() {
+            self.snapped(g.tick(p.x))
+        } else {
+            self.playhead_tick()
+        };
+        (track, tick)
+    }
+
+    fn paint_drop_target(&self, ui: &egui::Ui, g: &Geometry, area: Rect, pointer: Option<Pos2>) {
+        let Some(p) = pointer.filter(|p| area.contains(*p)) else {
+            return;
+        };
+        let (track, tick) = self.drop_point(g, Some(p));
+        let index = track
+            .and_then(|id| self.project.tracks.iter().position(|t| t.id == id))
+            .unwrap_or(self.project.tracks.len());
+        let top = g.lane_top(index);
+        let rect =
+            Rect::from_x_y_ranges(g.headers.left()..=g.lanes.right(), top..=top + LANE_HEIGHT)
+                .intersect(Rect::from_x_y_ranges(
+                    g.headers.left()..=g.lanes.right(),
+                    g.lanes.y_range(),
+                ));
+        let painter = ui.painter_at(area);
+        painter.rect_filled(rect, 0.0, MARKER.gamma_multiply(0.18));
+        painter.rect_stroke(rect, 0.0, Stroke::new(2.0, MARKER), StrokeKind::Inside);
+        if track.is_none() {
+            painter.text(
+                rect.left_center() + egui::vec2(8.0, 0.0),
+                Align2::LEFT_CENTER,
+                "New track",
+                FontId::proportional(14.0),
+                ui.visuals().strong_text_color(),
+            );
+        }
+        let x = g.x(tick);
+        if x >= g.lanes.left() {
+            painter.vline(x, rect.y_range(), Stroke::new(2.0, MARKER));
+        }
     }
 
     fn draw_ruler(&self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
