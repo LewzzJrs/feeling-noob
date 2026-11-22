@@ -368,6 +368,12 @@ Autosave uses the same steps into `autosave\project.json`, without backups.
 | New Project | `Ctrl+Shift+N` |
 | Open | `Ctrl+O` |
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
+| Add Marker | `Alt+M` |
+| Previous / Next Marker | `Alt+,` / `Alt+.` |
+| Show/Hide Automation | `A` |
+| Musical Typing on/off | `Ctrl+K` |
+| Duplicate Track (in the clip grid: duplicate the selected clip) | `Ctrl+D` |
+| Switch Timeline / Clip Grid | `Tab` |
 
 Rules:
 - Every shortcut goes through one table in `fnoob-core::keymap`. The UI never reads keys on its own.

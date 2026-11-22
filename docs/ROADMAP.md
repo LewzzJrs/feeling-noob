@@ -45,9 +45,10 @@ Done in Phase 11: built-in effects (EQ, compressor, delay with tempo sync and pi
 
 Known limits of Phase 11: samples must already be at the project sample rate (no resampling yet); the sampler has no loop points, start/end trim or filter; drum pads have no choke groups.
 
+Done in Phase 12: clip-launch grid view (`Tab`) with scenes, launch quantize, launch modes (trigger, gate, toggle, repeat), follow actions with chance, per-track and global stop, back to timeline, moving and duplicating clips, copying between the grid and the timeline, and dropping samples onto slots.
+
 Not started, in rough priority order:
 
-- Clip-launch grid view with scenes, launch modes and follow actions
 - Device chain view for the selected track in the bottom area
 - Punch in/out recording and capture of the last played MIDI
 - Take lanes and comping for audio

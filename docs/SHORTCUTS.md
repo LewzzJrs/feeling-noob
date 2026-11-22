@@ -44,6 +44,12 @@ Each entry: file, what was skipped, when it needs fixing.
 | S50 | `crates/fnoob-app/src/timeline.rs` (`region_menu`) | Region gain and fade lengths are picked from fixed steps in the right-click menu; there are no drag handles. | When finer control is needed. |
 | S51 | `crates/fnoob-engine/src/plan.rs` (`StripPlan::at`) | Automation only covers track volume and pan, is drawn by hand (not recorded from fader moves), and has no curve shapes. | With plugin automation. |
 | S52 | `crates/fnoob-app/src/musical.rs` | Musical typing uses a fixed US key layout and takes over those letter keys while it is on. | If other keyboard layouts are needed. |
+| S53 | `crates/fnoob-engine/src/processor.rs` (`session_command`) | Clips cannot be recorded into grid slots, and clip playback is not recorded back to the timeline. | With punch and capture recording. |
+| S54 | `crates/fnoob-app/src/session.rs` | Clips launch only with the mouse. There is no keyboard or MIDI mapping for slots or scenes. | With key/MIDI mapping. |
+| S55 | `crates/fnoob-engine/src/processor.rs` (`tick_playing`) | When the timeline loops or the playhead jumps, notes still held by playing clips are released too, so a long clip note can be cut once. | If it is audible in normal use. |
+| S56 | `crates/fnoob-app/src/piano_roll.rs` | Grid clips open in the piano roll at bar 1, and the piano roll playhead follows the timeline, not the clip. | When the clip editor gets its own view. |
+| S57 | `crates/fnoob-engine/src/session.rs` (`launch`) | A scene with an empty slot always stops that track; slots cannot hide their stop button. Clips have no legato option and no per-clip launch quantize. | If users need those launch options. |
+| S58 | `crates/fnoob-app/src/bounce.rs` | Bounce renders the timeline only; playing grid clips are not included. | With recording clips to the timeline. |
 
 ## Fixed
 
