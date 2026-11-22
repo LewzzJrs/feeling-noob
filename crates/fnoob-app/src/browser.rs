@@ -31,9 +31,20 @@ impl BrowserItem {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Category {
+    #[default]
+    Instruments,
+    AudioEffects,
+    Plugins,
+    Samples,
+    Folder(usize),
+}
+
 #[derive(Default)]
 pub struct Browser {
     pub open: bool,
+    category: Category,
     search: String,
     samples: Vec<PathBuf>,
     scanned: bool,
@@ -239,125 +250,165 @@ impl App {
         if !self.browser.scanned {
             self.rescan_samples();
         }
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Browser").strong());
-            if ui.small_button("Close").clicked() {
-                self.browser.open = false;
-            }
-        });
-        ui.add(
-            egui::TextEdit::singleline(&mut self.browser.search)
-                .hint_text("Search")
-                .desired_width(f32::INFINITY),
+        let search = crate::ui_kit::hint(
+            ui.add(
+                egui::TextEdit::singleline(&mut self.browser.search)
+                    .hint_text("Search")
+                    .desired_width(f32::INFINITY),
+            ),
+            "Search every category. Leave empty to browse one category.",
         );
-        ui.label(
-            RichText::new("Drag items onto a track, or double-click to add.")
-                .small()
-                .weak(),
-        );
+        let _ = search;
         let search = self.browser.search.clone();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::CollapsingHeader::new("Instruments")
-                .default_open(true)
-                .show(ui, |ui| {
-                    for choice in InstrumentChoice::BUILTIN {
-                        if matches(&search, &choice.label()) {
-                            let detail = choice.detail();
-                            self.browser_row(ui, BrowserItem::Instrument(choice), &detail);
-                        }
-                    }
-                    let entries: Vec<CatalogEntry> = self
-                        .plugins
-                        .catalog
-                        .plugins
-                        .iter()
-                        .filter(|e| e.class.instrument && matches(&search, &e.class.name))
-                        .cloned()
-                        .collect();
-                    for entry in entries {
-                        let choice = InstrumentChoice::Vst3(entry);
-                        let detail = choice.detail();
-                        self.browser_row(ui, BrowserItem::Instrument(choice), &detail);
-                    }
-                });
-            egui::CollapsingHeader::new("Audio Effects")
-                .default_open(true)
-                .show(ui, |ui| {
-                    for effect in fnoob_core::effects::BuiltinEffect::all() {
-                        if matches(&search, effect.label()) {
-                            self.browser_row(ui, BrowserItem::Builtin(effect), "Built-in effect");
-                        }
-                    }
-                    let entries: Vec<CatalogEntry> = self
-                        .plugins
-                        .catalog
-                        .plugins
-                        .iter()
-                        .filter(|e| !e.class.instrument && matches(&search, &e.class.name))
-                        .cloned()
-                        .collect();
-                    if entries.is_empty() {
-                        ui.label(RichText::new("No effects. Open File > Plugin Manager.").weak());
-                    }
-                    for entry in entries {
-                        let detail = entry.class.vendor.clone();
-                        self.browser_row(ui, BrowserItem::Effect(entry), &detail);
-                    }
-                });
-            egui::CollapsingHeader::new("Samples")
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.small_button("Add folder...").clicked()
-                            && let Some(folder) = rfd::FileDialog::new()
-                                .set_title("Add sample folder")
-                                .pick_folder()
-                        {
-                            self.settings
-                                .sample_folders
-                                .push(folder.display().to_string());
-                            self.save_settings();
-                            self.rescan_samples();
-                        }
-                        if ui.small_button("Refresh").clicked() {
-                            self.rescan_samples();
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(104.0, ui.available_height()),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(104.0);
+                    self.category_list(ui);
+                },
+            );
+            ui.separator();
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("browser_items")
+                    .show(ui, |ui| {
+                        if search.trim().is_empty() {
+                            self.category_items(ui, self.browser.category, "");
+                        } else {
+                            for category in [
+                                Category::Instruments,
+                                Category::AudioEffects,
+                                Category::Plugins,
+                                Category::Samples,
+                            ] {
+                                self.category_items(ui, category, &search);
+                            }
                         }
                     });
-                    let folders = self.settings.sample_folders.clone();
-                    let mut remove = None;
-                    for (index, folder) in folders.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(folder).small().weak());
-                            if ui
-                                .small_button("x")
-                                .on_hover_text("Remove folder")
-                                .clicked()
-                            {
-                                remove = Some(index);
-                            }
-                        });
-                    }
-                    if let Some(index) = remove {
-                        self.settings.sample_folders.remove(index);
-                        self.save_settings();
-                        self.rescan_samples();
-                    }
-                    let samples: Vec<PathBuf> = self
-                        .browser
-                        .samples
-                        .iter()
-                        .filter(|p| matches(&search, &p.to_string_lossy()))
-                        .cloned()
-                        .collect();
-                    if samples.is_empty() {
-                        ui.label(RichText::new("No WAV files found.").weak());
-                    }
-                    for path in samples {
-                        let detail = path.display().to_string();
-                        self.browser_row(ui, BrowserItem::Sample(path), &detail);
-                    }
-                });
+            });
         });
+    }
+
+    fn category_list(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Categories").small().weak());
+        for (category, name) in [
+            (Category::Instruments, "Instruments"),
+            (Category::AudioEffects, "Audio Effects"),
+            (Category::Plugins, "Plug-ins"),
+            (Category::Samples, "Samples"),
+        ] {
+            ui.selectable_value(&mut self.browser.category, category, name);
+        }
+        ui.add_space(8.0);
+        ui.label(RichText::new("Places").small().weak());
+        let folders = self.settings.sample_folders.clone();
+        let mut remove = None;
+        for (index, folder) in folders.iter().enumerate() {
+            let name = Path::new(folder)
+                .file_name()
+                .map_or_else(|| folder.clone(), |n| n.to_string_lossy().into_owned());
+            let response = ui
+                .selectable_value(&mut self.browser.category, Category::Folder(index), name)
+                .on_hover_text(folder);
+            response.context_menu(|ui| {
+                if ui.button("Remove from Places").clicked() {
+                    remove = Some(index);
+                    ui.close();
+                }
+            });
+        }
+        if let Some(index) = remove {
+            self.settings.sample_folders.remove(index);
+            self.save_settings();
+            self.browser.category = Category::Samples;
+            self.rescan_samples();
+        }
+        if crate::ui_kit::hint(
+            ui.small_button("Add Folder..."),
+            "Add a folder of samples to Places.",
+        )
+        .clicked()
+            && let Some(folder) = rfd::FileDialog::new()
+                .set_title("Add sample folder")
+                .pick_folder()
+        {
+            self.settings
+                .sample_folders
+                .push(folder.display().to_string());
+            self.save_settings();
+            self.rescan_samples();
+        }
+        if ui.small_button("Refresh").clicked() {
+            self.rescan_samples();
+        }
+    }
+
+    fn category_items(&mut self, ui: &mut egui::Ui, category: Category, search: &str) {
+        let titled = !search.is_empty();
+        let mut items: Vec<(BrowserItem, String)> = Vec::new();
+        match category {
+            Category::Instruments => {
+                for choice in InstrumentChoice::BUILTIN {
+                    let detail = choice.detail();
+                    items.push((BrowserItem::Instrument(choice), detail));
+                }
+            }
+            Category::AudioEffects => {
+                for effect in fnoob_core::effects::BuiltinEffect::all() {
+                    items.push((BrowserItem::Builtin(effect), "Built-in effect".to_owned()));
+                }
+            }
+            Category::Plugins => {
+                for entry in &self.plugins.catalog.plugins {
+                    let detail = entry.class.vendor.clone();
+                    let item = if entry.class.instrument {
+                        BrowserItem::Instrument(InstrumentChoice::Vst3(entry.clone()))
+                    } else {
+                        BrowserItem::Effect(entry.clone())
+                    };
+                    items.push((item, detail));
+                }
+            }
+            Category::Samples | Category::Folder(_) => {
+                let root = match category {
+                    Category::Folder(index) => self.settings.sample_folders.get(index).cloned(),
+                    _ => None,
+                };
+                for path in &self.browser.samples {
+                    if root.as_ref().is_none_or(|r| path.starts_with(r)) {
+                        items.push((
+                            BrowserItem::Sample(path.clone()),
+                            path.display().to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        items.retain(|(item, _)| matches(search, &item.label()));
+        if titled && !items.is_empty() {
+            let title = match category {
+                Category::Instruments => "Instruments",
+                Category::AudioEffects => "Audio Effects",
+                Category::Plugins => "Plug-ins",
+                Category::Samples | Category::Folder(_) => "Samples",
+            };
+            ui.label(RichText::new(title).small().weak());
+        }
+        if items.is_empty() && !titled {
+            let text = match category {
+                Category::Plugins => "No plug-ins found. Open File > Plugin Manager.",
+                Category::Samples | Category::Folder(_) => {
+                    "No WAV files. Use Add Folder... under Places."
+                }
+                _ => "Nothing here.",
+            };
+            ui.label(RichText::new(text).weak());
+        }
+        for (item, detail) in items {
+            self.browser_row(ui, item, &detail);
+        }
     }
 }
 

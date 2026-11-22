@@ -2,18 +2,16 @@ use crate::keys::take_commands;
 use crate::midi::Take;
 use crate::piano_roll::Editor;
 use crate::timeline::{LANE_HEIGHT, MAX_PIXELS_PER_TICK, MIN_PIXELS_PER_TICK};
-use eframe::egui::{self, Color32, Pos2, Rect, RichText};
+use eframe::egui::{self, Pos2, Rect};
 use fnoob_core::edit;
 use fnoob_core::history::History;
 use fnoob_core::io::{self, PROJECT_EXTENSION, PROJECT_FILE};
 use fnoob_core::keymap::{Command, shortcut_label};
-use fnoob_core::model::{AutomationParam, Grid, Id, Project, Region, Track, TrackKind};
+use fnoob_core::model::{AutomationParam, Id, Project, Region, Track, TrackKind};
 use fnoob_core::settings::{
     BUFFER_SIZES, InputChoice, MidiInputChoice, RecordFormat, Settings, default_settings_path,
 };
-use fnoob_core::time::{
-    MAX_BPM, MIN_BPM, Position, Timeline, grid_ticks, snap_floor, ticks_per_bar,
-};
+use fnoob_core::time::{Timeline, grid_ticks, snap_floor, ticks_per_bar};
 use fnoob_engine::audio_data::AudioPool;
 use fnoob_engine::device::{
     AudioInputStream, AudioOutput, DeviceInfo, OutputDeviceInfo, list_output_devices, open_output,
@@ -25,7 +23,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
-const DENOMINATORS: [u32; 4] = [2, 4, 8, 16];
 
 pub enum Drag {
     Regions {
@@ -148,6 +145,11 @@ pub struct App {
     pub(crate) chain_target: crate::chain::ChainTarget,
     pub(crate) browser: crate::browser::Browser,
     pub(crate) inspector: crate::inspector::Inspector,
+    pub(crate) draw_mode: bool,
+    pub(crate) tap_times: Vec<f64>,
+    pub(crate) cpu: f32,
+    pub(crate) info: Option<String>,
+    pub(crate) detail_devices: bool,
     pub(crate) automation_view: bool,
     pub(crate) session: crate::session::SessionUi,
     pub(crate) automation_params: std::collections::HashMap<Id, AutomationParam>,
@@ -157,8 +159,6 @@ pub struct App {
     pub(crate) meters: crate::mixer::Meters,
     pub(crate) focus: Focus,
     editor_rect: Option<Rect>,
-    pub(crate) synth_window: Option<Id>,
-    pub(crate) device_window: Option<Id>,
     live_origin: Option<(egui::Id, Project)>,
     stopped_tick: u64,
     show_settings: bool,
@@ -224,12 +224,17 @@ impl App {
             drag: None,
             renaming: None,
             editor: Editor::default(),
-            mixer_open: false,
-            devices_open: false,
+            mixer_open: true,
+            devices_open: true,
             played: std::collections::VecDeque::new(),
             chain_target: crate::chain::ChainTarget::default(),
             browser: crate::browser::Browser::shown(),
-            inspector: crate::inspector::Inspector::shown(),
+            inspector: crate::inspector::Inspector::default(),
+            draw_mode: false,
+            tap_times: Vec::new(),
+            cpu: 0.0,
+            info: None,
+            detail_devices: true,
             automation_view: false,
             automation_params: std::collections::HashMap::new(),
             marker_rename: None,
@@ -238,8 +243,6 @@ impl App {
             meters: crate::mixer::Meters::default(),
             focus: Focus::Tracks,
             editor_rect: None,
-            synth_window: None,
-            device_window: None,
             session: crate::session::SessionUi::default(),
             live_origin: None,
             stopped_tick: 0,
@@ -534,7 +537,33 @@ impl App {
                 self.edit(|p| p.metronome.count_in_enabled = !p.metronome.count_in_enabled);
             }
             Command::ToggleMixer => self.toggle_mixer(),
-            Command::TogglePianoRoll | Command::ToggleEditor => self.toggle_editor(),
+            Command::ToggleDetail => self.toggle_detail(),
+            Command::SwitchDetail => self.switch_detail(),
+            Command::ToggleBrowser => self.browser.open = !self.browser.open,
+            Command::ToggleDrawMode => self.draw_mode = !self.draw_mode,
+            Command::ToggleFollow => self.view.follow = !self.view.follow,
+            Command::NewAudioTrack | Command::NewMidiTrack => {
+                let kind = if command == Command::NewAudioTrack {
+                    TrackKind::Audio
+                } else {
+                    TrackKind::Instrument
+                };
+                let mut created = 0;
+                self.edit(|p| created = edit::add_track(p, kind));
+                self.selection.track = Some(created);
+                self.selection.regions.clear();
+            }
+            Command::Rename => self.rename_selection(),
+            Command::InsertScene => {
+                let at = self
+                    .session
+                    .selected
+                    .and_then(|id| fnoob_core::session::clip_position(&self.project, id))
+                    .map_or(self.project.scenes.len(), |(_, scene)| scene + 1);
+                self.edit(|p| {
+                    fnoob_core::session::insert_scene(p, at);
+                });
+            }
             Command::Quantize => {
                 if regions.is_empty() {
                     self.editor_command(Command::Quantize);
@@ -581,6 +610,11 @@ impl App {
                 }
             }
             Command::ToggleSnap => self.edit(|p| p.snap.enabled = !p.snap.enabled),
+            Command::MuteRegions if regions.is_empty() => {
+                if let Some(id) = self.selection.track {
+                    self.edit_track(id, |t| t.mute = !t.mute);
+                }
+            }
             Command::MuteRegions => self.edit(|p| edit::toggle_regions_muted(p, &regions)),
             Command::NudgeLeft => self.edit(|p| {
                 edit::nudge_regions(p, &regions, -grid);
@@ -656,10 +690,16 @@ impl App {
             Command::ToggleAutomation => self.automation_view = !self.automation_view,
             Command::ToggleMusicalTyping => self.toggle_musical_typing(),
             Command::ToggleClipGrid => self.session.open = !self.session.open,
-            Command::ToggleDevices => self.toggle_devices(),
             Command::CaptureMidi => self.capture_midi(),
-            Command::DuplicateTrack if self.session.open && self.duplicate_selected_clip() => {}
-            Command::DuplicateTrack => {
+            Command::Duplicate if self.session.open && self.duplicate_selected_clip() => {}
+            Command::Duplicate if !regions.is_empty() => {
+                let mut created = Vec::new();
+                self.edit(|p| created = edit::repeat_regions(p, &regions));
+                if !created.is_empty() {
+                    self.selection.regions = created;
+                }
+            }
+            Command::Duplicate => {
                 if let Some(track) = self.selection.track {
                     let mut created = None;
                     self.capture_plugin_states();
@@ -713,7 +753,6 @@ impl App {
         self.take = None;
         self.audio_take = None;
         self.editor = Editor::default();
-        self.synth_window = None;
         self.view.scroll_tick = 0.0;
         self.view.scroll_y = 0.0;
         self.pool.clear();
@@ -893,8 +932,16 @@ impl App {
                 self.menu_item(ui, "Nudge Right", Command::NudgeRight);
                 self.menu_item(ui, "Quantize", Command::Quantize);
             });
+            ui.menu_button("Create", |ui| {
+                self.menu_item(ui, "Insert Audio Track", Command::NewAudioTrack);
+                self.menu_item(ui, "Insert MIDI Track", Command::NewMidiTrack);
+                self.menu_item(ui, "Insert Several Tracks...", Command::NewTracks);
+                self.menu_item(ui, "Insert Scene", Command::InsertScene);
+                ui.separator();
+                self.menu_item(ui, "Add Marker", Command::AddMarker);
+                self.menu_item(ui, "Capture MIDI", Command::CaptureMidi);
+            });
             ui.menu_button("Track", |ui| {
-                self.menu_item(ui, "New Tracks...", Command::NewTracks);
                 let selected = self.selection.track;
                 if ui
                     .add_enabled(selected.is_some(), egui::Button::new("Delete Track"))
@@ -924,7 +971,8 @@ impl App {
                     ui.close();
                 }
                 ui.separator();
-                self.menu_item(ui, "Duplicate Track", Command::DuplicateTrack);
+                self.menu_item(ui, "Duplicate", Command::Duplicate);
+                self.menu_item(ui, "Rename", Command::Rename);
                 for (label, delta) in [("Move Track Up", -1), ("Move Track Down", 1)] {
                     if ui
                         .add_enabled(selected.is_some(), egui::Button::new(label))
@@ -970,352 +1018,19 @@ impl App {
                 self.menu_item(ui, "Musical Typing", Command::ToggleMusicalTyping);
             });
             ui.menu_button("View", |ui| {
-                self.menu_item(ui, "Clip Grid", Command::ToggleClipGrid);
-                self.menu_item(ui, "Mixer", Command::ToggleMixer);
-                self.menu_item(ui, "Devices", Command::ToggleDevices);
-                self.menu_item(ui, "Piano Roll", Command::TogglePianoRoll);
+                self.menu_item(ui, "Timeline / Clip Grid", Command::ToggleClipGrid);
+                self.menu_item(ui, "Browser", Command::ToggleBrowser);
+                self.menu_item(ui, "Detail Area", Command::ToggleDetail);
+                self.menu_item(ui, "Clip / Devices", Command::SwitchDetail);
+                self.menu_item(ui, "Mixer Section", Command::ToggleMixer);
                 self.menu_item(ui, "Automation", Command::ToggleAutomation);
-                if ui.button("Browser").clicked() {
-                    self.browser.open = !self.browser.open;
-                    ui.close();
-                }
-                if ui.button("Inspector").clicked() {
-                    self.inspector.open = !self.inspector.open;
-                    ui.close();
-                }
-                if ui.button("Follow Playhead").clicked() {
-                    self.view.follow = !self.view.follow;
-                    ui.close();
-                }
-                ui.separator();
+                self.menu_item(ui, "Follow", Command::ToggleFollow);
+                self.menu_item(ui, "Draw Mode", Command::ToggleDrawMode);
                 ui.separator();
                 self.menu_item(ui, "Zoom In", Command::ZoomIn);
                 self.menu_item(ui, "Zoom Out", Command::ZoomOut);
                 self.menu_item(ui, "Snap to Grid", Command::ToggleSnap);
             });
-        });
-    }
-
-    fn toggle_button(ui: &mut egui::Ui, on: bool, text: &str, tip: &str) -> bool {
-        ui.selectable_label(on, text).on_hover_text(tip).clicked()
-    }
-
-    fn tool_button(
-        &mut self,
-        ui: &mut egui::Ui,
-        on: bool,
-        text: &str,
-        tip: &str,
-        command: Command,
-    ) {
-        let tip = match shortcut_label(command) {
-            Some(keys) => format!("{tip} ({keys})"),
-            None => tip.to_owned(),
-        };
-        if ui.selectable_label(on, text).on_hover_text(tip).clicked() {
-            self.run(command);
-        }
-    }
-
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .selectable_label(self.browser.open, "Browser")
-                .on_hover_text("Show instruments, effects and samples")
-                .clicked()
-            {
-                self.browser.open = !self.browser.open;
-            }
-            if ui
-                .selectable_label(self.inspector.open, "Inspector")
-                .on_hover_text("Show settings of the selected track and region")
-                .clicked()
-            {
-                self.inspector.open = !self.inspector.open;
-            }
-            let (editor, mixer, automation) =
-                (self.editor.open, self.mixer_open, self.automation_view);
-            let grid = self.session.open;
-            self.tool_button(
-                ui,
-                !grid,
-                "Timeline",
-                "Show the timeline (Tab switches views)",
-                Command::ToggleClipGrid,
-            );
-            self.tool_button(
-                ui,
-                grid,
-                "Clip Grid",
-                "Show the clip-launch grid (Tab switches views)",
-                Command::ToggleClipGrid,
-            );
-            ui.separator();
-            self.tool_button(
-                ui,
-                editor,
-                "Piano Roll",
-                "Show the piano roll",
-                Command::TogglePianoRoll,
-            );
-            self.tool_button(ui, mixer, "Mixer", "Show the mixer", Command::ToggleMixer);
-            let devices = self.devices_open;
-            self.tool_button(
-                ui,
-                devices,
-                "Devices",
-                "Show the device chain of the selected track (Shift+Tab)",
-                Command::ToggleDevices,
-            );
-            self.tool_button(
-                ui,
-                automation,
-                "Automation",
-                "Show automation lanes",
-                Command::ToggleAutomation,
-            );
-            ui.separator();
-            self.tool_button(ui, false, "New Track", "Add tracks", Command::NewTracks);
-            self.tool_button(
-                ui,
-                false,
-                "Duplicate",
-                "Duplicate the selected track",
-                Command::DuplicateTrack,
-            );
-            ui.separator();
-            self.tool_button(
-                ui,
-                false,
-                "Split",
-                "Split selected regions at the playhead",
-                Command::SplitAtPlayhead,
-            );
-            self.tool_button(
-                ui,
-                false,
-                "Repeat",
-                "Repeat selected regions",
-                Command::RepeatRegions,
-            );
-            self.tool_button(ui, false, "Quantize", "Quantize notes", Command::Quantize);
-            self.tool_button(
-                ui,
-                false,
-                "Delete",
-                "Delete selected regions",
-                Command::Delete,
-            );
-            ui.separator();
-            self.tool_button(
-                ui,
-                false,
-                "+ Marker",
-                "Add a marker at the playhead",
-                Command::AddMarker,
-            );
-            self.tool_button(
-                ui,
-                false,
-                "< Marker",
-                "Go to the previous marker",
-                Command::PreviousMarker,
-            );
-            self.tool_button(
-                ui,
-                false,
-                "Marker >",
-                "Go to the next marker",
-                Command::NextMarker,
-            );
-            ui.separator();
-            if ui
-                .selectable_label(self.view.follow, "Follow")
-                .on_hover_text("Scroll the timeline with the playhead")
-                .clicked()
-            {
-                self.view.follow = !self.view.follow;
-            }
-            let typing = self.musical.on;
-            let label = self.musical.label();
-            self.tool_button(
-                ui,
-                typing,
-                &label,
-                "Play notes with the computer keyboard",
-                Command::ToggleMusicalTyping,
-            );
-            ui.separator();
-            self.tool_button(ui, false, "Undo", "Undo", Command::Undo);
-            self.tool_button(ui, false, "Redo", "Redo", Command::Redo);
-            self.tool_button(ui, false, "Bounce", "Bounce to WAV", Command::Bounce);
-        });
-    }
-
-    fn control_bar(&mut self, ui: &mut egui::Ui) {
-        let state = self.transport_state();
-        let recording = self.audio.as_ref().is_some_and(|(_, e)| e.is_recording());
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.audio.is_some(), |ui| {
-                let buttons = [
-                    ("|<", "Go to Beginning", Command::GoToBeginning),
-                    ("<<", "Rewind", Command::Rewind),
-                    (">>", "Forward", Command::Forward),
-                ];
-                for (text, tip, command) in buttons {
-                    if ui.button(text).on_hover_text(tip).clicked() {
-                        self.run(command);
-                    }
-                }
-                if ui.button("Stop").clicked() {
-                    self.send(EngineCommand::Stop);
-                }
-                let play = if state == TransportState::Stopped {
-                    "Play"
-                } else {
-                    "Playing"
-                };
-                if ui
-                    .selectable_label(state != TransportState::Stopped, play)
-                    .clicked()
-                    && state == TransportState::Stopped
-                    && self.rate_matches()
-                {
-                    self.send(EngineCommand::Play);
-                }
-                let record = RichText::new("Record").color(if recording {
-                    Color32::from_rgb(235, 80, 80)
-                } else {
-                    ui.visuals().text_color()
-                });
-                if ui.selectable_label(recording, record).clicked() {
-                    self.run(Command::Record);
-                }
-            });
-            ui.separator();
-            let position = Position::from_tick(self.playhead_tick(), self.project.time_signature);
-            let text = if state == TransportState::CountIn {
-                "count-in".to_owned()
-            } else {
-                position.to_string()
-            };
-            ui.label(RichText::new(text).monospace().size(18.0));
-            ui.separator();
-            let mut bpm = self.project.tempo_bpm;
-            let tempo = ui
-                .add(
-                    egui::DragValue::new(&mut bpm)
-                        .range(MIN_BPM..=MAX_BPM)
-                        .speed(0.5)
-                        .fixed_decimals(1)
-                        .suffix(" bpm"),
-                )
-                .on_hover_text("Tempo");
-            self.live_edit(&tempo, |p| p.tempo_bpm = bpm);
-            let mut numerator = self.project.time_signature.numerator;
-            let num = ui.add(
-                egui::DragValue::new(&mut numerator)
-                    .range(1..=16)
-                    .speed(0.1),
-            );
-            self.live_edit(&num, |p| p.time_signature.numerator = numerator);
-            ui.label("/");
-            let mut denominator = self.project.time_signature.denominator;
-            egui::ComboBox::from_id_salt("denominator")
-                .width(40.0)
-                .selected_text(denominator.to_string())
-                .show_ui(ui, |ui| {
-                    for d in DENOMINATORS {
-                        ui.selectable_value(&mut denominator, d, d.to_string());
-                    }
-                });
-            if denominator != self.project.time_signature.denominator {
-                self.edit(|p| p.time_signature.denominator = denominator);
-            }
-            ui.separator();
-            let p = &self.project;
-            let (looping, metronome, count_in, snap) = (
-                p.loop_range.enabled,
-                p.metronome.enabled,
-                p.metronome.count_in_enabled,
-                p.snap.enabled,
-            );
-            if Self::toggle_button(ui, looping, "Loop", "Loop (C)") {
-                self.run(Command::ToggleLoop);
-            }
-            let punch = self.project.punch;
-            if Self::toggle_button(
-                ui,
-                punch.punch_in,
-                "Punch In",
-                "Record only from the start of the loop area",
-            ) {
-                self.edit(|p| p.punch.punch_in = !p.punch.punch_in);
-            }
-            if Self::toggle_button(
-                ui,
-                punch.punch_out,
-                "Punch Out",
-                "Stop recording at the end of the loop area",
-            ) {
-                self.edit(|p| p.punch.punch_out = !p.punch.punch_out);
-            }
-            if ui
-                .button("Capture")
-                .on_hover_text("Turn the notes you just played into a region (Ctrl+Shift+C)")
-                .clicked()
-            {
-                self.run(Command::CaptureMidi);
-            }
-            if Self::toggle_button(ui, metronome, "Click", "Metronome (K)") {
-                self.run(Command::ToggleMetronome);
-            }
-            if Self::toggle_button(
-                ui,
-                count_in,
-                "Count-in",
-                "Count-in before recording (Shift+K)",
-            ) {
-                self.run(Command::ToggleCountIn);
-            }
-            ui.separator();
-            if Self::toggle_button(ui, snap, "Snap", "Snap to grid (Ctrl+G)") {
-                self.run(Command::ToggleSnap);
-            }
-            let mut grid = self.project.snap.grid;
-            egui::ComboBox::from_id_salt("grid")
-                .width(56.0)
-                .selected_text(grid.label())
-                .show_ui(ui, |ui| {
-                    for g in Grid::ALL {
-                        ui.selectable_value(&mut grid, g, g.label());
-                    }
-                });
-            if grid != self.project.snap.grid {
-                self.edit(|p| p.snap.grid = grid);
-            }
-        });
-    }
-
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            match &self.audio {
-                Some((output, _)) => ui.label(format!(
-                    "{}  |  {} Hz  |  {} ch  |  In: {}  |  MIDI: {}",
-                    output.device_name,
-                    output.sample_rate,
-                    output.channels,
-                    self.input
-                        .as_ref()
-                        .map_or("none", |i| i.device_name.as_str()),
-                    self.midi.as_ref().map_or("none", |m| m.name.as_str())
-                )),
-                None => ui.colored_label(ui.visuals().warn_fg_color, "No audio output"),
-            };
-            if let Some(message) = &self.message {
-                ui.separator();
-                ui.label(message);
-            }
         });
     }
 
@@ -1713,45 +1428,28 @@ impl eframe::App for App {
                 self.run(command);
             }
         }
+        self.info = crate::ui_kit::take_info(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("control_bar").show(ui, |ui| self.control_bar(ui));
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         self.editor_rect = None;
         self.update_meters();
-        if self.mixer_open {
-            egui::Panel::bottom("mixer")
-                .resizable(true)
-                .default_size(400.0)
-                .size_range(260.0..=900.0)
-                .show(ui, |ui| self.mixer(ui));
-        } else if self.devices_open {
-            egui::Panel::bottom("devices")
-                .resizable(true)
-                .default_size(300.0)
-                .size_range(180.0..=900.0)
-                .show(ui, |ui| self.device_chain(ui));
-        } else if self.editor.open {
-            let panel = egui::Panel::bottom("piano_roll")
-                .resizable(true)
-                .default_size(320.0)
-                .size_range(160.0..=900.0)
-                .show(ui, |ui| self.piano_roll(ui));
-            self.editor_rect = Some(panel.response.rect);
-        }
         if self.browser.open {
             egui::Panel::left("browser")
                 .resizable(true)
-                .default_size(240.0)
-                .size_range(180.0..=480.0)
+                .default_size(260.0)
+                .size_range(200.0..=520.0)
                 .show(ui, |ui| self.browser_panel(ui));
         }
-        if self.inspector.open {
-            egui::Panel::right("inspector")
+        if self.detail_visible() {
+            let panel = egui::Panel::bottom("detail")
                 .resizable(true)
-                .default_size(260.0)
-                .size_range(200.0..=480.0)
-                .show(ui, |ui| self.inspector_panel(ui));
+                .default_size(300.0)
+                .size_range(160.0..=900.0)
+                .show(ui, |ui| self.detail_area(ui));
+            if self.editor.open {
+                self.editor_rect = Some(panel.response.rect);
+            }
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -1766,8 +1464,6 @@ impl eframe::App for App {
                 }
             });
         self.settings_window(&ctx);
-        self.synth_settings_window(&ctx);
-        self.device_window(&ctx);
         self.project_settings_window(&ctx);
         self.cleanup_window(&ctx);
         self.recovery_window(&ctx);
@@ -1785,8 +1481,8 @@ impl eframe::App for App {
         self.tick_autosave(&ctx);
         if self.transport_state() != TransportState::Stopped || self.editor.preview.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
-        } else if self.mixer_open {
-            ctx.request_repaint_after(Duration::from_millis(33));
+        } else if self.audio.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(50));
         }
     }
 }

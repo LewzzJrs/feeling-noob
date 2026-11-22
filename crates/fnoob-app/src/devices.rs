@@ -1,5 +1,4 @@
-use crate::app::App;
-use eframe::egui::{self, Response, Slider, Ui};
+use eframe::egui::{Response, Slider, Ui};
 use fnoob_core::effects::{BuiltinEffect, DelaySync, MAX_DELAY_MS};
 use fnoob_core::model::{Id, Instrument, PluginSlot, Project};
 
@@ -15,15 +14,6 @@ pub(crate) fn slot_mut(project: &mut Project, id: Id) -> Option<&mut PluginSlot>
             instrument.into_iter().chain(t.strip.inserts.iter_mut())
         })
         .chain(project.bus.inserts.iter_mut())
-        .find(|s| s.id == id)
-}
-
-fn slot_of(project: &Project, id: Id) -> Option<&PluginSlot> {
-    project
-        .tracks
-        .iter()
-        .flat_map(|t| t.plugin_slots())
-        .chain(project.bus.inserts.iter())
         .find(|s| s.id == id)
 }
 
@@ -181,59 +171,4 @@ pub fn effect_controls(ui: &mut Ui, effect: &mut BuiltinEffect) -> Vec<Response>
         }
     }
     responses
-}
-
-impl App {
-    pub(crate) fn device_window(&mut self, ctx: &egui::Context) {
-        let Some(id) = self.device_window else {
-            return;
-        };
-        let Some(slot) = slot_of(&self.project, id).cloned() else {
-            self.device_window = None;
-            return;
-        };
-        let Some(effect) = slot.builtin else {
-            self.device_window = None;
-            return;
-        };
-        let mut open = true;
-        let mut next = effect;
-        let mut reset = false;
-        let mut bypass = slot.bypass;
-        let mut responses = Vec::new();
-        egui::Window::new(format!("{} (built-in)", effect.label()))
-            .id(egui::Id::unique("device_window"))
-            .open(&mut open)
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    responses.push(ui.checkbox(&mut bypass, "Bypass"));
-                    reset = ui.button("Reset").clicked();
-                });
-                ui.separator();
-                responses.extend(effect_controls(ui, &mut next));
-            });
-        for response in &responses {
-            self.live_edit(response, |p| {
-                if let Some(target) = slot_mut(p, id) {
-                    target.builtin = Some(next);
-                    target.bypass = bypass;
-                }
-            });
-        }
-        if reset
-            && let Some(default) = BuiltinEffect::all()
-                .into_iter()
-                .find(|d| d.same_kind(&effect))
-        {
-            self.edit(|p| {
-                if let Some(target) = slot_mut(p, id) {
-                    target.builtin = Some(default);
-                }
-            });
-        }
-        if !open {
-            self.device_window = None;
-        }
-    }
 }

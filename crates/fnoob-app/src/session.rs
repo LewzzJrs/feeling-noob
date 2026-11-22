@@ -1,13 +1,15 @@
 use crate::app::App;
 use crate::browser::BrowserItem;
+use crate::mixer::MixTarget;
 use crate::timeline::track_color;
+use crate::ui_kit::hint;
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, vec2,
 };
 use fnoob_core::edit;
 use fnoob_core::model::{Id, RegionContent, TrackKind};
 use fnoob_core::session::{
-    self, FollowAction, LaunchMode, LaunchQuantize, SessionClip, clip as clip_at,
+    self, FollowAction, LaunchMode, SessionClip, clip as clip_at,
 };
 use fnoob_core::time::ticks_per_bar;
 use fnoob_engine::Command as EngineCommand;
@@ -20,6 +22,7 @@ const CELL_H: f32 = 26.0;
 const LAUNCH_W: f32 = 22.0;
 const HEADER_H: f32 = 26.0;
 const SCENE_W: f32 = 150.0;
+const MIX_H: f32 = 64.0;
 const PLAYING: Color32 = Color32::from_rgb(90, 200, 110);
 
 #[derive(Default)]
@@ -98,18 +101,6 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Clip Grid").strong());
             ui.separator();
-            ui.label("Launch quantize");
-            let mut quantize = self.project.launch_quantize;
-            egui::ComboBox::from_id_salt("launch_quantize")
-                .selected_text(quantize.label())
-                .show_ui(ui, |ui| {
-                    for q in LaunchQuantize::ALL {
-                        ui.selectable_value(&mut quantize, q, q.label());
-                    }
-                });
-            if quantize != self.project.launch_quantize {
-                self.edit(|p| p.launch_quantize = quantize);
-            }
             if ui.button("Stop All Clips").clicked() {
                 self.send(EngineCommand::StopClips(None));
             }
@@ -161,9 +152,10 @@ impl App {
             .map(|t| (t.id, t.kind, t.name.clone(), t.color))
             .collect();
         let scenes = self.project.scenes.len();
+        let mixer = if self.mixer_open { MIX_H } else { 0.0 };
         let size = vec2(
-            tracks.len() as f32 * CELL_W + SCENE_W,
-            HEADER_H + (scenes as f32 + 1.0) * CELL_H,
+            (tracks.len() + 2) as f32 * CELL_W + SCENE_W,
+            HEADER_H + (scenes as f32 + 1.0) * CELL_H + mixer,
         );
         let (area, _) = ui.allocate_exact_size(size, Sense::hover());
         let painter = ui.painter_at(ui.clip_rect());
@@ -353,15 +345,56 @@ impl App {
                 visuals.weak_text_color()
             };
             square(&painter, stop, color);
-            if ui
-                .interact(stop, base.with(("stop", track)), Sense::click())
-                .on_hover_text("Stop this track's clip")
-                .clicked()
+            if hint(
+                ui.interact(stop, base.with(("stop", track)), Sense::click()),
+                "Clip stop button: stop this track's clip.",
+            )
+            .clicked()
             {
                 actions.push(GridAction::StopTrack(*track));
             }
+            if mixer > 0.0 {
+                let cell = Rect::from_min_size(
+                    Pos2::new(x, stop.bottom() + 4.0),
+                    vec2(CELL_W - 2.0, MIX_H - 6.0),
+                );
+                self.grid_mix_cell(ui, &painter, cell, MixTarget::Track(*track));
+            }
         }
-        let x = area.left() + tracks.len() as f32 * CELL_W;
+        for (index, (target, name)) in [
+            (MixTarget::Bus, self.project.bus.name.clone()),
+            (MixTarget::Master, "Main".to_owned()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let x = area.left() + (tracks.len() + index) as f32 * CELL_W;
+            let header =
+                Rect::from_min_size(Pos2::new(x, area.top()), vec2(CELL_W - 2.0, HEADER_H - 2.0));
+            painter.rect_filled(
+                header,
+                2.0,
+                Color32::from_gray(if index == 0 { 150 } else { 205 }),
+            );
+            painter.text(
+                header.left_center() + vec2(6.0, 0.0),
+                Align2::LEFT_CENTER,
+                name,
+                FontId::proportional(13.0),
+                Color32::BLACK,
+            );
+            if mixer > 0.0 {
+                let cell = Rect::from_min_size(
+                    Pos2::new(
+                        x,
+                        area.top() + HEADER_H + (scenes as f32 + 1.0) * CELL_H + 4.0,
+                    ),
+                    vec2(CELL_W - 2.0, MIX_H - 6.0),
+                );
+                self.grid_mix_cell(ui, &painter, cell, target);
+            }
+        }
+        let x = area.left() + (tracks.len() + 2) as f32 * CELL_W;
         let header = Rect::from_min_size(
             Pos2::new(x, area.top()),
             vec2(SCENE_W - 2.0, HEADER_H - 2.0),
@@ -453,6 +486,30 @@ impl App {
             actions.push(GridAction::StopAll);
         }
         hovered_cell
+    }
+
+    fn grid_mix_cell(
+        &mut self,
+        ui: &mut Ui,
+        painter: &egui::Painter,
+        cell: Rect,
+        target: MixTarget,
+    ) {
+        painter.rect_filled(cell, 2.0, ui.visuals().faint_bg_color);
+        let inner = Rect::from_min_max(cell.min + vec2(3.0, 3.0), cell.max - vec2(12.0, 3.0));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+        child.set_clip_rect(inner.intersect(ui.clip_rect()));
+        child.vertical(|ui| {
+            crate::ui_kit::compact(ui);
+            self.mix_buttons(ui, target);
+            self.mix_levels(ui, target);
+            self.mix_send(ui, target);
+        });
+        let meter = Rect::from_min_max(
+            egui::pos2(cell.right() - 9.0, cell.top() + 4.0),
+            egui::pos2(cell.right() - 4.0, cell.bottom() - 4.0),
+        );
+        self.paint_meter(painter, meter, target);
     }
 
     fn session_file_drop(&mut self, ui: &Ui, area: Rect, cell: Option<(Id, usize)>) {
@@ -553,7 +610,9 @@ impl App {
                 self.selection.track = Some(track);
                 self.selection.regions.clear();
                 self.session.selected = Some(clip);
-                self.inspector.open = true;
+                if self.detail_visible() {
+                    self.show_clip();
+                }
             }
             GridAction::SelectTrack(track) => {
                 self.selection.track = Some(track);
@@ -702,6 +761,9 @@ impl App {
             };
         let mut name = clip.region.name.clone();
         let response = ui.add(egui::TextEdit::singleline(&mut name).hint_text("Clip name"));
+        if std::mem::take(&mut self.inspector.focus_name) {
+            response.request_focus();
+        }
         update(self, &response, &|c| c.region.name = name.clone());
         let mut looping = clip.looping;
         let response = ui.checkbox(&mut looping, "Loop");

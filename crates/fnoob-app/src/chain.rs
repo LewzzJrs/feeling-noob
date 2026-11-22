@@ -23,12 +23,19 @@ fn inserts_mut(project: &mut Project, owner: Owner) -> Option<&mut Vec<PluginSlo
 }
 
 impl App {
-    pub(crate) fn toggle_devices(&mut self) {
-        self.devices_open = !self.devices_open;
-        if self.devices_open {
-            self.mixer_open = false;
-            self.editor.open = false;
+    pub(crate) fn reveal_device(&mut self, slot: fnoob_core::model::Id) {
+        if self.project.bus.inserts.iter().any(|s| s.id == slot) {
+            self.chain_target = ChainTarget::Bus;
+        } else if let Some(track) = self
+            .project
+            .tracks
+            .iter()
+            .find(|t| t.plugin_slots().any(|s| s.id == slot))
+        {
+            self.selection.track = Some(track.id);
+            self.chain_target = ChainTarget::SelectedTrack;
         }
+        self.show_devices();
     }
 
     fn move_insert(&mut self, owner: Owner, from: usize, to: usize) {

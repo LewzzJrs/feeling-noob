@@ -1,28 +1,13 @@
 use crate::app::App;
-use crate::timeline::track_color;
-use eframe::egui::{self, Color32, RichText, Vec2};
+use eframe::egui::{self};
 use fnoob_core::edit;
-use fnoob_core::keymap::Command;
-use fnoob_core::model::{
-    AutomationParam, Id, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MIN_GAIN_DB, Region, RegionContent,
-    SILENT_DB, TRACK_COLORS, Track, TrackKind,
-};
+use fnoob_core::model::{Id, MAX_GAIN_DB, MIN_GAIN_DB, Region, RegionContent};
 use fnoob_core::time::{PPQ, Position};
 
 #[derive(Default)]
 pub struct Inspector {
-    pub open: bool,
     region_name: Option<(Id, String)>,
-    track_name: Option<(Id, String)>,
-}
-
-impl Inspector {
-    pub fn shown() -> Self {
-        Self {
-            open: true,
-            ..Self::default()
-        }
-    }
+    pub focus_name: bool,
 }
 
 fn beats(ticks: u64) -> f64 {
@@ -34,65 +19,16 @@ fn ticks(beats: f64) -> u64 {
 }
 
 impl App {
-    pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Inspector").strong());
-            if ui.small_button("Close").clicked() {
-                self.inspector.open = false;
-            }
-        });
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let clip = self
-                .session
-                .selected
-                .filter(|_| self.session.open)
-                .and_then(|id| fnoob_core::session::clip_position(&self.project, id))
-                .and_then(|(t, s)| fnoob_core::session::clip(&self.project, t, s))
-                .cloned();
-            if let Some(clip) = clip {
-                egui::CollapsingHeader::new("Clip")
-                    .default_open(true)
-                    .show(ui, |ui| self.clip_section(ui, &clip));
-            }
-            let region = self
-                .selection
-                .regions
-                .first()
-                .and_then(|id| self.project.find_region(*id))
-                .map(|(_, r)| r.clone());
-            if let Some(region) = region {
-                egui::CollapsingHeader::new("Region")
-                    .default_open(true)
-                    .show(ui, |ui| self.region_section(ui, &region));
-            }
-            let track = self
-                .selection
-                .track
-                .and_then(|id| self.project.track(id))
-                .cloned();
-            match track {
-                Some(track) => {
-                    egui::CollapsingHeader::new("Track")
-                        .default_open(true)
-                        .show(ui, |ui| self.track_section(ui, &track));
-                }
-                None => {
-                    ui.label(RichText::new("Select a track or region to see its settings.").weak());
-                }
-            }
-            egui::CollapsingHeader::new("Markers")
-                .default_open(true)
-                .show(ui, |ui| self.marker_section(ui));
-        });
-    }
-
-    fn region_section(&mut self, ui: &mut egui::Ui, region: &Region) {
+    pub(crate) fn region_section(&mut self, ui: &mut egui::Ui, region: &Region) {
         let id = region.id;
         let mut text = match self.inspector.region_name.take() {
             Some((rid, text)) if rid == id => text,
             _ => region.name.clone(),
         };
         let response = ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY));
+        if std::mem::take(&mut self.inspector.focus_name) {
+            response.request_focus();
+        }
         if response.lost_focus() {
             let name = text.clone();
             self.edit(|p| {
@@ -207,194 +143,5 @@ impl App {
                 self.selection.regions.retain(|r| *r != id);
             }
         });
-    }
-
-    fn track_section(&mut self, ui: &mut egui::Ui, track: &Track) {
-        let id = track.id;
-        let mut text = match self.inspector.track_name.take() {
-            Some((tid, text)) if tid == id => text,
-            _ => track.name.clone(),
-        };
-        let response = ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY));
-        if response.lost_focus() {
-            let name = text.trim().to_owned();
-            if !name.is_empty() {
-                self.edit_track(id, |t| t.name = name);
-            }
-        }
-        self.inspector.track_name = Some((id, text));
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Color");
-            for color in 0..TRACK_COLORS {
-                let (rect, response) =
-                    ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::click());
-                ui.painter().rect_filled(rect, 3.0, track_color(color));
-                if color == track.color {
-                    ui.painter().rect_stroke(
-                        rect,
-                        3.0,
-                        egui::Stroke::new(2.0, Color32::WHITE),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                if response.clicked() {
-                    self.edit_track(id, |t| t.color = color);
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            for (label, on, command) in [
-                ("Mute", track.mute, Command::ToggleTrackMute),
-                ("Solo", track.solo, Command::ToggleTrackSolo),
-                ("Record", track.record_enabled, Command::ToggleTrackRecord),
-            ] {
-                if ui.selectable_label(on, label).clicked() {
-                    self.selection.track = Some(id);
-                    self.run(command);
-                }
-            }
-        });
-        let mut volume = track.strip.volume_db.max(-60.0);
-        let response = ui.add(
-            egui::Slider::new(&mut volume, -60.0..=MAX_FADER_DB)
-                .suffix(" dB")
-                .text("Volume"),
-        );
-        self.live_edit(&response, |p| {
-            if let Some(t) = p.track_mut(id) {
-                t.strip.volume_db = if volume <= -60.0 { SILENT_DB } else { volume };
-            }
-        });
-        let mut pan = track.strip.pan;
-        let response = ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text("Pan"));
-        self.live_edit(&response, |p| {
-            if let Some(t) = p.track_mut(id) {
-                t.strip.pan = pan;
-            }
-        });
-        match track.kind {
-            TrackKind::Instrument => {
-                let label = track
-                    .instrument
-                    .as_ref()
-                    .map_or("Basic Synth", Instrument::label)
-                    .to_owned();
-                ui.horizontal(|ui| {
-                    ui.label(format!("Instrument: {label}"));
-                    match &track.instrument {
-                        Some(Instrument::Vst3(slot)) => {
-                            if ui.button("Open editor").clicked() {
-                                self.open_plugin_editor(slot.id);
-                            }
-                        }
-                        _ => {
-                            if ui.button("Settings").clicked() {
-                                self.open_instrument(id);
-                            }
-                        }
-                    }
-                });
-            }
-            TrackKind::Audio => {
-                let mut monitor = track.input_monitoring;
-                if ui.checkbox(&mut monitor, "Input monitoring").changed() {
-                    self.edit_track(id, |t| t.input_monitoring = monitor);
-                }
-            }
-        }
-        if !track.strip.inserts.is_empty() {
-            ui.label("Inserts");
-            for slot in &track.strip.inserts {
-                ui.horizontal(|ui| {
-                    ui.label(if slot.bypass {
-                        format!("({})", slot.name)
-                    } else {
-                        slot.name.clone()
-                    });
-                    if ui.small_button("Edit").clicked() {
-                        self.open_plugin_editor(slot.id);
-                    }
-                });
-            }
-        }
-        ui.horizontal(|ui| {
-            ui.label("Automation");
-            let current = self.automation_param(id);
-            for param in AutomationParam::ALL {
-                if ui
-                    .selectable_label(current == param, param.label())
-                    .clicked()
-                {
-                    self.automation_params.insert(id, param);
-                    self.automation_view = true;
-                }
-            }
-            let points = track.automation.lane(current).len();
-            if points > 0 && ui.small_button(format!("Clear {points}")).clicked() {
-                self.edit(|p| {
-                    if let Some(t) = p.track_mut(id) {
-                        t.automation.lane_mut(current).clear();
-                    }
-                });
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Duplicate").clicked() {
-                self.selection.track = Some(id);
-                self.run(Command::DuplicateTrack);
-            }
-            if ui.button("Up").clicked() {
-                self.edit(|p| {
-                    edit::move_track(p, id, -1);
-                });
-            }
-            if ui.button("Down").clicked() {
-                self.edit(|p| {
-                    edit::move_track(p, id, 1);
-                });
-            }
-            if ui.button("Delete").clicked() {
-                self.edit(|p| {
-                    edit::delete_track(p, id);
-                });
-                self.selection.track = None;
-                self.selection.regions.clear();
-            }
-        });
-    }
-
-    fn marker_section(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Add marker at playhead").clicked() {
-            self.run(Command::AddMarker);
-        }
-        let ts = self.project.time_signature;
-        let markers = self.project.markers.clone();
-        for marker in markers {
-            ui.horizontal(|ui| {
-                if ui
-                    .button(format!(
-                        "{}  {}",
-                        Position::from_tick(marker.tick, ts),
-                        marker.name
-                    ))
-                    .on_hover_text("Go to marker")
-                    .clicked()
-                {
-                    self.locate(marker.tick);
-                }
-                if ui.small_button("Rename").clicked() {
-                    self.marker_rename = Some((marker.id, marker.name.clone()));
-                }
-                if ui
-                    .small_button("x")
-                    .on_hover_text("Delete marker")
-                    .clicked()
-                {
-                    self.edit(|p| {
-                        edit::delete_marker(p, marker.id);
-                    });
-                }
-            });
-        }
     }
 }

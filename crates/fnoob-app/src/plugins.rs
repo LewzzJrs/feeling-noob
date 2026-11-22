@@ -533,7 +533,7 @@ impl App {
             return;
         };
         let LoadedKind::Vst3 { plugin, editor } = &mut loaded.kind else {
-            self.device_window = Some(slot);
+            self.reveal_device(slot);
             return;
         };
         if let Some(editor) = editor {

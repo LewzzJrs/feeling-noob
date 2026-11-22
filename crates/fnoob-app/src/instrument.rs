@@ -57,17 +57,18 @@ fn envelope_controls(ui: &mut Ui, fields: EnvelopeFields) -> Vec<Response> {
 
 impl App {
     pub(crate) fn open_instrument(&mut self, track: Id) {
-        match self
+        if let Some(Instrument::Vst3(slot)) = self
             .project
             .track(track)
             .and_then(|t| t.instrument.as_ref())
         {
-            Some(Instrument::Vst3(slot)) => {
-                let slot = slot.id;
-                self.open_plugin_editor(slot);
-            }
-            _ => self.synth_window = Some(track),
+            let slot = slot.id;
+            self.open_plugin_editor(slot);
+            return;
         }
+        self.selection.track = Some(track);
+        self.chain_target = crate::chain::ChainTarget::SelectedTrack;
+        self.show_devices();
     }
 
     fn sample_name(&self, file: Option<Id>) -> String {
@@ -305,37 +306,6 @@ impl App {
         }
         if ui.button("Reset").clicked() {
             self.edit(|p| set_instrument(p, track, Instrument::BasicSynth(SynthParams::default())));
-        }
-    }
-
-    pub(crate) fn synth_settings_window(&mut self, ctx: &egui::Context) {
-        let Some(track) = self.synth_window else {
-            return;
-        };
-        let Some((name, instrument)) = self.project.track(track).and_then(|t| {
-            let instrument = match &t.instrument {
-                None => Some(Instrument::BasicSynth(SynthParams::default())),
-                Some(Instrument::Vst3(_)) => None,
-                Some(other) => Some(other.clone()),
-            };
-            instrument.map(|i| (t.name.clone(), i))
-        }) else {
-            self.synth_window = None;
-            return;
-        };
-        let mut open = true;
-        egui::Window::new(format!("{} - {name}", instrument.label()))
-            .id(egui::Id::unique("synth_settings"))
-            .open(&mut open)
-            .resizable(false)
-            .show(ctx, |ui| match instrument {
-                Instrument::BasicSynth(params) => self.synth_controls(ui, track, params),
-                Instrument::Sampler(params) => self.sampler_controls(ui, track, params),
-                Instrument::DrumSampler(params) => self.drum_controls(ui, track, *params),
-                Instrument::Vst3(_) => {}
-            });
-        if !open {
-            self.synth_window = None;
         }
     }
 }

@@ -183,27 +183,8 @@ impl App {
         self.editor.region = Some(region_id);
         self.editor.selected.clear();
         self.editor.open = true;
-        self.mixer_open = false;
         self.devices_open = false;
-    }
-
-    pub(crate) fn toggle_editor(&mut self) {
-        if self.editor.open {
-            self.editor.open = false;
-            return;
-        }
-        let target = self
-            .selection
-            .regions
-            .first()
-            .copied()
-            .or(self.editor.region);
-        match target {
-            Some(id) if self.project.find_region(id).is_some() => self.open_editor(id),
-            _ => self.editor.open = true,
-        }
-        self.mixer_open = false;
-        self.devices_open = false;
+        self.detail_devices = false;
     }
 
     fn preview(&mut self, track: Id, pitch: u8, velocity: u8) {
@@ -499,16 +480,19 @@ impl App {
             tick += step;
         }
         let background = ui.interact(g.notes, ui.scope_id().with("note_grid"), Sense::click());
-        if let Some(pos) = background.interact_pointer_pos()
-            && background.clicked()
-        {
-            if ui.input(|i| i.modifiers.ctrl) {
-                actions.push(EditorAction::ClearSelection);
-            } else {
+        let background = crate::ui_kit::hint(
+            background,
+            "Double-click to add a note, or turn on Draw mode (B) and click.",
+        );
+        if let Some(pos) = background.interact_pointer_pos() {
+            let add = background.double_clicked() || self.draw_mode && background.clicked();
+            if add {
                 actions.push(EditorAction::AddNote {
                     tick: g.tick(pos.x),
                     pitch: g.pitch(pos.y),
                 });
+            } else if background.clicked() {
+                actions.push(EditorAction::ClearSelection);
             }
         }
         let Some((track_ref, region_ref)) = self.project.find_region(region) else {

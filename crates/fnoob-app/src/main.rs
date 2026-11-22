@@ -5,6 +5,8 @@ mod audio;
 mod bounce;
 mod browser;
 mod chain;
+mod controlbar;
+mod detail;
 mod devices;
 mod files;
 mod inspector;
@@ -17,6 +19,7 @@ mod piano_roll;
 mod plugins;
 mod session;
 mod timeline;
+mod ui_kit;
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -27,6 +30,7 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("feeling-noob")
             .with_inner_size([1280.0, 760.0])
+            .with_maximized(true)
             .with_min_inner_size([640.0, 360.0])
             .with_icon(
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))

@@ -5,6 +5,21 @@ fn map_key(key: egui::Key) -> Option<Key> {
     match key {
         egui::Key::Space => Some(Key::Space),
         egui::Key::Tab => Some(Key::Tab),
+        egui::Key::Home => Some(Key::Home),
+        egui::Key::Plus => Some(Key::Plus),
+        egui::Key::Minus => Some(Key::Minus),
+        egui::Key::Equals => Some(Key::Equals),
+        egui::Key::F9 => Some(Key::Function(9)),
+        egui::Key::Num0 => Some(Key::Digit(0)),
+        egui::Key::Num1 => Some(Key::Digit(1)),
+        egui::Key::Num2 => Some(Key::Digit(2)),
+        egui::Key::Num3 => Some(Key::Digit(3)),
+        egui::Key::Num4 => Some(Key::Digit(4)),
+        egui::Key::Num5 => Some(Key::Digit(5)),
+        egui::Key::Num6 => Some(Key::Digit(6)),
+        egui::Key::Num7 => Some(Key::Digit(7)),
+        egui::Key::Num8 => Some(Key::Digit(8)),
+        egui::Key::Num9 => Some(Key::Digit(9)),
         egui::Key::Enter => Some(Key::Enter),
         egui::Key::Comma => Some(Key::Comma),
         egui::Key::Period => Some(Key::Period),
@@ -33,6 +48,8 @@ fn repeat_allowed(command: Command) -> bool {
             | Command::NudgeRight
             | Command::ZoomIn
             | Command::ZoomOut
+            | Command::Rewind
+            | Command::Forward
             | Command::SelectPreviousTrack
             | Command::SelectNextTrack
     )

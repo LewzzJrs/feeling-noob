@@ -11,7 +11,10 @@ use fnoob_core::model::{
 use fnoob_core::time::{grid_ticks, snap_floor, snap_round, ticks_per_bar};
 use std::path::PathBuf;
 
-pub const HEADER_WIDTH: f32 = 210.0;
+pub const HEADER_WIDTH: f32 = 330.0;
+const PINNED_ROW: f32 = 30.0;
+const NAME_WIDTH: f32 = 116.0;
+const IO_WIDTH: f32 = 96.0;
 pub const LOOP_ROW: f32 = 12.0;
 pub const RULER_HEIGHT: f32 = 34.0;
 pub const LANE_HEIGHT: f32 = 60.0;
@@ -41,6 +44,7 @@ pub fn track_color(index: u8) -> Color32 {
 
 pub enum UiAction {
     SelectTrack(Id),
+    ShowDevices,
     SelectRegion {
         id: Id,
         toggle: bool,
@@ -72,14 +76,6 @@ pub enum UiAction {
     DragEnd,
     ToggleLoop,
     Locate(u64),
-    ToggleMute(Id),
-    ToggleSolo(Id),
-    ToggleRecord(Id),
-    ToggleMonitor(Id),
-    SetInput {
-        id: Id,
-        input: AudioInput,
-    },
     StartRename(Id),
     Rename {
         id: Id,
@@ -214,18 +210,17 @@ impl App {
 
     pub fn tracks_area(&mut self, ui: &mut egui::Ui) {
         let (area, area_response) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        let split = area.right() - HEADER_WIDTH;
+        let pinned_top = area.bottom() - 2.0 * PINNED_ROW;
         let geometry = Geometry {
-            ruler: Rect::from_min_max(
-                Pos2::new(area.left() + HEADER_WIDTH, area.top()),
-                Pos2::new(area.right(), area.top() + RULER_HEIGHT),
-            ),
+            ruler: Rect::from_min_max(area.min, Pos2::new(split, area.top() + RULER_HEIGHT)),
             lanes: Rect::from_min_max(
-                Pos2::new(area.left() + HEADER_WIDTH, area.top() + RULER_HEIGHT),
-                area.max,
+                Pos2::new(area.left(), area.top() + RULER_HEIGHT),
+                Pos2::new(split, pinned_top),
             ),
             headers: Rect::from_min_max(
-                Pos2::new(area.left(), area.top() + RULER_HEIGHT),
-                Pos2::new(area.left() + HEADER_WIDTH, area.bottom()),
+                Pos2::new(split, area.top() + RULER_HEIGHT),
+                Pos2::new(area.right(), pinned_top),
             ),
             pixels_per_tick: self.view.pixels_per_tick,
             scroll_tick: self.view.scroll_tick,
@@ -248,11 +243,12 @@ impl App {
         self.draw_lanes(ui, &geometry, &mut actions);
         self.draw_ruler(ui, &geometry, &mut actions);
         self.draw_headers(ui, &geometry, &mut actions);
+        self.draw_pinned_rows(ui, area, pinned_top, split);
         let playhead = geometry.x(self.playhead_tick());
-        if playhead >= geometry.lanes.left() {
+        if geometry.lanes.x_range().contains(playhead) {
             painter.vline(
                 playhead,
-                geometry.ruler.top()..=area.bottom(),
+                geometry.ruler.top()..=geometry.lanes.bottom(),
                 Stroke::new(1.5, PLAYHEAD),
             );
         }
@@ -312,7 +308,7 @@ impl App {
     fn drop_point(&self, g: &Geometry, pointer: Option<Pos2>) -> (Option<Id>, u64) {
         let Some(p) = pointer.filter(|p| {
             (g.lanes.top()..=g.lanes.bottom()).contains(&p.y)
-                && (g.headers.left()..=g.lanes.right()).contains(&p.x)
+                && (g.lanes.left()..=g.headers.right()).contains(&p.x)
         }) else {
             return (None, self.playhead_tick());
         };
@@ -339,9 +335,9 @@ impl App {
             .unwrap_or(self.project.tracks.len());
         let top = g.lane_top(index);
         let rect =
-            Rect::from_x_y_ranges(g.headers.left()..=g.lanes.right(), top..=top + LANE_HEIGHT)
+            Rect::from_x_y_ranges(g.lanes.left()..=g.headers.right(), top..=top + LANE_HEIGHT)
                 .intersect(Rect::from_x_y_ranges(
-                    g.headers.left()..=g.lanes.right(),
+                    g.lanes.left()..=g.headers.right(),
                     g.lanes.y_range(),
                 ));
         let painter = ui.painter_at(area);
@@ -538,7 +534,9 @@ impl App {
                         value: automation_value(lane, param, pos.y),
                     });
                 }
-            } else if lane_response.double_clicked() && track.kind == TrackKind::Instrument {
+            } else if (lane_response.double_clicked() || self.draw_mode && lane_response.clicked())
+                && track.kind == TrackKind::Instrument
+            {
                 if let Some(pos) = lane_response.interact_pointer_pos() {
                     let tick = snap_floor(
                         g.tick(pos.x),
@@ -552,6 +550,11 @@ impl App {
             } else if lane_response.clicked() {
                 actions.push(UiAction::SelectTrack(track.id));
                 actions.push(UiAction::ClearRegions);
+                if let Some(pos) = lane_response.interact_pointer_pos()
+                    && self.transport_state() == fnoob_engine::TransportState::Stopped
+                {
+                    actions.push(UiAction::LocateMarker(self.snapped(g.tick(pos.x))));
+                }
             }
             let audible = self.project.is_track_audible(track);
             for region in &track.regions {
@@ -900,24 +903,92 @@ impl App {
         ui.painter_at(corner)
             .rect_filled(corner, 0.0, ui.visuals().panel_fill);
         let mut renaming = self.renaming.take();
-        for (index, track) in self.project.tracks.iter().enumerate() {
+        let rows: Vec<(usize, Id, String, u8, bool)> = self
+            .project
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i, t.id, t.name.clone(), t.color, t.mute))
+            .collect();
+        for (index, id, name, color, muted) in rows {
             let top = g.lane_top(index);
             let row = Rect::from_x_y_ranges(g.headers.x_range(), top..=top + LANE_HEIGHT);
             if row.bottom() < g.headers.top() || row.top() > g.headers.bottom() {
                 continue;
             }
-            let selected = self.selection.track == Some(track.id);
-            let row_response = ui.interact(
-                row.intersect(g.headers),
-                ui.scope_id().with(("header", track.id)),
+            let selected = self.selection.track == Some(id);
+            let fill = if selected {
+                ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+            } else {
+                ui.visuals().faint_bg_color
+            };
+            painter.rect_filled(row.shrink2(Vec2::new(0.0, 1.0)), 0.0, fill);
+            let name_rect = Rect::from_min_size(
+                row.min + Vec2::new(2.0, 2.0),
+                Vec2::new(NAME_WIDTH, LANE_HEIGHT - 4.0),
+            );
+            let block = track_color(color);
+            painter.rect_filled(
+                name_rect,
+                CornerRadius::same(2),
+                if muted {
+                    block.gamma_multiply(0.35)
+                } else {
+                    block
+                },
+            );
+            if selected {
+                painter.rect_stroke(
+                    name_rect,
+                    CornerRadius::same(2),
+                    Stroke::new(1.5, Color32::WHITE),
+                    StrokeKind::Inside,
+                );
+            }
+            let name_response = ui.interact(
+                name_rect.intersect(g.headers),
+                ui.scope_id().with(("header", id)),
                 Sense::click(),
             );
-            if row_response.clicked() {
-                actions.push(UiAction::SelectTrack(track.id));
+            let name_response = crate::ui_kit::hint(
+                name_response,
+                "Track title: click to select and show its devices, double-click to rename, right-click for more.",
+            );
+            match &mut renaming {
+                Some((rid, text)) if *rid == id => {
+                    let edit = ui.put(
+                        name_rect.shrink(4.0).intersect(g.headers),
+                        egui::TextEdit::singleline(text),
+                    );
+                    edit.request_focus();
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        actions.push(UiAction::CancelRename);
+                    } else if edit.lost_focus() {
+                        actions.push(UiAction::Rename {
+                            id,
+                            name: text.clone(),
+                        });
+                    }
+                }
+                _ => {
+                    ui.painter_at(name_rect.intersect(g.headers)).text(
+                        name_rect.left_top() + Vec2::new(6.0, 4.0),
+                        Align2::LEFT_TOP,
+                        &name,
+                        FontId::proportional(13.0),
+                        Color32::BLACK,
+                    );
+                }
             }
-            row_response.context_menu(|ui| {
+            if name_response.double_clicked() {
+                actions.push(UiAction::StartRename(id));
+            } else if name_response.clicked() {
+                actions.push(UiAction::SelectTrack(id));
+                actions.push(UiAction::ShowDevices);
+            }
+            name_response.context_menu(|ui| {
                 if ui.button("Rename").clicked() {
-                    actions.push(UiAction::StartRename(track.id));
+                    actions.push(UiAction::StartRename(id));
                     ui.close();
                 }
                 ui.menu_button("Color", |ui| {
@@ -927,157 +998,73 @@ impl App {
                                 ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
                             ui.painter().rect_filled(rect, 3.0, track_color(color));
                             if response.clicked() {
-                                actions.push(UiAction::SetColor {
-                                    id: track.id,
-                                    color,
-                                });
+                                actions.push(UiAction::SetColor { id, color });
                                 ui.close();
                             }
                         }
                     });
                 });
                 if ui.button("Duplicate").clicked() {
-                    actions.push(UiAction::DuplicateTrack(track.id));
+                    actions.push(UiAction::DuplicateTrack(id));
                     ui.close();
                 }
                 if ui.button("Move up").clicked() {
-                    actions.push(UiAction::MoveTrack {
-                        id: track.id,
-                        delta: -1,
-                    });
+                    actions.push(UiAction::MoveTrack { id, delta: -1 });
                     ui.close();
                 }
                 if ui.button("Move down").clicked() {
-                    actions.push(UiAction::MoveTrack {
-                        id: track.id,
-                        delta: 1,
-                    });
+                    actions.push(UiAction::MoveTrack { id, delta: 1 });
                     ui.close();
                 }
                 ui.separator();
                 if ui.button("Delete track").clicked() {
-                    actions.push(UiAction::DeleteTrack(track.id));
+                    actions.push(UiAction::DeleteTrack(id));
                     ui.close();
                 }
             });
-            let fill = if selected {
-                ui.visuals().selection.bg_fill.gamma_multiply(0.35)
-            } else {
-                ui.visuals().faint_bg_color
-            };
-            painter.rect_filled(row.shrink2(Vec2::new(0.0, 1.0)), 0.0, fill);
-            painter.rect_filled(
-                Rect::from_min_size(row.min, Vec2::new(5.0, LANE_HEIGHT)),
-                0.0,
-                track_color(track.color),
+            let io_rect = Rect::from_min_size(
+                Pos2::new(name_rect.right() + 4.0, row.top() + 3.0),
+                Vec2::new(IO_WIDTH, LANE_HEIGHT - 6.0),
             );
-            let mut child =
-                ui.new_child(UiBuilder::new().max_rect(row.shrink2(Vec2::new(12.0, 6.0))));
-            child.set_clip_rect(g.headers);
-            child.vertical(|ui| {
-                match &mut renaming {
-                    Some((id, text)) if *id == track.id => {
-                        let edit = ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
-                        edit.request_focus();
-                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                            actions.push(UiAction::CancelRename);
-                        } else if edit.lost_focus() {
-                            actions.push(UiAction::Rename {
-                                id: track.id,
-                                name: text.clone(),
-                            });
-                        }
-                    }
-                    _ => {
-                        let kind = match track.kind {
-                            TrackKind::Audio => "Audio",
-                            TrackKind::Instrument => "Instrument",
-                        };
-                        let name = ui
-                            .add(
-                                egui::Label::new(egui::RichText::new(&track.name).strong())
-                                    .sense(Sense::click()),
-                            )
-                            .on_hover_text(format!("{kind} track. Double-click to rename."));
-                        if name.double_clicked() {
-                            actions.push(UiAction::StartRename(track.id));
-                        } else if name.clicked() {
-                            actions.push(UiAction::SelectTrack(track.id));
-                        }
-                    }
+            let mix_rect = Rect::from_min_max(
+                Pos2::new(io_rect.right() + 4.0, row.top() + 3.0),
+                Pos2::new(row.right() - 12.0, row.bottom() - 3.0),
+            );
+            let mut io = ui.new_child(UiBuilder::new().max_rect(io_rect));
+            io.set_clip_rect(io_rect.intersect(g.headers));
+            io.vertical(|ui| {
+                crate::ui_kit::compact(ui);
+                if self.automation_view {
+                    let current = self.automation_param(id);
+                    egui::ComboBox::from_id_salt(("automation", id))
+                        .width(80.0)
+                        .selected_text(current.label())
+                        .show_ui(ui, |ui| {
+                            for param in AutomationParam::ALL {
+                                if ui
+                                    .selectable_label(param == current, param.label())
+                                    .clicked()
+                                {
+                                    actions.push(UiAction::SetAutomationParam { track: id, param });
+                                }
+                            }
+                        });
                 }
-                ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(track.mute, "M")
-                        .on_hover_text("Mute")
-                        .clicked()
-                    {
-                        actions.push(UiAction::ToggleMute(track.id));
-                    }
-                    if ui
-                        .selectable_label(track.solo, "S")
-                        .on_hover_text("Solo")
-                        .clicked()
-                    {
-                        actions.push(UiAction::ToggleSolo(track.id));
-                    }
-                    let record = egui::Button::selectable(
-                        track.record_enabled,
-                        egui::RichText::new("R").color(if track.record_enabled {
-                            Color32::from_rgb(230, 70, 70)
-                        } else {
-                            ui.visuals().text_color()
-                        }),
-                    );
-                    if ui.add(record).on_hover_text("Record enable").clicked() {
-                        actions.push(UiAction::ToggleRecord(track.id));
-                    }
-                    if self.automation_view {
-                        let current = self.automation_param(track.id);
-                        egui::ComboBox::from_id_salt(("automation", track.id))
-                            .width(70.0)
-                            .selected_text(current.label())
-                            .show_ui(ui, |ui| {
-                                for param in AutomationParam::ALL {
-                                    if ui
-                                        .selectable_label(param == current, param.label())
-                                        .clicked()
-                                    {
-                                        actions.push(UiAction::SetAutomationParam {
-                                            track: track.id,
-                                            param,
-                                        });
-                                    }
-                                }
-                            });
-                    } else if track.kind == TrackKind::Audio {
-                        if ui
-                            .selectable_label(track.input_monitoring, "I")
-                            .on_hover_text("Input monitoring")
-                            .clicked()
-                        {
-                            actions.push(UiAction::ToggleMonitor(track.id));
-                        }
-                        let current = track.audio_input.unwrap_or_default();
-                        egui::ComboBox::from_id_salt(("input", track.id))
-                            .width(62.0)
-                            .selected_text(input_label(current))
-                            .show_ui(ui, |ui| {
-                                for option in input_options(self.input_channels()) {
-                                    if ui
-                                        .selectable_label(option == current, input_label(option))
-                                        .clicked()
-                                    {
-                                        actions.push(UiAction::SetInput {
-                                            id: track.id,
-                                            input: option,
-                                        });
-                                    }
-                                }
-                            });
-                    }
-                });
+                self.track_io(ui, id);
             });
+            let mut mix = ui.new_child(UiBuilder::new().max_rect(mix_rect));
+            mix.set_clip_rect(mix_rect.intersect(g.headers));
+            mix.vertical(|ui| {
+                crate::ui_kit::compact(ui);
+                self.mix_buttons(ui, crate::mixer::MixTarget::Track(id));
+                self.mix_levels(ui, crate::mixer::MixTarget::Track(id));
+                self.mix_send(ui, crate::mixer::MixTarget::Track(id));
+            });
+            let meter = Rect::from_min_max(
+                Pos2::new(row.right() - 9.0, row.top() + 4.0),
+                Pos2::new(row.right() - 4.0, row.bottom() - 4.0),
+            );
+            self.paint_meter(&painter, meter, crate::mixer::MixTarget::Track(id));
         }
         if renaming.is_some()
             && !actions
@@ -1088,9 +1075,72 @@ impl App {
         }
     }
 
+    fn draw_pinned_rows(&mut self, ui: &mut egui::Ui, area: Rect, top: f32, split: f32) {
+        let painter = ui.painter_at(area);
+        let rows = [
+            (
+                crate::mixer::MixTarget::Bus,
+                self.project.bus.name.clone(),
+                Color32::from_gray(150),
+            ),
+            (
+                crate::mixer::MixTarget::Master,
+                "Main".to_owned(),
+                Color32::from_gray(205),
+            ),
+        ];
+        for (index, (target, name, color)) in rows.into_iter().enumerate() {
+            let y = top + index as f32 * PINNED_ROW;
+            let lane =
+                Rect::from_min_max(Pos2::new(area.left(), y), Pos2::new(split, y + PINNED_ROW));
+            let header =
+                Rect::from_min_max(Pos2::new(split, y), Pos2::new(area.right(), y + PINNED_ROW));
+            painter.rect_filled(lane, 0.0, ui.visuals().faint_bg_color);
+            painter.rect_filled(header, 0.0, ui.visuals().panel_fill);
+            painter.hline(
+                area.x_range(),
+                y,
+                Stroke::new(1.0, ui.visuals().window_stroke.color),
+            );
+            let name_rect = Rect::from_min_size(
+                header.min + Vec2::new(2.0, 3.0),
+                Vec2::new(NAME_WIDTH, PINNED_ROW - 6.0),
+            );
+            painter.rect_filled(name_rect, CornerRadius::same(2), color);
+            painter.text(
+                name_rect.left_center() + Vec2::new(6.0, 0.0),
+                Align2::LEFT_CENTER,
+                &name,
+                FontId::proportional(12.0),
+                Color32::BLACK,
+            );
+            let controls = Rect::from_min_max(
+                Pos2::new(name_rect.right() + 4.0 + IO_WIDTH + 4.0, y + 4.0),
+                Pos2::new(header.right() - 12.0, y + PINNED_ROW - 2.0),
+            );
+            let mut child = ui.new_child(UiBuilder::new().max_rect(controls));
+            child.horizontal(|ui| {
+                crate::ui_kit::compact(ui);
+                self.mix_buttons(ui, target);
+                self.mix_levels(ui, target);
+            });
+            let meter = Rect::from_min_max(
+                Pos2::new(header.right() - 9.0, y + 4.0),
+                Pos2::new(header.right() - 4.0, y + PINNED_ROW - 4.0),
+            );
+            self.paint_meter(&painter, meter, target);
+        }
+    }
+
     pub fn apply_ui_action(&mut self, action: UiAction) {
         match action {
             UiAction::SelectTrack(id) => self.selection.track = Some(id),
+            UiAction::ShowDevices => {
+                if self.detail_visible() {
+                    self.chain_target = crate::chain::ChainTarget::SelectedTrack;
+                    self.show_devices();
+                }
+            }
             UiAction::SelectRegion { id, toggle } => {
                 if toggle {
                     if let Some(i) = self.selection.regions.iter().position(|&r| r == id) {
@@ -1100,6 +1150,9 @@ impl App {
                     }
                 } else {
                     self.selection.regions = vec![id];
+                }
+                if self.detail_visible() {
+                    self.show_clip();
                 }
             }
             UiAction::ClearRegions => self.selection.regions.clear(),
@@ -1193,7 +1246,8 @@ impl App {
             }
             UiAction::DuplicateTrack(id) => {
                 self.selection.track = Some(id);
-                self.run(fnoob_core::keymap::Command::DuplicateTrack);
+                self.selection.regions.clear();
+                self.run(fnoob_core::keymap::Command::Duplicate);
             }
             UiAction::MoveTrack { id, delta } => {
                 self.edit(|p| {
@@ -1261,12 +1315,6 @@ impl App {
                     self.open_editor(region);
                 }
             }
-            UiAction::ToggleMonitor(id) => {
-                self.edit_track(id, |t| t.input_monitoring = !t.input_monitoring)
-            }
-            UiAction::SetInput { id, input } => {
-                self.edit_track(id, |t| t.audio_input = Some(input));
-            }
             UiAction::DragLoopStart { tick } => {
                 self.drag = Some(Drag::Loop {
                     origin: self.project.clone(),
@@ -1277,11 +1325,6 @@ impl App {
             UiAction::DragEnd => self.finish_drag(),
             UiAction::ToggleLoop => self.edit(|p| p.loop_range.enabled = !p.loop_range.enabled),
             UiAction::Locate(tick) => self.locate(tick),
-            UiAction::ToggleMute(id) => self.edit_track(id, |t| t.mute = !t.mute),
-            UiAction::ToggleSolo(id) => self.edit_track(id, |t| t.solo = !t.solo),
-            UiAction::ToggleRecord(id) => {
-                self.edit_track(id, |t| t.record_enabled = !t.record_enabled)
-            }
             UiAction::StartRename(id) => {
                 if let Some(track) = self.project.track(id) {
                     self.renaming = Some((id, track.name.clone()));
@@ -1517,7 +1560,7 @@ impl App {
     }
 }
 
-fn input_label(input: AudioInput) -> String {
+pub(crate) fn input_label(input: AudioInput) -> String {
     let first = input.first_channel + 1;
     if input.channels > 1 {
         format!("In {first}-{}", first + 1)
@@ -1526,7 +1569,7 @@ fn input_label(input: AudioInput) -> String {
     }
 }
 
-fn input_options(channels: u16) -> Vec<AudioInput> {
+pub(crate) fn input_options(channels: u16) -> Vec<AudioInput> {
     let mono = (0..channels).map(|first_channel| AudioInput {
         first_channel,
         channels: 1,
