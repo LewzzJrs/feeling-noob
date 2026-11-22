@@ -603,7 +603,7 @@ impl App {
         }
     }
 
-    fn request(&mut self, pending: Pending) {
+    pub(crate) fn request(&mut self, pending: Pending) {
         if self.is_dirty() {
             self.pending = Some(pending);
         } else {

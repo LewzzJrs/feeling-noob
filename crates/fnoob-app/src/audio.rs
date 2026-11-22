@@ -8,7 +8,7 @@ use fnoob_engine::device::{DeviceError, list_input_devices, open_input};
 use fnoob_engine::record::{RecordTarget, WavRecorder, start_recording};
 use fnoob_engine::{Command as EngineCommand, TransportState};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const START_TIMEOUT_FRAMES: u32 = 120;
@@ -244,6 +244,22 @@ impl App {
     }
 
     pub(crate) fn import_audio(&mut self) {
+        let Some(sources) = rfd::FileDialog::new()
+            .set_title("Import audio files")
+            .add_filter("WAV audio", &["wav"])
+            .pick_files()
+        else {
+            return;
+        };
+        let target = self.selection.track;
+        let tick = self.playhead_tick();
+        self.import_files(&sources, target, tick);
+    }
+
+    pub(crate) fn import_files(&mut self, sources: &[PathBuf], target: Option<Id>, tick: u64) {
+        if sources.is_empty() {
+            return;
+        }
         if self.project_dir.is_none() && !self.save_as() {
             self.message =
                 Some("Audio is copied into the project folder, so save the project first.".into());
@@ -252,55 +268,72 @@ impl App {
         let Some(dir) = self.project_dir.clone() else {
             return;
         };
-        let Some(source) = rfd::FileDialog::new()
-            .set_title("Import audio file")
-            .add_filter("WAV audio", &["wav"])
-            .pick_file()
-        else {
-            return;
-        };
-        let data = match load_wav(&source, self.project.sample_rate) {
-            Ok(data) => data,
-            Err(e) => {
-                self.message = Some(format!("Cannot import {}: {e}", source.display()));
-                return;
+        let mut problems = Vec::new();
+        let mut ready = Vec::new();
+        let mut taken = HashSet::new();
+        for source in sources {
+            let data = match load_wav(source, self.project.sample_rate) {
+                Ok(data) => data,
+                Err(e) => {
+                    problems.push(format!("{}: {e}", source.display()));
+                    continue;
+                }
+            };
+            let stem = source.file_stem().map_or_else(
+                || "Audio".to_owned(),
+                |s| file_stem_for(&s.to_string_lossy()),
+            );
+            let rel = unique_audio_path(&dir, &stem, &taken);
+            taken.insert(rel.clone());
+            let destination = dir.join(&rel);
+            let copied = destination
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::copy(source, &destination).map(|_| ()));
+            match copied {
+                Ok(()) => ready.push((rel, data)),
+                Err(e) => problems.push(format!("{}: {e}", source.display())),
             }
-        };
-        let stem = source.file_stem().map_or_else(
-            || "Audio".to_owned(),
-            |s| file_stem_for(&s.to_string_lossy()),
-        );
-        let rel = unique_audio_path(&dir, &stem, &HashSet::new());
-        let target = dir.join(&rel);
-        let copied = target
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::copy(&source, &target).map(|_| ()));
-        if let Err(e) = copied {
-            self.message = Some(format!("Cannot copy the file into the project: {e}"));
-            return;
         }
-        let selected = self.selection.track.filter(|id| {
+        let first_track = target.filter(|id| {
             self.project
                 .track(*id)
                 .is_some_and(|t| t.kind == TrackKind::Audio)
         });
-        let tick = self.playhead_tick();
-        let (channels, frames) = (data.channels, data.frames);
-        let mut result = None;
+        let mut created = Vec::new();
+        let specs: Vec<(String, u16, u64)> = ready
+            .iter()
+            .map(|(rel, data)| (rel.clone(), data.channels, data.frames))
+            .collect();
         self.edit(|p| {
-            let track = selected.unwrap_or_else(|| edit::add_track(p, TrackKind::Audio));
-            let file_id = edit::add_audio_file(p, rel.clone(), channels, frames);
-            result =
-                edit::add_audio_region(p, track, tick, file_id, 0).map(|r| (track, r, file_id));
+            for (index, (rel, channels, frames)) in specs.iter().enumerate() {
+                let track = match (index, first_track) {
+                    (0, Some(track)) => track,
+                    _ => edit::add_track(p, TrackKind::Audio),
+                };
+                let file_id = edit::add_audio_file(p, rel.clone(), *channels, *frames);
+                if let Some(region) = edit::add_audio_region(p, track, tick, file_id, 0) {
+                    created.push((track, region, file_id));
+                }
+            }
         });
-        if let Some((track, region, file_id)) = result {
-            self.pool.insert(file_id, Arc::new(data));
-            self.sync_plan();
-            self.selection.track = Some(track);
-            self.selection.regions = vec![region];
-            self.message = Some(format!("Imported {rel}."));
+        for ((_, data), (_, _, file_id)) in ready.into_iter().zip(&created) {
+            self.pool.insert(*file_id, Arc::new(data));
         }
+        if !created.is_empty() {
+            self.sync_plan();
+            self.selection.track = created.first().map(|(t, _, _)| *t);
+            self.selection.regions = created.iter().map(|(_, r, _)| *r).collect();
+        }
+        self.message = Some(if problems.is_empty() {
+            format!("Imported {} audio files.", created.len())
+        } else {
+            format!(
+                "Imported {} audio files. Skipped: {}",
+                created.len(),
+                problems.join("; ")
+            )
+        });
     }
 
     pub(crate) fn copy_audio_files(&self, to: &Path) -> Result<(), String> {

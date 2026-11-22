@@ -1,11 +1,13 @@
-use crate::app::{App, Drag};
+use crate::app::{App, Drag, Pending};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
     UiBuilder, Vec2,
 };
 use fnoob_core::edit;
+use fnoob_core::io::PROJECT_FILE;
 use fnoob_core::model::{AudioInput, Id, Region, RegionContent, TrackKind};
 use fnoob_core::time::{grid_ticks, snap_floor, snap_round, ticks_per_bar};
+use std::path::PathBuf;
 
 pub const HEADER_WIDTH: f32 = 210.0;
 pub const LOOP_ROW: f32 = 12.0;
@@ -35,15 +37,33 @@ pub fn track_color(index: u8) -> Color32 {
 
 pub enum UiAction {
     SelectTrack(Id),
-    SelectRegion { id: Id, toggle: bool },
+    SelectRegion {
+        id: Id,
+        toggle: bool,
+    },
     ClearRegions,
-    CreateRegion { track: Id, tick: u64 },
-    DragRegionsStart { primary: Id, pointer: Pos2 },
-    ResizeRegionStart { region: Id, pointer: Pos2 },
-    DragRegionsUpdate { pointer: Pos2 },
+    CreateRegion {
+        track: Id,
+        tick: u64,
+    },
+    DragRegionsStart {
+        primary: Id,
+        pointer: Pos2,
+    },
+    ResizeRegionStart {
+        region: Id,
+        pointer: Pos2,
+    },
+    DragRegionsUpdate {
+        pointer: Pos2,
+    },
     OpenEditor(Id),
-    DragLoopStart { tick: u64 },
-    DragLoopUpdate { tick: u64 },
+    DragLoopStart {
+        tick: u64,
+    },
+    DragLoopUpdate {
+        tick: u64,
+    },
     DragEnd,
     ToggleLoop,
     Locate(u64),
@@ -51,12 +71,26 @@ pub enum UiAction {
     ToggleSolo(Id),
     ToggleRecord(Id),
     ToggleMonitor(Id),
-    SetInput { id: Id, input: AudioInput },
+    SetInput {
+        id: Id,
+        input: AudioInput,
+    },
     StartRename(Id),
-    Rename { id: Id, name: String },
+    Rename {
+        id: Id,
+        name: String,
+    },
     CancelRename,
-    Scroll { ticks: f32, pixels: f32 },
+    Scroll {
+        ticks: f32,
+        pixels: f32,
+    },
     Zoom(f32),
+    DropFiles {
+        paths: Vec<PathBuf>,
+        track: Option<Id>,
+        tick: u64,
+    },
 }
 
 struct Geometry {
@@ -138,9 +172,55 @@ impl App {
                 Stroke::new(1.5, PLAYHEAD),
             );
         }
+        self.handle_file_drop(ui, &geometry, area, &mut actions);
         for action in actions {
             self.apply_ui_action(action);
         }
+    }
+
+    fn handle_file_drop(
+        &self,
+        ui: &egui::Ui,
+        g: &Geometry,
+        area: Rect,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let (hovering, dropped, pointer) = ui.input(|i| {
+            (
+                !i.raw.hovered_files.is_empty(),
+                i.raw.dropped_files.clone(),
+                i.pointer.latest_pos(),
+            )
+        });
+        if hovering {
+            let painter = ui.painter_at(area);
+            painter.rect_filled(area, 0.0, Color32::from_black_alpha(120));
+            painter.text(
+                area.center(),
+                Align2::CENTER_CENTER,
+                "Drop WAV files to import them, or a .fnoob folder to open it",
+                FontId::proportional(18.0),
+                Color32::WHITE,
+            );
+        }
+        let paths: Vec<PathBuf> = dropped.iter().map(|f| f.path().to_path_buf()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        let inside = pointer.filter(|p| g.lanes.contains(*p));
+        let track = inside.and_then(|p| {
+            let index = ((p.y - g.lanes.top() + g.scroll_y) / LANE_HEIGHT).floor();
+            (index >= 0.0)
+                .then(|| self.project.tracks.get(index as usize))
+                .flatten()
+                .map(|t| t.id)
+        });
+        let tick = inside.map_or_else(|| self.playhead_tick(), |p| self.snapped(g.tick(p.x)));
+        actions.push(UiAction::DropFiles {
+            paths,
+            track: track.or(self.selection.track),
+            tick,
+        });
     }
 
     fn draw_ruler(&self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
@@ -617,6 +697,32 @@ impl App {
                     (self.view.scroll_y + pixels).clamp(0.0, (content - LANE_HEIGHT).max(0.0));
             }
             UiAction::Zoom(factor) => self.zoom(factor),
+            UiAction::DropFiles { paths, track, tick } => {
+                let project = paths.iter().find_map(|p| {
+                    if p.is_dir() && p.join(PROJECT_FILE).is_file() {
+                        Some(p.clone())
+                    } else if p.file_name().is_some_and(|n| n == PROJECT_FILE) {
+                        p.parent().map(PathBuf::from)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(dir) = project {
+                    self.request(Pending::OpenPath(dir));
+                    return;
+                }
+                let (wavs, others): (Vec<PathBuf>, Vec<PathBuf>) = paths
+                    .into_iter()
+                    .partition(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")));
+                if wavs.is_empty() {
+                    self.message = Some(format!(
+                        "Only WAV files and project folders can be dropped ({} other files skipped).",
+                        others.len()
+                    ));
+                    return;
+                }
+                self.import_files(&wavs, track, tick);
+            }
         }
     }
 
