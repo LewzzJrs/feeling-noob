@@ -55,7 +55,8 @@ impl App {
                 ChainTarget::SelectedTrack,
                 "Selected track",
             );
-            ui.selectable_value(&mut self.chain_target, ChainTarget::Bus, "Bus 1");
+            let name = self.project.bus.name.clone();
+            ui.selectable_value(&mut self.chain_target, ChainTarget::Bus, name);
             if ui.button("Close").clicked() {
                 self.devices_open = false;
             }
@@ -73,7 +74,11 @@ impl App {
                 Some(t) => (t.name.clone(), Some(t.kind), t.strip.inserts.clone()),
                 None => return,
             },
-            Owner::Bus => ("Bus 1".to_owned(), None, self.project.bus.inserts.clone()),
+            Owner::Bus => (
+                self.project.bus.name.clone(),
+                None,
+                self.project.bus.inserts.clone(),
+            ),
         };
         ui.label(
             RichText::new(format!(

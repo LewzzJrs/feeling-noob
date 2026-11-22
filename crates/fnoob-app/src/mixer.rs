@@ -321,7 +321,7 @@ impl App {
                     .speed(0.2)
                     .custom_formatter(|v, _| db_text(v)),
             );
-            let response = hint(response, "Send to Bus 1 (return A), in dB.");
+            let response = hint(response, "Send to return track A, in dB.");
             self.live_edit(&response, |p| {
                 if let Some(t) = p.track_mut(id) {
                     t.strip.send.level_db = from_fader(level);

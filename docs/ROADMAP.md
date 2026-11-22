@@ -26,7 +26,7 @@ Features that are **not** in the MVP. Order within each group is a rough priorit
 | Whole audio files loaded into memory | Disk streaming | SPEC 5.5 |
 | Single-threaded graph | Parallel track processing | SPEC 5.3 |
 | Snapshot undo of the whole project | Change-based undo (less memory) | SPEC 4.6 |
-| One bus (Bus 1), one send per track | Many buses/aux channels, many sends | SPEC F4 |
+| One return track, one send per track | More return tracks and sends, group tracks (buses) | SPEC F4 |
 | At most 4 inserts per strip | Unlimited slots | SPEC F4 |
 | VST3 processed in-process | Out-of-process plugin processing (full crash isolation) | SPEC 5.6 |
 | No plugin delay compensation (PDC) | Automatic PDC | SPEC 5.3 |
@@ -47,11 +47,11 @@ Known limits of Phase 11: samples must already be at the project sample rate (no
 
 Done in Phase 12: clip-launch grid view (`Tab`) with scenes, launch quantize, launch modes (trigger, gate, toggle, repeat), follow actions with chance, per-track and global stop, back to timeline, moving and duplicating clips, copying between the grid and the timeline, and dropping samples onto slots.
 
-Done in Phase 13: device chain view in the bottom area (`Shift+Tab`) for the selected track or Bus 1, with the instrument and each effect as a card: on/off, move left/right, replace, remove, inline controls for built-in devices, and drop from the browser.
+Done in Phase 13: device chain view in the bottom area (`Shift+Tab`) for the selected track or the return track, with the instrument and each effect as a card: on/off, move left/right, replace, remove, inline controls for built-in devices, and drop from the browser.
 
 Done in Phase 14: punch in and punch out (they use the loop area, shown as red lines on the ruler), and Capture MIDI (`Ctrl+Shift+C`), which turns the notes played last into a region, with or without the transport running.
 
-Done in Phase 15: a new layout and way of working. Track headers with name, input and mixer controls sit right of the timeline, with Bus 1 and Main rows below. The clip grid has a mixer section under each column. A detail area at the bottom shows Clip (properties plus piano roll or waveform) or Devices. The browser has categories and places. The status bar explains the control under the mouse. The control bar adds tap tempo, loop start and length, draw mode and an overall CPU meter, and all keyboard shortcuts were replaced (see `SPEC.md` section 6).
+Done in Phase 15: a new layout and way of working. Track headers with name, input and mixer controls sit right of the timeline, with the return track and Main rows below. The clip grid has a mixer section under each column. A detail area at the bottom shows Clip (properties plus piano roll or waveform) or Devices. The browser has categories and places. The status bar explains the control under the mouse. The control bar adds tap tempo, loop start and length, draw mode and an overall CPU meter, and all keyboard shortcuts were replaced (see `SPEC.md` section 6).
 
 Not started, in rough priority order:
 
@@ -64,7 +64,7 @@ Not started, in rough priority order:
 - Crossfades between overlapping regions, fade handles on region corners
 - Quantize strength and swing, groove templates
 - Rubber-band selection, draw mode and chance lane in the piano roll
-- Return tracks, more sends, groups and nested groups, sidechain inputs
+- More return tracks and sends, group tracks (buses) and nested groups, sidechain inputs
 - Crossfader and cue output
 - Freeze / bounce in place, consolidate
 - CPU meter per track

@@ -157,7 +157,10 @@ pub fn from_json(bytes: &[u8]) -> Result<Project, ProjectError> {
     if probe.format_version > FORMAT_VERSION {
         return Err(ProjectError::UnsupportedVersion(probe.format_version));
     }
-    let project: Project = serde_json::from_slice(bytes)?;
+    let mut project: Project = serde_json::from_slice(bytes)?;
+    if project.bus.name == crate::model::OLD_RETURN_NAME {
+        project.bus.name = crate::model::RETURN_NAME.to_owned();
+    }
     validate(&project).map_err(ProjectError::Invalid)?;
     Ok(project)
 }
@@ -186,7 +189,7 @@ pub fn validate(project: &Project) -> Result<(), String> {
         return Err("bus or master settings are invalid".into());
     }
     if project.bus.inserts.len() > MAX_INSERTS {
-        return Err("Bus 1 has too many inserts".into());
+        return Err("the return track has too many inserts".into());
     }
     if project.scenes.is_empty() || project.scenes.len() > crate::session::MAX_SCENES {
         return Err("the clip grid must have 1 to 999 scenes".into());
@@ -376,6 +379,20 @@ mod tests {
             controller_state: None,
             builtin: None,
         }
+    }
+
+    #[test]
+    fn old_return_name_is_renamed_on_load() {
+        let mut p = sample_project();
+        p.bus.name = crate::model::OLD_RETURN_NAME.to_owned();
+        let json = serde_json::to_vec(&p).unwrap();
+        assert_eq!(
+            from_json(&json).unwrap().bus.name,
+            crate::model::RETURN_NAME
+        );
+        p.bus.name = "Reverb".to_owned();
+        let json = serde_json::to_vec(&p).unwrap();
+        assert_eq!(from_json(&json).unwrap().bus.name, "Reverb");
     }
 
     #[test]

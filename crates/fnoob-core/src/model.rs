@@ -366,6 +366,9 @@ impl ChannelStrip {
     }
 }
 
+pub const RETURN_NAME: &str = "A Return";
+pub const OLD_RETURN_NAME: &str = "Bus 1";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Bus {
@@ -379,7 +382,7 @@ pub struct Bus {
 impl Default for Bus {
     fn default() -> Self {
         Self {
-            name: "Bus 1".into(),
+            name: RETURN_NAME.into(),
             volume_db: 0.0,
             pan: 0.0,
             mute: false,

@@ -64,7 +64,7 @@ Each entry: file, what was skipped, when it needs fixing.
 | S8 | Phase 4 | The placeholder beep is gone; MIDI regions play their notes through the Basic Synth. |
 | S10 | Phase 5 | Record captures audio on armed audio tracks as well as MIDI. |
 | S13 | Phase 5 | Playback and recording are blocked when the project and device sample rates differ. |
-| S21 | Phase 6 | Tracks go through the mixer (volume, pan, send, Bus 1, Master) before the output safety clamp. |
+| S21 | Phase 6 | Tracks go through the mixer (volume, pan, send, return track, Master) before the output safety clamp. |
 | S34 | Phase 6 | Insert slots load VST3 effects; instrument tracks can use a VST3 instrument. |
 | S11 | Phase 7 | Count-in length is set in File > Project Settings. |
 | S17 | Phase 7 | Bounce to WAV works (Ctrl+B). |

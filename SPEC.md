@@ -38,12 +38,12 @@ Every feature has a "done when" criterion that can be checked by hand.
 - Done when: added or moved notes play back correctly right away, and Q tightens timing.
 
 ### F4. Mixer
-- One channel strip per track, one **Bus 1**, one **Master**.
-- Track strip: volume (−∞ to +6 dB), pan, mute, solo, up to 4 VST3 insert slots, 1 send to Bus 1 (level + pre/post fader), peak meter.
-- Bus 1: volume, pan, mute, 4 insert slots, meter.
+- One channel strip per track, one **return track (A Return)**, one **Master (Main)**. A bus, in this project, means a group track; groups are on the roadmap.
+- Track strip: volume (−∞ to +6 dB), pan, mute, solo, up to 4 VST3 insert slots, 1 send to the return track (level + pre/post fader), peak meter.
+- Return track: volume, pan, mute, 4 insert slots, meter.
 - Master: volume, meter.
 - Pan law: −3 dB constant power.
-- Solo: when any track is soloed, the other tracks are silenced. Bus 1 is never silenced by solo, so send effects on a soloed track stay audible.
+- Solo: when any track is soloed, the other tracks are silenced. The return track is never silenced by solo, so send effects on a soloed track stay audible.
 - Done when: fader, pan, mute, solo, and send sound right and meters move.
 
 ### F5. VST3 plugins
@@ -236,7 +236,7 @@ MyTrack.fnoob\
       ]
     }
   ],
-  "bus": { "name": "Bus 1", "volume_db": 0.0, "pan": 0.0, "mute": false, "inserts": [] },
+  "bus": { "name": "A Return", "volume_db": 0.0, "pan": 0.0, "mute": false, "inserts": [] },
   "master": { "volume_db": 0.0 }
 }
 ```
@@ -306,8 +306,8 @@ Autosave uses the same steps into `autosave\project.json`, without backups.
 1. Take pending `Command`s.
 2. Compute the block's sample range. If looping is on and the range crosses the loop end, split the block: up to the loop end, then from the loop start. On the jump, send note-off to every instrument.
 3. Per track: the instrument (Basic Synth / VST3) receives the MIDI events in range, or the audio clip is copied from its in-memory buffer.
-4. Inserts → volume → pan → meter → add to Master, and send to Bus 1.
-5. Bus 1: inserts → volume/pan → Master.
+4. Inserts → volume → pan → meter → add to Master, and send to the return track.
+5. Return track: inserts → volume/pan → Master.
 6. The metronome is added directly to the output (not through the Master fader).
 7. Output: zero NaN/denormals and clamp to ±1.0 as a safety net.
 8. Store the playhead position in the atomic.
@@ -394,7 +394,7 @@ Layout:
 │ Browser  │ Ruler + loop area                     │ Track headers:    │
 │ category │ Regions (timeline) or clip grid       │ name, I/O, mixer  │
 │ | items  ├───────────────────────────────────────┴───────────────────┤
-│          │ Bus 1 and Main rows                                       │
+│          │ Return track and Main rows                                │
 │          ├───────────────────────────────────────────────────────────┤
 │          │ Detail area: Clip (properties + piano roll) or Devices    │
 ├──────────┴───────────────────────────────────────────────────────────┤
@@ -403,7 +403,7 @@ Layout:
 ```
 
 - Menus: File, Edit, Create, Track, Transport, View (egui widgets, not native menus).
-- In the clip grid the mixer section sits under every column, with Bus 1 and Main columns next to the tracks.
+- In the clip grid the mixer section sits under every column, with the return track and Main columns next to the tracks.
 - Dark theme by default.
 - VST3 plugin editors in separate windows.
 
@@ -454,7 +454,7 @@ Deliberately **not** used in the MVP: `tokio` (no async needed), `uuid` (replace
 | 3 Timeline & transport | project model, Tracks area, regions, transport, loop, position display, tempo/time signature, undo, shortcuts | F1 and F2 meet their criteria; dummy regions play a beep |
 | 4 Instrument + Piano Roll + MIDI | Basic Synth, Piano Roll, quantize, MIDI input, MIDI recording | F3, MIDI part of F6, F10 |
 | 5 Audio track + recording | input device, monitoring, WAV recording, WAV import, latency compensation | audio part of F6 |
-| 6 Mixer + VST3 | channel strips, Bus 1, Master, meters, scanning, Plugin Manager, VST3 inserts/instruments, editors | F4, F5 |
+| 6 Mixer + VST3 | channel strips, return track, Master, meters, scanning, Plugin Manager, VST3 inserts/instruments, editors | F4, F5 |
 | 7 Save/load, autosave, export | full project format, backups, autosave, recovery, bounce | F7, F8 |
 | 8 Release check | code audit, `.exe` check (imports, hardening flags, DLLs), installer | release checklist passes |
 

@@ -8,9 +8,7 @@ use eframe::egui::{
 };
 use fnoob_core::edit;
 use fnoob_core::model::{Id, RegionContent, TrackKind};
-use fnoob_core::session::{
-    self, FollowAction, LaunchMode, SessionClip, clip as clip_at,
-};
+use fnoob_core::session::{self, FollowAction, LaunchMode, SessionClip, clip as clip_at};
 use fnoob_core::time::ticks_per_bar;
 use fnoob_engine::Command as EngineCommand;
 use fnoob_engine::session::SessionStatus;
