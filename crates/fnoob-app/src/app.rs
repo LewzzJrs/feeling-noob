@@ -7,7 +7,7 @@ use fnoob_core::edit;
 use fnoob_core::history::History;
 use fnoob_core::io::{self, PROJECT_EXTENSION, PROJECT_FILE};
 use fnoob_core::keymap::{Command, shortcut_label};
-use fnoob_core::model::{Grid, Id, Project, Region, Track, TrackKind};
+use fnoob_core::model::{AutomationParam, Grid, Id, Project, Region, Track, TrackKind};
 use fnoob_core::settings::{
     BUFFER_SIZES, InputChoice, MidiInputChoice, RecordFormat, Settings, default_settings_path,
 };
@@ -53,6 +53,17 @@ pub enum Drag {
         origin: Project,
         index: usize,
     },
+    RegionTrim {
+        origin: Project,
+        region: Id,
+        anchor: Pos2,
+    },
+    Automation {
+        origin: Project,
+        track: Id,
+        param: AutomationParam,
+        index: usize,
+    },
 }
 
 impl Drag {
@@ -62,7 +73,9 @@ impl Drag {
             | Drag::RegionResize { origin, .. }
             | Drag::Loop { origin, .. }
             | Drag::Notes { origin, .. }
-            | Drag::Velocity { origin, .. } => origin,
+            | Drag::Velocity { origin, .. }
+            | Drag::RegionTrim { origin, .. }
+            | Drag::Automation { origin, .. } => origin,
         }
     }
 }
@@ -129,6 +142,10 @@ pub struct App {
     pub(crate) renaming: Option<(Id, String)>,
     pub(crate) editor: Editor,
     pub(crate) mixer_open: bool,
+    pub(crate) automation_view: bool,
+    pub(crate) automation_params: std::collections::HashMap<Id, AutomationParam>,
+    pub(crate) marker_rename: Option<(Id, String)>,
+    pub(crate) musical: crate::musical::MusicalTyping,
     pub(crate) plugins: crate::plugins::PluginHost,
     pub(crate) meters: crate::mixer::Meters,
     pub(crate) focus: Focus,
@@ -199,6 +216,10 @@ impl App {
             renaming: None,
             editor: Editor::default(),
             mixer_open: false,
+            automation_view: false,
+            automation_params: std::collections::HashMap::new(),
+            marker_rename: None,
+            musical: crate::musical::MusicalTyping::default(),
             plugins,
             meters: crate::mixer::Meters::default(),
             focus: Focus::Tracks,
@@ -597,6 +618,37 @@ impl App {
             Command::Save => {
                 self.save();
             }
+            Command::AddMarker => {
+                let tick = self.playhead_tick();
+                self.edit(|p| {
+                    edit::add_marker(p, tick);
+                });
+            }
+            Command::PreviousMarker | Command::NextMarker => {
+                let tick = self.playhead_tick();
+                let target = if command == Command::NextMarker {
+                    self.project.markers.iter().find(|m| m.tick > tick)
+                } else {
+                    self.project.markers.iter().rev().find(|m| m.tick < tick)
+                };
+                if let Some(marker) = target {
+                    let tick = marker.tick;
+                    self.locate(tick);
+                }
+            }
+            Command::ToggleAutomation => self.automation_view = !self.automation_view,
+            Command::ToggleMusicalTyping => self.toggle_musical_typing(),
+            Command::DuplicateTrack => {
+                if let Some(track) = self.selection.track {
+                    let mut created = None;
+                    self.capture_plugin_states();
+                    self.edit(|p| created = edit::duplicate_track(p, track));
+                    if created.is_some() {
+                        self.selection.track = created;
+                        self.selection.regions.clear();
+                    }
+                }
+            }
             Command::SaveAs => {
                 self.save_as();
             }
@@ -849,6 +901,21 @@ impl App {
                     ui.close();
                 }
                 ui.separator();
+                self.menu_item(ui, "Duplicate Track", Command::DuplicateTrack);
+                for (label, delta) in [("Move Track Up", -1), ("Move Track Down", 1)] {
+                    if ui
+                        .add_enabled(selected.is_some(), egui::Button::new(label))
+                        .clicked()
+                    {
+                        if let Some(id) = selected {
+                            self.edit(|p| {
+                                edit::move_track(p, id, delta);
+                            });
+                        }
+                        ui.close();
+                    }
+                }
+                ui.separator();
                 self.menu_item(ui, "Mute Track", Command::ToggleTrackMute);
                 self.menu_item(ui, "Solo Track", Command::ToggleTrackSolo);
                 self.menu_item(ui, "Record Enable Track", Command::ToggleTrackRecord);
@@ -863,10 +930,17 @@ impl App {
                 self.menu_item(ui, "Loop", Command::ToggleLoop);
                 self.menu_item(ui, "Metronome", Command::ToggleMetronome);
                 self.menu_item(ui, "Count-in", Command::ToggleCountIn);
+                ui.separator();
+                self.menu_item(ui, "Add Marker", Command::AddMarker);
+                self.menu_item(ui, "Previous Marker", Command::PreviousMarker);
+                self.menu_item(ui, "Next Marker", Command::NextMarker);
+                ui.separator();
+                self.menu_item(ui, "Musical Typing", Command::ToggleMusicalTyping);
             });
             ui.menu_button("View", |ui| {
                 self.menu_item(ui, "Mixer", Command::ToggleMixer);
                 self.menu_item(ui, "Piano Roll", Command::TogglePianoRoll);
+                self.menu_item(ui, "Automation", Command::ToggleAutomation);
                 ui.separator();
                 self.menu_item(ui, "Zoom In", Command::ZoomIn);
                 self.menu_item(ui, "Zoom Out", Command::ZoomOut);
@@ -980,6 +1054,18 @@ impl App {
                 "Count-in before recording (Shift+K)",
             ) {
                 self.run(Command::ToggleCountIn);
+            }
+            ui.separator();
+            if Self::toggle_button(ui, self.automation_view, "Auto", "Show automation (A)") {
+                self.run(Command::ToggleAutomation);
+            }
+            if Self::toggle_button(
+                ui,
+                self.musical.on,
+                &self.musical.label(),
+                "Play notes with the computer keyboard (Ctrl+K)",
+            ) {
+                self.run(Command::ToggleMusicalTyping);
             }
             ui.separator();
             if Self::toggle_button(ui, snap, "Snap", "Snap to grid (Ctrl+G)") {
@@ -1398,8 +1484,12 @@ impl eframe::App for App {
         self.poll_engine();
         self.handle_close(&ctx);
         self.update_focus(&ctx);
+        if self.musical.on && self.pending.is_none() && self.marker_rename.is_none() {
+            self.take_musical_keys(&ctx);
+        }
         if self.pending.is_none()
             && self.new_tracks.is_none()
+            && self.marker_rename.is_none()
             && self.recovery.is_none()
             && self.bounce.is_none()
             && self.bounce_dialog.is_none()
@@ -1438,6 +1528,7 @@ impl eframe::App for App {
         self.project_settings_window(&ctx);
         self.cleanup_window(&ctx);
         self.recovery_window(&ctx);
+        self.marker_rename_window(&ctx);
         self.bounce_windows(&ctx);
         self.plugin_manager(&ctx);
         self.new_tracks_window(&ctx);

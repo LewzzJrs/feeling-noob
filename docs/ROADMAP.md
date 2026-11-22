@@ -35,20 +35,29 @@ Features that are **not** in the MVP. Order within each group is a rough priorit
 | Incoming MIDI timestamps rounded to the audio block | Precise timestamps from `midir` | SPEC 5.1 |
 | WASAPI shared mode | WASAPI exclusive mode (needs custom WASAPI code; `cpal` does not support it), ASIO (SDK downloaded manually and pinned) | SPEC 5.4 |
 
-## 3. Editing and mixing features not started
+## 3. Editing and mixing features
 
-- Automation (volume, pan, plugin parameters)
+Done after the MVP (Phase 9): volume and pan automation, region gain and fades, trimming region starts, markers, computer-keyboard note input, duplicating and reordering tracks.
+
+Not started, in rough priority order:
+
+- Built-in effects: EQ, compressor, delay, reverb
+- Punch in/out recording
+- Take folders and comping for audio
+- Tempo and time signature changes (tempo map)
+- Automation of plugin parameters, and automation recording
+- Crossfades between overlapping regions
+- Quantize strength and swing
+- Rubber-band selection and tools in the piano roll
+- Sidechain inputs and more buses and sends
+- Track folders / grouped tracks and mixer groups
+- Freeze / render in place
 - Inspector panel and sound/patch browser
-- On-screen keyboard and computer-keyboard note input
-- Markers and arrangement sections
-- Track folders / grouped tracks
+- On-screen keyboard
+- Event list editor
+- Region time stretch
 - Project versions (alternative mixes in one project)
 - MIDI output to hardware
-- Region gain, fades, crossfades
-- Region time stretch
-- Event list editor
-- Mixer groups
-- Freeze / render in place
 
 ## 4. Plugins and formats
 

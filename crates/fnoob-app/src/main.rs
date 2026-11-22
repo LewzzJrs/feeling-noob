@@ -8,6 +8,7 @@ mod instrument;
 mod keys;
 mod midi;
 mod mixer;
+mod musical;
 mod piano_roll;
 mod plugins;
 mod timeline;

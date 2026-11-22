@@ -15,7 +15,6 @@ Each entry: file, what was skipped, when it needs fixing.
 | S9 | `crates/fnoob-app/src/app.rs` (`sync_plan`) | The whole render plan is rebuilt and sent on every edit, including every frame of a drag. | When large projects feel slow (Phase 7 check). |
 | S12 | `crates/fnoob-app/src/app.rs` (`open`) | Open uses a folder picker for the `.fnoob` folder instead of picking `project.json`. | Phase 8 polish. |
 | S14 | `crates/fnoob-app/src/timeline.rs` (`update_region_drag`) | Dragging regions to another track only works for a single region; multi-region drags move horizontally only. | When multi-track moves are needed. |
-| S15 | `crates/fnoob-app/src/timeline.rs` (`update_region_resize`) | Only the right edge of a region can be dragged. The left edge (trim the start) is not supported. | When trimming starts is needed. |
 | S16 | `crates/fnoob-core/src/history.rs` | Undo stores a full copy of the project per step (planned in `SPEC.md` 4.6). | If memory use becomes a problem. |
 | S18 | `crates/fnoob-app/src/app.rs` (`control_bar`) | The control bar does not wrap; on narrow windows its right side is cut off. | When window layout is polished (Phase 8). |
 | S19 | `crates/fnoob-engine/src/processor.rs` (`drain_midi`), `midi_in.rs` | MIDI input is applied at the start of each audio block; the `midir` timestamp is ignored. Timing can be off by up to one buffer (about 10 ms). | Phase 5, together with latency measurement. |
@@ -28,7 +27,6 @@ Each entry: file, what was skipped, when it needs fixing.
 | S27 | `crates/fnoob-engine/src/processor.rs` (`clip_frame`) | Overlapping audio regions on one track are mixed together instead of the later one covering the earlier one. | If overlapping regions confuse users. |
 | S29 | `crates/fnoob-engine/src/audio_data.rs` | Whole audio files are loaded into memory (planned in `SPEC.md` 5.5). Long projects use a lot of RAM. | Roadmap (disk streaming). |
 | S30 | `crates/fnoob-app/src/audio.rs` (`finish_audio_take`) | Latency compensation uses the latency reported by the audio driver. It has not been checked with a loopback cable. | When a loopback measurement is possible. |
-| S32 | `crates/fnoob-app/src/timeline.rs` | Audio regions have no fades, and their gain can only be changed in `project.json`. | Phase 6 (mixer) or later. |
 | S33 | `crates/fnoob-app/src/timeline.rs` (`input_options`) | The input channel list follows the currently open input device; with no input open it shows 2 channels. | When devices with many inputs are tested. |
 | S35 | `crates/fnoob-app/src/mixer.rs` | Meters show a decaying peak only: no peak hold, no clip indicator, no dB scale. | Phase 8 polish. |
 | S36 | `crates/fnoob-core/src/model.rs` (`Track`) | Track mute and solo stay on `Track`, not inside `strip` as the `SPEC.md` 4.3 example shows. | When the project format is next changed. |
@@ -43,6 +41,9 @@ Each entry: file, what was skipped, when it needs fixing.
 | S47 | `crates/fnoob-platform/src/plugin/com.rs` (`ComponentHandler`) | Parameter edits sent by a plugin go through a mutex; a plugin that sends them from the audio thread would lock there. | If a plugin is seen doing this. |
 | S48 | `installer/` | The installer is a ZIP with PowerShell scripts, not a signed setup program. Windows SmartScreen may warn on first start because the exe is not code-signed. | When a code-signing certificate is available. |
 | S49 | `Cargo.lock` | No automated dependency vulnerability check (`cargo audit`) has been run; the tool is not installed. | Before the first public release. |
+| S50 | `crates/fnoob-app/src/timeline.rs` (`region_menu`) | Region gain and fade lengths are picked from fixed steps in the right-click menu; there are no drag handles. | When finer control is needed. |
+| S51 | `crates/fnoob-engine/src/plan.rs` (`StripPlan::at`) | Automation only covers track volume and pan, is drawn by hand (not recorded from fader moves), and has no curve shapes. | With plugin automation. |
+| S52 | `crates/fnoob-app/src/musical.rs` | Musical typing uses a fixed US key layout and takes over those letter keys while it is on. | If other keyboard layouts are needed. |
 
 ## Fixed
 
@@ -62,3 +63,5 @@ Each entry: file, what was skipped, when it needs fixing.
 | S39 | Phase 7 | Plugin states are written into the project before an insert or instrument changes, so undo restores them. |
 | S6 | Phase 8 | Original app icon in the window and the exe, plus version info. |
 | S43 | Phase 8 | The release package puts `fnoob-scan.exe` next to the app. |
+| S15 | Phase 9 | Both region edges can be dragged; the left edge trims the start. |
+| S32 | Phase 9 | Audio regions have fades and a gain setting in the right-click menu. |

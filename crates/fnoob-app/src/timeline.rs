@@ -5,7 +5,9 @@ use eframe::egui::{
 };
 use fnoob_core::edit;
 use fnoob_core::io::PROJECT_FILE;
-use fnoob_core::model::{AudioInput, Id, Region, RegionContent, TrackKind};
+use fnoob_core::model::{
+    AudioInput, AutomationParam, Id, Region, RegionContent, Track, TrackKind, value_at,
+};
 use fnoob_core::time::{grid_ticks, snap_floor, snap_round, ticks_per_bar};
 use std::path::PathBuf;
 
@@ -30,6 +32,7 @@ const TRACK_PALETTE: [Color32; 8] = [
 const LOOP_ON: Color32 = Color32::from_rgb(64, 170, 150);
 const LOOP_OFF: Color32 = Color32::from_rgb(80, 80, 86);
 const PLAYHEAD: Color32 = Color32::from_rgb(240, 240, 240);
+const MARKER: Color32 = Color32::from_rgb(235, 170, 90);
 
 pub fn track_color(index: u8) -> Color32 {
     TRACK_PALETTE[usize::from(index) % TRACK_PALETTE.len()]
@@ -91,6 +94,70 @@ pub enum UiAction {
         track: Option<Id>,
         tick: u64,
     },
+    TrimRegionStart {
+        region: Id,
+        pointer: Pos2,
+    },
+    AddAutomationPoint {
+        track: Id,
+        tick: u64,
+        value: f32,
+    },
+    AutomationDragStart {
+        track: Id,
+        index: usize,
+    },
+    AutomationDragUpdate {
+        tick: u64,
+        value: f32,
+    },
+    DeleteAutomationPoint {
+        track: Id,
+        index: usize,
+    },
+    SetAutomationParam {
+        track: Id,
+        param: AutomationParam,
+    },
+    RegionGain {
+        region: Id,
+        db: Option<f32>,
+    },
+    RegionFades {
+        region: Id,
+        fade_in: Option<u64>,
+        fade_out: Option<u64>,
+    },
+    MuteRegion(Id),
+    DeleteRegion(Id),
+    SplitRegion(Id),
+    LocateMarker(u64),
+    RenameMarker(Id),
+    DeleteMarker(Id),
+}
+
+fn automation_y(lane: Rect, param: AutomationParam, value: f32) -> f32 {
+    let (low, high) = param.range();
+    let inner = lane.shrink2(Vec2::new(0.0, 6.0));
+    inner.bottom() - inner.height() * ((value.max(low) - low) / (high - low)).clamp(0.0, 1.0)
+}
+
+fn automation_value(lane: Rect, param: AutomationParam, y: f32) -> f32 {
+    let (low, high) = param.range();
+    let inner = lane.shrink2(Vec2::new(0.0, 6.0));
+    let t = ((inner.bottom() - y) / inner.height()).clamp(0.0, 1.0);
+    let value = low + (high - low) * t;
+    match param {
+        AutomationParam::Volume => (value * 2.0).round() / 2.0,
+        AutomationParam::Pan => (value * 100.0).round() / 100.0,
+    }
+}
+
+fn base_value(track: &Track, param: AutomationParam) -> f32 {
+    match param {
+        AutomationParam::Volume => track.strip.volume_db.max(-60.0),
+        AutomationParam::Pan => track.strip.pan,
+    }
 }
 
 struct Geometry {
@@ -293,6 +360,48 @@ impl App {
         {
             actions.push(UiAction::Locate(self.snapped(g.tick(pos.x))));
         }
+        for marker in &self.project.markers {
+            let x = g.x(marker.tick);
+            if x < bar_row.left() - 80.0 || x > bar_row.right() {
+                continue;
+            }
+            let flag = Rect::from_min_size(
+                Pos2::new(x, bar_row.center().y - 1.0),
+                Vec2::new(
+                    (marker.name.chars().count() as f32 * 6.5 + 8.0).min(140.0),
+                    bar_row.bottom() - bar_row.center().y + 1.0,
+                ),
+            );
+            painter.rect_filled(flag, CornerRadius::same(2), MARKER);
+            painter.vline(x, bar_row.y_range(), Stroke::new(1.5, MARKER));
+            ui.painter_at(flag.intersect(g.ruler)).text(
+                flag.left_center() + Vec2::new(4.0, 0.0),
+                Align2::LEFT_CENTER,
+                &marker.name,
+                FontId::proportional(11.0),
+                Color32::BLACK,
+            );
+            let response = ui
+                .interact(
+                    flag.intersect(g.ruler),
+                    ui.scope_id().with(("marker", marker.id)),
+                    Sense::click(),
+                )
+                .on_hover_text("Click to jump. Right-click to rename or delete.");
+            if response.clicked() {
+                actions.push(UiAction::LocateMarker(marker.tick));
+            }
+            response.context_menu(|ui| {
+                if ui.button("Rename...").clicked() {
+                    actions.push(UiAction::RenameMarker(marker.id));
+                    ui.close();
+                }
+                if ui.button("Delete marker").clicked() {
+                    actions.push(UiAction::DeleteMarker(marker.id));
+                    ui.close();
+                }
+            });
+        }
     }
 
     fn draw_lanes(&self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
@@ -335,7 +444,20 @@ impl App {
                 ui.scope_id().with(("lane", track.id)),
                 Sense::click(),
             );
-            if lane_response.double_clicked() && track.kind == TrackKind::Instrument {
+            let automating = self.automation_view;
+            if automating {
+                if lane_response.clicked()
+                    && let Some(pos) = lane_response.interact_pointer_pos()
+                {
+                    let param = self.automation_param(track.id);
+                    actions.push(UiAction::SelectTrack(track.id));
+                    actions.push(UiAction::AddAutomationPoint {
+                        track: track.id,
+                        tick: self.snapped(g.tick(pos.x)),
+                        value: automation_value(lane, param, pos.y),
+                    });
+                }
+            } else if lane_response.double_clicked() && track.kind == TrackKind::Instrument {
                 if let Some(pos) = lane_response.interact_pointer_pos() {
                     let tick = snap_floor(
                         g.tick(pos.x),
@@ -371,6 +493,11 @@ impl App {
                 } else {
                     track_color(track.color)
                 };
+                let base = if automating {
+                    base.gamma_multiply(0.45)
+                } else {
+                    base
+                };
                 painter.rect_filled(rect, CornerRadius::same(4), base.gamma_multiply(0.75));
                 let border = if selected {
                     Stroke::new(2.0, Color32::WHITE)
@@ -379,6 +506,7 @@ impl App {
                 };
                 painter.rect_stroke(rect, CornerRadius::same(4), border, StrokeKind::Inside);
                 self.draw_waveform(ui, g, region, rect);
+                self.draw_fades(ui, g, region, rect);
                 let notes = region.notes();
                 if let (Some(low), Some(high)) = (
                     notes.iter().map(|n| n.pitch).min(),
@@ -418,6 +546,9 @@ impl App {
                     FontId::proportional(12.0),
                     Color32::BLACK,
                 );
+                if automating {
+                    continue;
+                }
                 let response = ui.interact(
                     rect.intersect(g.lanes),
                     ui.scope_id().with(("region", region.id)),
@@ -425,15 +556,26 @@ impl App {
                 );
                 let near_edge =
                     |pos: Pos2| pos.x >= rect.right() - EDGE && rect.width() > 3.0 * EDGE;
-                let response = if response.hover_pos().is_some_and(near_edge) {
+                let near_start =
+                    |pos: Pos2| pos.x <= rect.left() + EDGE && rect.width() > 3.0 * EDGE;
+                let response = if response
+                    .hover_pos()
+                    .is_some_and(|p| near_edge(p) || near_start(p))
+                {
                     response.on_hover_cursor(CursorIcon::ResizeHorizontal)
                 } else {
                     response
                 };
+                self.region_menu(&response, region, actions);
                 if response.drag_started() {
                     if let Some(pointer) = response.interact_pointer_pos() {
                         if near_edge(pointer) {
                             actions.push(UiAction::ResizeRegionStart {
+                                region: region.id,
+                                pointer,
+                            });
+                        } else if near_start(pointer) {
+                            actions.push(UiAction::TrimRegionStart {
                                 region: region.id,
                                 pointer,
                             });
@@ -462,7 +604,205 @@ impl App {
                     actions.push(UiAction::DragEnd);
                 }
             }
+            if automating {
+                self.draw_automation(ui, g, track, lane, actions);
+            }
         }
+    }
+
+    fn draw_automation(
+        &self,
+        ui: &mut egui::Ui,
+        g: &Geometry,
+        track: &Track,
+        lane: Rect,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let param = self.automation_param(track.id);
+        let points = track.automation.lane(param);
+        let painter = ui.painter_at(lane.intersect(g.lanes));
+        let color = Color32::from_rgb(250, 210, 90);
+        let default = base_value(track, param);
+        if points.is_empty() {
+            let y = automation_y(lane, param, default);
+            painter.hline(
+                lane.x_range(),
+                y,
+                Stroke::new(1.0, color.gamma_multiply(0.5)),
+            );
+        } else {
+            let first = g.tick(g.lanes.left());
+            let last = g.tick(g.lanes.right());
+            let mut line = vec![Pos2::new(
+                g.lanes.left(),
+                automation_y(lane, param, value_at(points, first, default)),
+            )];
+            line.extend(
+                points
+                    .iter()
+                    .filter(|p| p.tick > first && p.tick < last)
+                    .map(|p| Pos2::new(g.x(p.tick), automation_y(lane, param, p.value))),
+            );
+            line.push(Pos2::new(
+                g.lanes.right(),
+                automation_y(lane, param, value_at(points, last, default)),
+            ));
+            painter.add(egui::Shape::line(line, Stroke::new(2.0, color)));
+        }
+        painter.text(
+            lane.left_top() + Vec2::new(6.0, 4.0),
+            Align2::LEFT_TOP,
+            param.label(),
+            FontId::proportional(11.0),
+            color,
+        );
+        for (index, point) in points.iter().enumerate() {
+            let center = Pos2::new(g.x(point.tick), automation_y(lane, param, point.value));
+            if !g.lanes.contains(center) {
+                continue;
+            }
+            painter.circle_filled(center, 4.5, color);
+            let hit = Rect::from_center_size(center, Vec2::splat(12.0));
+            let response = ui
+                .interact(
+                    hit,
+                    ui.scope_id()
+                        .with(("point", track.id, param.label(), index)),
+                    Sense::click_and_drag(),
+                )
+                .on_hover_text(match param {
+                    AutomationParam::Volume => format!("{:+.1} dB", point.value),
+                    AutomationParam::Pan => format!("Pan {:+.2}", point.value),
+                });
+            if response.drag_started() {
+                actions.push(UiAction::AutomationDragStart {
+                    track: track.id,
+                    index,
+                });
+            } else if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                actions.push(UiAction::AutomationDragUpdate {
+                    tick: self.snapped(g.tick(pos.x)),
+                    value: automation_value(lane, param, pos.y),
+                });
+            } else if response.secondary_clicked() {
+                actions.push(UiAction::DeleteAutomationPoint {
+                    track: track.id,
+                    index,
+                });
+            }
+            if response.drag_stopped() {
+                actions.push(UiAction::DragEnd);
+            }
+        }
+    }
+
+    fn draw_fades(&self, ui: &egui::Ui, g: &Geometry, region: &Region, rect: Rect) {
+        if region.audio_file().is_none() {
+            return;
+        }
+        let painter = ui.painter_at(rect.intersect(g.lanes));
+        let shade = Color32::from_black_alpha(110);
+        if region.fade_in_tick > 0 {
+            let x = g.x(region.start_tick + region.fade_in_tick);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    rect.left_top(),
+                    Pos2::new(x, rect.top()),
+                    rect.left_bottom(),
+                ],
+                shade,
+                Stroke::NONE,
+            ));
+        }
+        if region.fade_out_tick > 0 {
+            let x = g.x(region.end_tick() - region.fade_out_tick);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(x, rect.top()),
+                    rect.right_top(),
+                    rect.right_bottom(),
+                ],
+                shade,
+                Stroke::NONE,
+            ));
+        }
+    }
+
+    fn region_menu(&self, response: &egui::Response, region: &Region, actions: &mut Vec<UiAction>) {
+        let ts = self.project.time_signature;
+        let lengths = [
+            ("None", 0),
+            ("1/16", grid_ticks(fnoob_core::model::Grid::Sixteenth, ts)),
+            ("1 beat", grid_ticks(fnoob_core::model::Grid::Beat, ts)),
+            ("1 bar", ticks_per_bar(ts)),
+        ];
+        response.context_menu(|ui| {
+            ui.label(egui::RichText::new(&region.name).strong());
+            if let RegionContent::Audio { gain_db, .. } = region.content {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Gain {gain_db:+.1} dB"));
+                    for (label, step) in [("-3", -3.0), ("+3", 3.0)] {
+                        if ui.button(label).clicked() {
+                            actions.push(UiAction::RegionGain {
+                                region: region.id,
+                                db: Some(gain_db + step),
+                            });
+                        }
+                    }
+                    if ui.button("0").clicked() {
+                        actions.push(UiAction::RegionGain {
+                            region: region.id,
+                            db: None,
+                        });
+                    }
+                });
+                ui.menu_button("Fade in", |ui| {
+                    for (label, ticks) in lengths {
+                        if ui.button(label).clicked() {
+                            actions.push(UiAction::RegionFades {
+                                region: region.id,
+                                fade_in: Some(ticks),
+                                fade_out: None,
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+                ui.menu_button("Fade out", |ui| {
+                    for (label, ticks) in lengths {
+                        if ui.button(label).clicked() {
+                            actions.push(UiAction::RegionFades {
+                                region: region.id,
+                                fade_in: None,
+                                fade_out: Some(ticks),
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+                ui.separator();
+            } else if ui.button("Open in Piano Roll").clicked() {
+                actions.push(UiAction::OpenEditor(region.id));
+                ui.close();
+            }
+            if ui
+                .button(if region.muted { "Unmute" } else { "Mute" })
+                .clicked()
+            {
+                actions.push(UiAction::MuteRegion(region.id));
+                ui.close();
+            }
+            if ui.button("Split at playhead").clicked() {
+                actions.push(UiAction::SplitRegion(region.id));
+                ui.close();
+            }
+            if ui.button("Delete").clicked() {
+                actions.push(UiAction::DeleteRegion(region.id));
+                ui.close();
+            }
+        });
     }
 
     fn draw_headers(&mut self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
@@ -562,7 +902,25 @@ impl App {
                     if ui.add(record).on_hover_text("Record enable").clicked() {
                         actions.push(UiAction::ToggleRecord(track.id));
                     }
-                    if track.kind == TrackKind::Audio {
+                    if self.automation_view {
+                        let current = self.automation_param(track.id);
+                        egui::ComboBox::from_id_salt(("automation", track.id))
+                            .width(70.0)
+                            .selected_text(current.label())
+                            .show_ui(ui, |ui| {
+                                for param in AutomationParam::ALL {
+                                    if ui
+                                        .selectable_label(param == current, param.label())
+                                        .clicked()
+                                    {
+                                        actions.push(UiAction::SetAutomationParam {
+                                            track: track.id,
+                                            param,
+                                        });
+                                    }
+                                }
+                            });
+                    } else if track.kind == TrackKind::Audio {
                         if ui
                             .selectable_label(track.input_monitoring, "I")
                             .on_hover_text("Input monitoring")
@@ -634,6 +992,98 @@ impl App {
                     anchor: pointer,
                 });
             }
+            UiAction::TrimRegionStart { region, pointer } => {
+                self.selection.regions = vec![region];
+                self.drag = Some(Drag::RegionTrim {
+                    origin: self.project.clone(),
+                    region,
+                    anchor: pointer,
+                });
+            }
+            UiAction::AddAutomationPoint { track, tick, value } => {
+                let param = self.automation_param(track);
+                self.edit(|p| {
+                    edit::add_automation_point(p, track, param, tick, value);
+                });
+            }
+            UiAction::AutomationDragStart { track, index } => {
+                let param = self.automation_param(track);
+                self.drag = Some(Drag::Automation {
+                    origin: self.project.clone(),
+                    track,
+                    param,
+                    index,
+                });
+            }
+            UiAction::AutomationDragUpdate { tick, value } => {
+                if let Some(Drag::Automation {
+                    origin,
+                    track,
+                    param,
+                    index,
+                }) = &self.drag
+                {
+                    let mut project = origin.clone();
+                    edit::move_automation_point(&mut project, *track, *param, *index, tick, value);
+                    if project != self.project {
+                        self.project = project;
+                        self.sync_plan();
+                    }
+                }
+            }
+            UiAction::DeleteAutomationPoint { track, index } => {
+                let param = self.automation_param(track);
+                self.edit(|p| {
+                    edit::delete_automation_point(p, track, param, index);
+                });
+            }
+            UiAction::SetAutomationParam { track, param } => {
+                self.automation_params.insert(track, param);
+            }
+            UiAction::RegionGain { region, db } => {
+                self.edit(|p| {
+                    edit::set_region_gain(p, region, db.unwrap_or(0.0));
+                });
+            }
+            UiAction::RegionFades {
+                region,
+                fade_in,
+                fade_out,
+            } => {
+                if let Some((_, r)) = self.project.find_region(region) {
+                    let fade_in = fade_in.unwrap_or(r.fade_in_tick);
+                    let fade_out = fade_out.unwrap_or(r.fade_out_tick);
+                    self.edit(|p| {
+                        edit::set_region_fades(p, region, fade_in, fade_out);
+                    });
+                }
+            }
+            UiAction::MuteRegion(region) => {
+                self.edit(|p| edit::toggle_regions_muted(p, &[region]));
+            }
+            UiAction::DeleteRegion(region) => {
+                self.edit(|p| {
+                    edit::delete_regions(p, &[region]);
+                });
+                self.selection.regions.retain(|r| *r != region);
+            }
+            UiAction::SplitRegion(region) => {
+                let tick = self.playhead_tick();
+                self.edit(|p| {
+                    edit::split_regions_at(p, &[region], tick);
+                });
+            }
+            UiAction::LocateMarker(tick) => self.locate(tick),
+            UiAction::RenameMarker(id) => {
+                if let Some(marker) = self.project.markers.iter().find(|m| m.id == id) {
+                    self.marker_rename = Some((id, marker.name.clone()));
+                }
+            }
+            UiAction::DeleteMarker(id) => {
+                self.edit(|p| {
+                    edit::delete_marker(p, id);
+                });
+            }
             UiAction::ResizeRegionStart { region, pointer } => {
                 self.selection.regions = vec![region];
                 self.drag = Some(Drag::RegionResize {
@@ -644,6 +1094,7 @@ impl App {
             }
             UiAction::DragRegionsUpdate { pointer } => match self.drag {
                 Some(Drag::RegionResize { .. }) => self.update_region_resize(pointer),
+                Some(Drag::RegionTrim { .. }) => self.update_region_trim(pointer),
                 _ => self.update_region_drag(pointer),
             },
             UiAction::OpenEditor(region) => {
@@ -850,6 +1301,38 @@ impl App {
             self.project = project;
             self.sync_plan();
         }
+    }
+
+    fn update_region_trim(&mut self, pointer: Pos2) {
+        let Some(Drag::RegionTrim {
+            origin,
+            region,
+            anchor,
+        }) = &self.drag
+        else {
+            return;
+        };
+        let (mut project, region, anchor) = (origin.clone(), *region, *anchor);
+        let Some((_, original)) = origin.find_region(region) else {
+            return;
+        };
+        let delta = ((pointer.x - anchor.x) / self.view.pixels_per_tick) as i64;
+        let wanted = (original.start_tick as i64 + delta).max(0) as u64;
+        let new_start = self
+            .snapped(wanted)
+            .min(original.end_tick().saturating_sub(1));
+        edit::trim_region_start(&mut project, region, new_start);
+        if project != self.project {
+            self.project = project;
+            self.sync_plan();
+        }
+    }
+
+    pub(crate) fn automation_param(&self, track: Id) -> AutomationParam {
+        self.automation_params
+            .get(&track)
+            .copied()
+            .unwrap_or_default()
     }
 
     fn update_loop_drag(&mut self, tick: u64) {
