@@ -41,10 +41,12 @@ Done after the MVP (Phase 9): volume and pan automation, region gain and fades, 
 
 Done in Phase 10: browser panel (instruments, effects, sample folders with preview, drag onto tracks), inspector panel (region and track settings, markers), toolbar with visible buttons for every editing command, track context menu (rename, colour, duplicate, move, delete), follow-playhead switch.
 
+Done in Phase 11: built-in effects (EQ, compressor, delay with tempo sync and ping-pong, reverb, limiter, utility) with a device window for each, and two sample instruments (Sampler, Drum Sampler with 16 pads from C1).
+
+Known limits of Phase 11: samples must already be at the project sample rate (no resampling yet); the sampler has no loop points, start/end trim or filter; drum pads have no choke groups.
+
 Not started, in rough priority order:
 
-- Built-in effects: EQ, compressor, delay, reverb, utility, limiter
-- Built-in instruments beyond Basic Synth: sampler, drum sampler
 - Clip-launch grid view with scenes, launch modes and follow actions
 - Device chain view for the selected track in the bottom area
 - Punch in/out recording and capture of the last played MIDI
