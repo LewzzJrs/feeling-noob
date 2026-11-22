@@ -144,6 +144,7 @@ pub struct App {
     pub(crate) editor: Editor,
     pub(crate) mixer_open: bool,
     pub(crate) devices_open: bool,
+    pub(crate) played: std::collections::VecDeque<fnoob_core::capture::Played>,
     pub(crate) chain_target: crate::chain::ChainTarget,
     pub(crate) browser: crate::browser::Browser,
     pub(crate) inspector: crate::inspector::Inspector,
@@ -225,6 +226,7 @@ impl App {
             editor: Editor::default(),
             mixer_open: false,
             devices_open: false,
+            played: std::collections::VecDeque::new(),
             chain_target: crate::chain::ChainTarget::default(),
             browser: crate::browser::Browser::shown(),
             inspector: crate::inspector::Inspector::shown(),
@@ -655,6 +657,7 @@ impl App {
             Command::ToggleMusicalTyping => self.toggle_musical_typing(),
             Command::ToggleClipGrid => self.session.open = !self.session.open,
             Command::ToggleDevices => self.toggle_devices(),
+            Command::CaptureMidi => self.capture_midi(),
             Command::DuplicateTrack if self.session.open && self.duplicate_selected_clip() => {}
             Command::DuplicateTrack => {
                 if let Some(track) = self.selection.track {
@@ -950,6 +953,15 @@ impl App {
                 self.menu_item(ui, "Loop", Command::ToggleLoop);
                 self.menu_item(ui, "Metronome", Command::ToggleMetronome);
                 self.menu_item(ui, "Count-in", Command::ToggleCountIn);
+                if ui.button("Punch In").clicked() {
+                    self.edit(|p| p.punch.punch_in = !p.punch.punch_in);
+                    ui.close();
+                }
+                if ui.button("Punch Out").clicked() {
+                    self.edit(|p| p.punch.punch_out = !p.punch.punch_out);
+                    ui.close();
+                }
+                self.menu_item(ui, "Capture MIDI", Command::CaptureMidi);
                 ui.separator();
                 self.menu_item(ui, "Add Marker", Command::AddMarker);
                 self.menu_item(ui, "Previous Marker", Command::PreviousMarker);
@@ -1230,6 +1242,30 @@ impl App {
             );
             if Self::toggle_button(ui, looping, "Loop", "Loop (C)") {
                 self.run(Command::ToggleLoop);
+            }
+            let punch = self.project.punch;
+            if Self::toggle_button(
+                ui,
+                punch.punch_in,
+                "Punch In",
+                "Record only from the start of the loop area",
+            ) {
+                self.edit(|p| p.punch.punch_in = !p.punch.punch_in);
+            }
+            if Self::toggle_button(
+                ui,
+                punch.punch_out,
+                "Punch Out",
+                "Stop recording at the end of the loop area",
+            ) {
+                self.edit(|p| p.punch.punch_out = !p.punch.punch_out);
+            }
+            if ui
+                .button("Capture")
+                .on_hover_text("Turn the notes you just played into a region (Ctrl+Shift+C)")
+                .clicked()
+            {
+                self.run(Command::CaptureMidi);
             }
             if Self::toggle_button(ui, metronome, "Click", "Metronome (K)") {
                 self.run(Command::ToggleMetronome);
@@ -1644,6 +1680,7 @@ impl App {
                 "Audio input problem: {kind:?}. Reopen it in Audio and MIDI Settings."
             ));
         }
+        self.poll_played();
         self.poll_take();
         self.poll_audio_take();
         self.poll_plugins();

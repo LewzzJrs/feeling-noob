@@ -1,12 +1,15 @@
 use crate::app::App;
+use fnoob_core::capture::{self, Played};
 use fnoob_core::edit;
 use fnoob_core::model::{Id, Note, TrackKind};
 use fnoob_core::settings::MidiInputChoice;
-use fnoob_core::time::ticks_per_bar;
+use fnoob_core::time::{snap_floor, ticks_per_bar};
 use fnoob_engine::midi_in::{MidiError, connect, list_midi_inputs};
 use fnoob_engine::{Command as EngineCommand, TransportState};
 
 const START_TIMEOUT_FRAMES: u32 = 120;
+const MAX_PLAYED: usize = 8192;
+const CAPTURE_GAP_SECONDS: u64 = 4;
 
 pub struct Take {
     track: Id,
@@ -132,6 +135,43 @@ impl App {
             }
         }
         self.send(EngineCommand::Record);
+    }
+
+    pub(crate) fn poll_played(&mut self) {
+        let Some((_, engine)) = &mut self.audio else {
+            return;
+        };
+        while let Some(event) = engine.pop_played() {
+            self.played.push_back(event);
+        }
+        while self.played.len() > MAX_PLAYED {
+            self.played.pop_front();
+        }
+    }
+
+    pub(crate) fn capture_midi(&mut self) {
+        let Some(track) = self.live_target() else {
+            self.message = Some("Select or arm an instrument track to capture notes.".into());
+            return;
+        };
+        let events: Vec<Played> = self.played.iter().copied().collect();
+        let gap = u64::from(self.sample_rate()) * CAPTURE_GAP_SECONDS;
+        let phrase = capture::last_phrase(&events, gap);
+        let bar = ticks_per_bar(self.project.time_signature);
+        let start = snap_floor(self.playhead_tick(), bar);
+        let notes = capture::notes(phrase, self.timeline(), start);
+        if notes.is_empty() {
+            self.message = Some("Play some notes first, then capture them.".into());
+            return;
+        }
+        let mut created = None;
+        self.edit(|p| created = edit::add_recorded_take(p, track, &notes, None, bar));
+        if let Some(id) = created {
+            self.played.clear();
+            self.selection.track = Some(track);
+            self.selection.regions = vec![id];
+            self.message = Some(format!("Captured {} notes.", notes.len()));
+        }
     }
 
     pub(crate) fn poll_take(&mut self) {

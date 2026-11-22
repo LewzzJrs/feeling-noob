@@ -30,6 +30,7 @@ const TRACK_PALETTE: [Color32; 8] = [
     Color32::from_rgb(150, 150, 230),
 ];
 const LOOP_ON: Color32 = Color32::from_rgb(64, 170, 150);
+const PUNCH: Color32 = Color32::from_rgb(220, 70, 70);
 const LOOP_OFF: Color32 = Color32::from_rgb(80, 80, 86);
 const PLAYHEAD: Color32 = Color32::from_rgb(240, 240, 240);
 const MARKER: Color32 = Color32::from_rgb(235, 170, 90);
@@ -374,6 +375,15 @@ impl App {
         );
         let loop_color = if range.enabled { LOOP_ON } else { LOOP_OFF };
         painter.rect_filled(loop_rect, CornerRadius::same(2), loop_color);
+        let punch = self.project.punch;
+        for (on, tick) in [
+            (punch.punch_in, range.start_tick),
+            (punch.punch_out, range.end_tick),
+        ] {
+            if on {
+                painter.vline(g.x(tick), g.ruler.y_range(), Stroke::new(3.0, PUNCH));
+            }
+        }
         let bar = ticks_per_bar(self.project.time_signature);
         let bar_px = bar as f32 * g.pixels_per_tick;
         let label_every = ((48.0 / bar_px).ceil() as u64).max(1);
