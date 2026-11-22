@@ -45,6 +45,7 @@ pub enum Command {
     ToggleMusicalTyping,
     DuplicateTrack,
     ToggleClipGrid,
+    ToggleDevices,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -137,6 +138,7 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (ctrl(letter('K')), Command::ToggleMusicalTyping),
     (ctrl(letter('D')), Command::DuplicateTrack),
     (plain(Key::Tab), Command::ToggleClipGrid),
+    (shift(Key::Tab), Command::ToggleDevices),
     (plain(Key::Space), Command::PlayStop),
     (plain(letter('R')), Command::Record),
     (plain(Key::Enter), Command::GoToBeginning),

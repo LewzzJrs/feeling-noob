@@ -737,6 +737,15 @@ pub fn duplicate_track(project: &mut Project, id: Id) -> Option<Id> {
     Some(new_id)
 }
 
+pub fn move_insert(inserts: &mut Vec<crate::model::PluginSlot>, from: usize, to: usize) -> bool {
+    if from >= inserts.len() || to >= inserts.len() || from == to {
+        return false;
+    }
+    let slot = inserts.remove(from);
+    inserts.insert(to, slot);
+    true
+}
+
 pub fn move_track(project: &mut Project, id: Id, delta: i64) -> bool {
     let Some(index) = project.tracks.iter().position(|t| t.id == id) else {
         return false;
@@ -792,6 +801,24 @@ mod tests {
 
     fn notes(p: &Project, id: Id) -> Vec<Note> {
         region(p, id).notes().to_vec()
+    }
+
+    #[test]
+    fn inserts_move_within_bounds() {
+        let mut p = Project::new("t", 48_000);
+        let mut inserts: Vec<crate::model::PluginSlot> = crate::effects::BuiltinEffect::all()
+            .into_iter()
+            .take(3)
+            .map(|e| crate::model::PluginSlot::builtin(p.alloc_id(), e))
+            .collect();
+        let ids: Vec<Id> = inserts.iter().map(|s| s.id).collect();
+        assert!(move_insert(&mut inserts, 0, 2));
+        assert_eq!(
+            inserts.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![ids[1], ids[2], ids[0]]
+        );
+        assert!(!move_insert(&mut inserts, 1, 3));
+        assert!(!move_insert(&mut inserts, 1, 1));
     }
 
     #[test]
