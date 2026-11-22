@@ -21,7 +21,11 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("feeling-noob")
             .with_inner_size([1280.0, 760.0])
-            .with_min_inner_size([640.0, 360.0]),
+            .with_min_inner_size([640.0, 360.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
+                    .unwrap_or_default(),
+            ),
         ..Default::default()
     };
     eframe::run_native(
