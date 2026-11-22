@@ -1,8 +1,8 @@
 use crate::audio_data::{AudioData, AudioPool};
 use crate::synth::Synth;
 use fnoob_core::model::{
-    AudioInput, ChannelStrip, Id, Instrument, MAX_INSERTS, PluginSlot, Project, RegionContent,
-    TrackKind, db_to_gain, pan_gains,
+    AudioInput, Automation, ChannelStrip, Id, Instrument, MAX_INSERTS, PluginSlot, Project,
+    RegionContent, TrackKind, db_to_gain, pan_gains,
 };
 use fnoob_core::time::{Timeline, ticks_per_beat};
 use std::collections::HashMap;
@@ -28,6 +28,7 @@ pub struct TrackPlan {
     pub id: Id,
     pub audible: bool,
     pub strip: StripPlan,
+    pub envelopes: Envelopes,
     pub notes: Vec<PlannedNote>,
     pub synth: Synth,
     pub instrument: Option<usize>,
@@ -44,7 +45,52 @@ pub struct Clip {
     pub end: u64,
     pub offset: u64,
     pub gain: f32,
+    pub fade_in: u64,
+    pub fade_out: u64,
     pub data: Arc<AudioData>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Envelopes {
+    pub volume: Vec<(u64, f32)>,
+    pub pan: Vec<(u64, f32)>,
+}
+
+pub fn envelope_at(points: &[(u64, f32)], sample: u64, default: f32) -> f32 {
+    let next = points.partition_point(|p| p.0 <= sample);
+    match (next.checked_sub(1).map(|i| points[i]), points.get(next)) {
+        (None, None) => default,
+        (None, Some(first)) => first.1,
+        (Some(last), None) => last.1,
+        (Some(a), Some(b)) => {
+            let span = (b.0 - a.0) as f32;
+            let t = if span > 0.0 {
+                (sample - a.0) as f32 / span
+            } else {
+                1.0
+            };
+            a.1 + (b.1 - a.1) * t
+        }
+    }
+}
+
+impl Envelopes {
+    fn new(automation: &Automation, timeline: Timeline) -> Self {
+        let convert = |points: &[fnoob_core::model::AutomationPoint]| {
+            points
+                .iter()
+                .map(|p| (timeline.tick_to_sample(p.tick), p.value))
+                .collect()
+        };
+        Self {
+            volume: convert(&automation.volume),
+            pan: convert(&automation.pan),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.volume.is_empty() && self.pan.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +98,7 @@ pub struct AudioTrackPlan {
     pub id: Id,
     pub audible: bool,
     pub strip: StripPlan,
+    pub envelopes: Envelopes,
     pub clips: Vec<Clip>,
     pub cursor: usize,
     pub input: AudioInput,
@@ -87,6 +134,8 @@ pub const METER_SLOTS: usize = TRACK_METERS + 2;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StripPlan {
+    pub volume_db: f32,
+    pub pan: f32,
     pub left: f32,
     pub right: f32,
     pub send: f32,
@@ -108,6 +157,8 @@ impl StripPlan {
         let gain = db_to_gain(strip.volume_db);
         let (left, right) = pan_gains(strip.pan);
         Self {
+            volume_db: strip.volume_db,
+            pan: strip.pan,
             left: gain * left,
             right: gain * right,
             send: db_to_gain(strip.send.level_db),
@@ -118,6 +169,21 @@ impl StripPlan {
                 METER_SLOTS
             },
             inserts: inserts(&strip.inserts, plugins),
+        }
+    }
+
+    pub fn at(&self, envelopes: &Envelopes, sample: u64) -> StripPlan {
+        if envelopes.is_empty() {
+            return *self;
+        }
+        let volume = envelope_at(&envelopes.volume, sample, self.volume_db);
+        let pan = envelope_at(&envelopes.pan, sample, self.pan);
+        let gain = db_to_gain(if volume <= -60.0 { -144.0 } else { volume });
+        let (left, right) = pan_gains(pan);
+        StripPlan {
+            left: gain * left,
+            right: gain * right,
+            ..*self
         }
     }
 }
@@ -149,6 +215,10 @@ fn audio_track_plans(
                         return None;
                     };
                     let data = pool.get(&file_id)?;
+                    let fade = |ticks: u64| {
+                        timeline.tick_to_sample(region.start_tick + ticks)
+                            - timeline.tick_to_sample(region.start_tick)
+                    };
                     let start = timeline.tick_to_sample(region.start_tick);
                     let end = timeline.tick_to_sample(region.end_tick());
                     (end > start && offset_frames < data.frames).then(|| Clip {
@@ -156,6 +226,8 @@ fn audio_track_plans(
                         end,
                         offset: offset_frames,
                         gain: 10f32.powf(gain_db / 20.0),
+                        fade_in: fade(region.fade_in_tick),
+                        fade_out: fade(region.fade_out_tick),
                         data: Arc::clone(data),
                     })
                 })
@@ -165,6 +237,7 @@ fn audio_track_plans(
                 id: track.id,
                 audible,
                 strip: StripPlan::new(&track.strip, index, plugins),
+                envelopes: Envelopes::new(&track.automation, timeline),
                 clips,
                 cursor: 0,
                 input: track.audio_input.unwrap_or_default(),
@@ -221,6 +294,7 @@ fn track_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Ve
                 id: track.id,
                 audible,
                 strip: StripPlan::new(&track.strip, index, plugins),
+                envelopes: Envelopes::new(&track.automation, timeline),
                 notes,
                 synth: Synth::new(&params, timeline.sample_rate),
                 instrument,

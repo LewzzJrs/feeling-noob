@@ -55,6 +55,7 @@ pub enum Command {
         plugin: Box<PluginProcessor>,
     },
     RemovePlugin(usize),
+    LiveNote(MidiEvent),
 }
 
 impl fmt::Debug for Command {
@@ -76,6 +77,7 @@ impl fmt::Debug for Command {
             Self::SetRecordSink(_) => write!(f, "SetRecordSink"),
             Self::InstallPlugin { slot, .. } => write!(f, "InstallPlugin({slot})"),
             Self::RemovePlugin(slot) => write!(f, "RemovePlugin({slot})"),
+            Self::LiveNote(event) => write!(f, "LiveNote({}, {})", event.pitch, event.velocity),
         }
     }
 }
@@ -240,6 +242,7 @@ pub struct Processor {
     bus_left: Vec<f32>,
     bus_right: Vec<f32>,
     click: Vec<f32>,
+    positions: Vec<u64>,
     frame: usize,
     peaks: [f32; METER_SLOTS],
     input_channels: usize,
@@ -283,6 +286,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         bus_left: vec![0.0; MAX_BLOCK],
         bus_right: vec![0.0; MAX_BLOCK],
         click: vec![0.0; MAX_BLOCK],
+        positions: vec![0; MAX_BLOCK],
         frame: 0,
         peaks: [0.0; METER_SLOTS],
         input_channels: 0,
@@ -496,6 +500,7 @@ impl Processor {
                     let _ = self.garbage.push(Garbage::Plugin(plugin));
                 }
             }
+            Command::LiveNote(event) => self.live_event(event),
             Command::RemovePlugin(slot) => {
                 if let Some(old) = self.plugins.get_mut(slot).and_then(Option::take) {
                     let _ = self.garbage.push(Garbage::Plugin(old));
@@ -603,15 +608,18 @@ impl Processor {
         }
     }
 
+    fn live_event(&mut self, event: MidiEvent) {
+        if let Some(track) = self.live_track {
+            self.play_live(track, event);
+        }
+        if self.recording && self.state == TransportState::Playing {
+            self.recorder.event(self.position, event);
+        }
+    }
+
     fn drain_midi(&mut self) {
-        let recording = self.recording && self.state == TransportState::Playing;
         while let Some(event) = self.midi.as_mut().and_then(|m| m.pop().ok()) {
-            if let Some(track) = self.live_track {
-                self.play_live(track, event);
-            }
-            if recording {
-                self.recorder.event(self.position, event);
-            }
+            self.live_event(event);
         }
     }
 
@@ -733,6 +741,7 @@ impl Processor {
                 }
             };
             let position = self.position;
+            self.positions[f] = position;
             self.click[f] = self.metronome.next_sample();
             for track in &mut self.plan.tracks {
                 if track.audible {
@@ -805,14 +814,17 @@ impl Processor {
         }
         for f in 0..frames {
             let mut mix = Mix::default();
+            let position = self.positions[f];
             for track in &self.plan.tracks {
                 if track.audible {
-                    mix.add(&track.strip, track.left[f], track.right[f], &mut self.peaks);
+                    let strip = track.strip.at(&track.envelopes, position);
+                    mix.add(&strip, track.left[f], track.right[f], &mut self.peaks);
                 }
             }
             for track in &self.plan.audio_tracks {
                 if track.audible {
-                    mix.add(&track.strip, track.left[f], track.right[f], &mut self.peaks);
+                    let strip = track.strip.at(&track.envelopes, position);
+                    mix.add(&strip, track.left[f], track.right[f], &mut self.peaks);
                 }
             }
             self.main_left[f] = mix.main.0;
@@ -928,9 +940,18 @@ fn clip_frame(track: &mut AudioTrackPlan, position: u64) -> (f32, f32) {
             break;
         }
         if clip.end > position {
-            let (l, r) = clip.data.frame(clip.offset + position - clip.start);
-            left += l * clip.gain;
-            right += r * clip.gain;
+            let into = position - clip.start;
+            let left_over = clip.end - position;
+            let mut gain = clip.gain;
+            if into < clip.fade_in {
+                gain *= into as f32 / clip.fade_in as f32;
+            }
+            if left_over < clip.fade_out {
+                gain *= left_over as f32 / clip.fade_out as f32;
+            }
+            let (l, r) = clip.data.frame(clip.offset + into);
+            left += l * gain;
+            right += r * gain;
         }
     }
     (left, right)
@@ -1562,5 +1583,79 @@ mod tests {
         }
         render(&mut p, 16);
         assert_eq!(p.input.as_ref().unwrap().slots(), INPUT_BACKLOG_FRAMES - 16);
+    }
+
+    #[test]
+    fn volume_automation_shapes_the_track() {
+        let (mut project, track, _) = mixer_project();
+        let a = &mut project.track_mut(track).unwrap().automation;
+        a.volume = vec![
+            fnoob_core::model::AutomationPoint {
+                tick: 0,
+                value: -60.0,
+            },
+            fnoob_core::model::AutomationPoint {
+                tick: 96,
+                value: 0.0,
+            },
+        ];
+        let pool = mixer_pool(&project);
+        let (mut p, mut h) = create(SR, 2, audio_plan(&project, &pool));
+        h.send(Command::Play).unwrap();
+        let mut out = vec![0.0; 2 * 3000];
+        p.process(&mut out);
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        assert_eq!(out[0], 0.0);
+        assert!(out[2 * 1200] > 0.0 && out[2 * 1200] < 0.5 * c);
+        assert!((out[2 * 2900] - 0.5 * c).abs() < 1e-5);
+    }
+
+    #[test]
+    fn pan_automation_moves_the_sound() {
+        let (mut project, track, _) = mixer_project();
+        project.track_mut(track).unwrap().automation.pan =
+            vec![fnoob_core::model::AutomationPoint {
+                tick: 0,
+                value: 1.0,
+            }];
+        let (frame, _) = first_frame(&project);
+        assert!(frame[0].abs() < 1e-6);
+        assert!((frame[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn audio_fades_ramp_in_and_out() {
+        let (mut project, _, _) = mixer_project();
+        let region = project.tracks[0].regions[0].id;
+        fnoob_core::edit::set_region_fades(&mut project, region, 40, 40);
+        let length = project.tracks[0].regions[0].length_tick;
+        let pool = mixer_pool(&project);
+        let (mut p, mut h) = create(SR, 2, audio_plan(&project, &pool));
+        h.send(Command::Play).unwrap();
+        let frames = (length as usize) * 25;
+        let mut out = vec![0.0; 2 * frames];
+        p.process(&mut out);
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        assert_eq!(out[0], 0.0);
+        assert!((out[2 * 500] - 0.25 * c).abs() < 1e-3);
+        assert!((out[2 * 1500] - 0.5 * c).abs() < 1e-5);
+    }
+
+    #[test]
+    fn live_notes_from_the_ui_are_played_and_recorded() {
+        let (project, track, _) = synth_project();
+        let (mut p, mut h) = create(SR, 1, plan(&project));
+        h.send(Command::SetLiveTrack(Some(track))).unwrap();
+        h.send(Command::Record).unwrap();
+        render(&mut p, 100);
+        h.send(Command::LiveNote(MidiEvent {
+            pitch: 67,
+            velocity: 90,
+        }))
+        .unwrap();
+        assert!(render(&mut p, 200).iter().any(|&s| s != 0.0));
+        let events = recorded(&mut h);
+        assert_eq!(events.len(), 1);
+        assert_eq!((events[0].sample, events[0].pitch), (100, 67));
     }
 }
