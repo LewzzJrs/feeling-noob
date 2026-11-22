@@ -211,7 +211,7 @@ impl App {
     pub fn tracks_area(&mut self, ui: &mut egui::Ui) {
         let (area, area_response) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         let split = area.right() - HEADER_WIDTH;
-        let pinned_top = area.bottom() - 2.0 * PINNED_ROW;
+        let pinned_top = area.bottom() - (self.project.returns.len() + 1) as f32 * PINNED_ROW;
         let geometry = Geometry {
             ruler: Rect::from_min_max(area.min, Pos2::new(split, area.top() + RULER_HEIGHT)),
             lanes: Rect::from_min_max(
@@ -1077,18 +1077,26 @@ impl App {
 
     fn draw_pinned_rows(&mut self, ui: &mut egui::Ui, area: Rect, top: f32, split: f32) {
         let painter = ui.painter_at(area);
-        let rows = [
-            (
-                crate::mixer::MixTarget::Bus,
-                self.project.bus.name.clone(),
-                Color32::from_gray(150),
-            ),
-            (
-                crate::mixer::MixTarget::Master,
-                "Main".to_owned(),
-                Color32::from_gray(205),
-            ),
-        ];
+        let mut rows: Vec<(crate::mixer::MixTarget, String, Color32)> = self
+            .project
+            .returns
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                (
+                    crate::mixer::MixTarget::Return(i),
+                    r.name.clone(),
+                    Color32::from_gray(150),
+                )
+            })
+            .collect();
+        rows.push((
+            crate::mixer::MixTarget::Master,
+            "Main".to_owned(),
+            Color32::from_gray(205),
+        ));
+        let mut remove = None;
+        let mut add = false;
         for (index, (target, name, color)) in rows.into_iter().enumerate() {
             let y = top + index as f32 * PINNED_ROW;
             let lane =
@@ -1107,6 +1115,37 @@ impl App {
                 Vec2::new(NAME_WIDTH, PINNED_ROW - 6.0),
             );
             painter.rect_filled(name_rect, CornerRadius::same(2), color);
+            let response = crate::ui_kit::hint(
+                ui.interact(
+                    name_rect,
+                    ui.scope_id().with(("pinned", index)),
+                    Sense::click(),
+                ),
+                "Return track: click to show its devices, right-click to add or delete return tracks.",
+            );
+            if let crate::mixer::MixTarget::Return(i) = target {
+                if response.clicked() {
+                    self.chain_target = crate::chain::ChainTarget::Return(i);
+                    self.show_devices();
+                }
+                response.context_menu(|ui| {
+                    if ui.button("Insert Return Track").clicked() {
+                        add = true;
+                        ui.close();
+                    }
+                    if ui.button("Delete Return Track").clicked() {
+                        remove = Some(i);
+                        ui.close();
+                    }
+                });
+            } else {
+                response.context_menu(|ui| {
+                    if ui.button("Insert Return Track").clicked() {
+                        add = true;
+                        ui.close();
+                    }
+                });
+            }
             painter.text(
                 name_rect.left_center() + Vec2::new(6.0, 0.0),
                 Align2::LEFT_CENTER,
@@ -1129,6 +1168,16 @@ impl App {
                 Pos2::new(header.right() - 4.0, y + PINNED_ROW - 4.0),
             );
             self.paint_meter(&painter, meter, target);
+        }
+        if add {
+            self.run(fnoob_core::keymap::Command::NewReturnTrack);
+        }
+        if let Some(index) = remove {
+            self.capture_plugin_states();
+            self.edit(|p| {
+                edit::delete_return(p, index);
+            });
+            self.chain_target = crate::chain::ChainTarget::SelectedTrack;
         }
     }
 

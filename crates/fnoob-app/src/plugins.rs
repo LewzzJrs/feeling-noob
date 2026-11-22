@@ -66,7 +66,7 @@ pub type BouncePlugins = (
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Owner {
     Track(Id),
-    Bus,
+    Return(usize),
 }
 
 enum LoadedKind {
@@ -139,7 +139,7 @@ fn project_slots(project: &Project) -> Vec<&PluginSlot> {
         .tracks
         .iter()
         .flat_map(|t| t.plugin_slots())
-        .chain(project.bus.inserts.iter())
+        .chain(project.returns.iter().flat_map(|r| r.inserts.iter()))
         .collect()
 }
 
@@ -151,7 +151,12 @@ fn project_slots_mut(project: &mut Project) -> Vec<&mut PluginSlot> {
         }
         slots.extend(track.strip.inserts.iter_mut());
     }
-    slots.extend(project.bus.inserts.iter_mut());
+    slots.extend(
+        project
+            .returns
+            .iter_mut()
+            .flat_map(|r| r.inserts.iter_mut()),
+    );
     slots
 }
 
@@ -556,7 +561,10 @@ impl App {
                     Some(t) => &mut t.strip.inserts,
                     None => return,
                 },
-                Owner::Bus => &mut p.bus.inserts,
+                Owner::Return(index) => match p.returns.get_mut(index) {
+                    Some(r) => &mut r.inserts,
+                    None => return,
+                },
             };
             if index < inserts.len() {
                 inserts[index] = slot;
@@ -592,7 +600,10 @@ impl App {
                     Some(t) => &mut t.strip.inserts,
                     None => return,
                 },
-                Owner::Bus => &mut p.bus.inserts,
+                Owner::Return(index) => match p.returns.get_mut(index) {
+                    Some(r) => &mut r.inserts,
+                    None => return,
+                },
             };
             match slot {
                 Some(slot) if index < inserts.len() => inserts[index] = slot,
@@ -610,7 +621,7 @@ impl App {
         self.edit(|p| {
             let inserts = match owner {
                 Owner::Track(id) => p.track_mut(id).map(|t| &mut t.strip.inserts),
-                Owner::Bus => Some(&mut p.bus.inserts),
+                Owner::Return(index) => p.returns.get_mut(index).map(|r| &mut r.inserts),
             };
             if let Some(slot) = inserts.and_then(|i| i.get_mut(index)) {
                 slot.bypass = !slot.bypass;

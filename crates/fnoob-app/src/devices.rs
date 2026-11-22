@@ -13,7 +13,12 @@ pub(crate) fn slot_mut(project: &mut Project, id: Id) -> Option<&mut PluginSlot>
             };
             instrument.into_iter().chain(t.strip.inserts.iter_mut())
         })
-        .chain(project.bus.inserts.iter_mut())
+        .chain(
+            project
+                .returns
+                .iter_mut()
+                .flat_map(|r| r.inserts.iter_mut()),
+        )
         .find(|s| s.id == id)
 }
 

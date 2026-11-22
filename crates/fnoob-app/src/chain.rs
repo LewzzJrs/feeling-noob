@@ -12,20 +12,25 @@ const CARD_W: f32 = 250.0;
 pub enum ChainTarget {
     #[default]
     SelectedTrack,
-    Bus,
+    Return(usize),
 }
 
 fn inserts_mut(project: &mut Project, owner: Owner) -> Option<&mut Vec<PluginSlot>> {
     match owner {
         Owner::Track(id) => project.track_mut(id).map(|t| &mut t.strip.inserts),
-        Owner::Bus => Some(&mut project.bus.inserts),
+        Owner::Return(index) => project.returns.get_mut(index).map(|r| &mut r.inserts),
     }
 }
 
 impl App {
     pub(crate) fn reveal_device(&mut self, slot: fnoob_core::model::Id) {
-        if self.project.bus.inserts.iter().any(|s| s.id == slot) {
-            self.chain_target = ChainTarget::Bus;
+        if let Some(index) = self
+            .project
+            .returns
+            .iter()
+            .position(|r| r.inserts.iter().any(|s| s.id == slot))
+        {
+            self.chain_target = ChainTarget::Return(index);
         } else if let Some(track) = self
             .project
             .tracks
@@ -55,14 +60,23 @@ impl App {
                 ChainTarget::SelectedTrack,
                 "Selected track",
             );
-            let name = self.project.bus.name.clone();
-            ui.selectable_value(&mut self.chain_target, ChainTarget::Bus, name);
+            let names: Vec<String> = self
+                .project
+                .returns
+                .iter()
+                .map(|r| r.name.clone())
+                .collect();
+            for (index, name) in names.into_iter().enumerate() {
+                ui.selectable_value(&mut self.chain_target, ChainTarget::Return(index), name);
+            }
             if ui.button("Close").clicked() {
                 self.devices_open = false;
             }
         });
         let owner = match self.chain_target {
-            ChainTarget::Bus => Some(Owner::Bus),
+            ChainTarget::Return(index) => {
+                (index < self.project.returns.len()).then_some(Owner::Return(index))
+            }
             ChainTarget::SelectedTrack => self.selection.track.map(Owner::Track),
         };
         let Some(owner) = owner else {
@@ -74,11 +88,10 @@ impl App {
                 Some(t) => (t.name.clone(), Some(t.kind), t.strip.inserts.clone()),
                 None => return,
             },
-            Owner::Bus => (
-                self.project.bus.name.clone(),
-                None,
-                self.project.bus.inserts.clone(),
-            ),
+            Owner::Return(index) => match self.project.returns.get(index) {
+                Some(r) => (r.name.clone(), None, r.inserts.clone()),
+                None => return,
+            },
         };
         ui.label(
             RichText::new(format!(

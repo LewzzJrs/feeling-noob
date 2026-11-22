@@ -1,9 +1,11 @@
 use crate::app::App;
-use crate::ui_kit::hint;
+use crate::ui_kit::{hint, knob};
 use eframe::egui::{self, Color32, CornerRadius, Painter, Rect, RichText, Ui};
 use fnoob_core::catalog::CatalogEntry;
-use fnoob_core::model::{Id, MAX_FADER_DB, Project, SILENT_DB, TrackKind};
-use fnoob_engine::plan::{BUS_METER, MASTER_METER, METER_SLOTS, TRACK_METERS};
+use fnoob_core::model::{
+    Id, MAX_FADER_DB, Monitor, Output, Project, SILENT_DB, TrackKind, return_letter,
+};
+use fnoob_engine::plan::{MASTER_METER, METER_SLOTS, TRACK_METERS, return_meter};
 
 const FADER_FLOOR_DB: f32 = -60.0;
 const METER_DECAY: f32 = 0.88;
@@ -82,7 +84,7 @@ fn pan_text(value: f64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MixTarget {
     Track(Id),
-    Bus,
+    Return(usize),
     Master,
 }
 
@@ -95,7 +97,7 @@ impl MixTarget {
                 .position(|t| t.id == id)
                 .filter(|&i| i < TRACK_METERS)
                 .unwrap_or(METER_SLOTS),
-            Self::Bus => BUS_METER,
+            Self::Return(index) => return_meter(index),
             Self::Master => MASTER_METER,
         }
     }
@@ -108,7 +110,6 @@ struct MixState {
     active: bool,
     solo: Option<bool>,
     arm: Option<bool>,
-    send: Option<f32>,
 }
 
 fn state(project: &Project, target: MixTarget) -> Option<MixState> {
@@ -123,18 +124,19 @@ fn state(project: &Project, target: MixTarget) -> Option<MixState> {
                 active: !track.mute,
                 solo: Some(track.solo),
                 arm: Some(track.record_enabled),
-                send: Some(track.strip.send.level_db),
             }
         }
-        MixTarget::Bus => MixState {
-            number: 0,
-            volume: project.bus.volume_db,
-            pan: Some(project.bus.pan),
-            active: !project.bus.mute,
-            solo: None,
-            arm: None,
-            send: None,
-        },
+        MixTarget::Return(index) => {
+            let ret = project.returns.get(index)?;
+            MixState {
+                number: index,
+                volume: ret.volume_db,
+                pan: Some(ret.pan),
+                active: !ret.mute,
+                solo: None,
+                arm: None,
+            }
+        }
         MixTarget::Master => MixState {
             number: 0,
             volume: project.master.volume_db,
@@ -142,7 +144,6 @@ fn state(project: &Project, target: MixTarget) -> Option<MixState> {
             active: true,
             solo: None,
             arm: None,
-            send: None,
         },
     })
 }
@@ -154,7 +155,11 @@ fn set_volume(project: &mut Project, target: MixTarget, db: f32) {
                 t.strip.volume_db = db;
             }
         }
-        MixTarget::Bus => project.bus.volume_db = db,
+        MixTarget::Return(index) => {
+            if let Some(r) = project.returns.get_mut(index) {
+                r.volume_db = db;
+            }
+        }
         MixTarget::Master => project.master.volume_db = db,
     }
 }
@@ -166,8 +171,18 @@ fn set_pan(project: &mut Project, target: MixTarget, pan: f32) {
                 t.strip.pan = pan;
             }
         }
-        MixTarget::Bus => project.bus.pan = pan,
+        MixTarget::Return(index) => {
+            if let Some(r) = project.returns.get_mut(index) {
+                r.pan = pan;
+            }
+        }
         MixTarget::Master => {}
+    }
+}
+
+fn set_send(project: &mut Project, track: Id, index: usize, db: f32) {
+    if let Some(t) = project.track_mut(track) {
+        t.strip.send_mut(index).level_db = db;
     }
 }
 
@@ -230,7 +245,7 @@ impl App {
             ui.spacing_mut().item_spacing.x = 2.0;
             let label = match target {
                 MixTarget::Track(_) => s.number.to_string(),
-                MixTarget::Bus => "A".to_owned(),
+                MixTarget::Return(index) => return_letter(index).to_string(),
                 MixTarget::Master => "M".to_owned(),
             };
             if target != MixTarget::Master
@@ -246,7 +261,11 @@ impl App {
                             t.mute = !t.mute;
                         }
                     }
-                    MixTarget::Bus => p.bus.mute = !p.bus.mute,
+                    MixTarget::Return(index) => {
+                        if let Some(r) = p.returns.get_mut(index) {
+                            r.mute = !r.mute;
+                        }
+                    }
                     MixTarget::Master => {}
                 });
             }
@@ -305,38 +324,107 @@ impl App {
     }
 
     pub(crate) fn mix_send(&mut self, ui: &mut Ui, target: MixTarget) {
-        let (Some(s), MixTarget::Track(id)) = (state(&self.project, target), target) else {
+        let MixTarget::Track(id) = target else {
             return;
         };
-        let Some(send) = s.send else {
+        let Some(track) = self.project.track(id) else {
             return;
         };
+        let levels: Vec<f32> = (0..self.project.returns.len())
+            .map(|i| track.strip.send_at(i).level_db)
+            .collect();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            ui.label(RichText::new("A").small());
-            let mut level = fader_value(send);
+            for (index, db) in levels.into_iter().enumerate() {
+                ui.label(RichText::new(return_letter(index).to_string()).small());
+                let mut level = fader_value(db);
+                let response = ui.add(
+                    egui::DragValue::new(&mut level)
+                        .range(FADER_FLOOR_DB..=MAX_FADER_DB)
+                        .speed(0.2)
+                        .custom_formatter(|v, _| db_text(v)),
+                );
+                let text = format!("Send to return track {}, in dB.", return_letter(index));
+                let response = hint(response, &text);
+                self.live_edit(&response, |p| set_send(p, id, index, from_fader(level)));
+            }
+        });
+    }
+
+    pub(crate) fn mix_strip(&mut self, ui: &mut Ui, target: MixTarget, fader_height: f32) {
+        let Some(s) = state(&self.project, target) else {
+            return;
+        };
+        if let MixTarget::Track(id) = target {
+            let sends: Vec<f32> = (0..self.project.returns.len())
+                .map(|i| {
+                    self.project
+                        .track(id)
+                        .map_or(SILENT_DB, |t| t.strip.send_at(i).level_db)
+                })
+                .collect();
+            if !sends.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for (index, db) in sends.into_iter().enumerate() {
+                        let mut level = fader_value(db);
+                        let letter = return_letter(index).to_string();
+                        let response = knob(ui, &mut level, FADER_FLOOR_DB, MAX_FADER_DB, &letter);
+                        let text = format!(
+                            "Send {letter}: {} dB to return track {letter}. Drag up or down.",
+                            db_text(f64::from(level))
+                        );
+                        let response = hint(response, &text);
+                        self.live_edit(&response, |p| set_send(p, id, index, from_fader(level)));
+                    }
+                });
+            }
+        }
+        ui.horizontal(|ui| {
+            let mut volume = fader_value(s.volume);
+            ui.spacing_mut().slider_width = fader_height;
             let response = ui.add(
-                egui::DragValue::new(&mut level)
-                    .range(FADER_FLOOR_DB..=MAX_FADER_DB)
-                    .speed(0.2)
-                    .custom_formatter(|v, _| db_text(v)),
+                egui::Slider::new(&mut volume, FADER_FLOOR_DB..=MAX_FADER_DB)
+                    .vertical()
+                    .show_value(false),
             );
-            let response = hint(response, "Send to return track A, in dB.");
-            self.live_edit(&response, |p| {
-                if let Some(t) = p.track_mut(id) {
-                    t.strip.send.level_db = from_fader(level);
+            let text = format!(
+                "Volume: {} dB. Double-click for 0 dB.",
+                db_text(f64::from(volume))
+            );
+            let response = hint(response, &text);
+            if response.double_clicked() {
+                self.edit(|p| set_volume(p, target, 0.0));
+            } else {
+                self.live_edit(&response, |p| set_volume(p, target, from_fader(volume)));
+            }
+            let (meter, _) =
+                ui.allocate_exact_size(egui::vec2(6.0, fader_height), egui::Sense::hover());
+            self.paint_meter(ui.painter(), meter, target);
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(db_text(f64::from(volume)))
+                        .small()
+                        .monospace(),
+                );
+                if let Some(pan) = s.pan {
+                    let mut value = pan * 50.0;
+                    let response = knob(ui, &mut value, -50.0, 50.0, "Pan");
+                    let text = format!("Pan {}. Drag up or down.", pan_text(f64::from(value)));
+                    let response = hint(response, &text);
+                    self.live_edit(&response, |p| set_pan(p, target, value / 50.0));
                 }
             });
         });
+        self.mix_buttons(ui, target);
     }
 
     pub(crate) fn track_io(&mut self, ui: &mut Ui, id: Id) {
         let Some(track) = self.project.track(id) else {
             return;
         };
-        match track.kind {
+        let (kind, monitor, output) = (track.kind, track.monitor, track.output);
+        match kind {
             TrackKind::Audio => {
-                let monitor = track.input_monitoring;
                 let current = track.audio_input.unwrap_or_default();
                 egui::ComboBox::from_id_salt(("io_input", id))
                     .width(70.0)
@@ -354,14 +442,19 @@ impl App {
                             }
                         }
                     });
-                if hint(
-                    toggle(ui, monitor, "In", ACTIVE, 26.0),
-                    "Monitor: hear the input through this track.",
-                )
-                .clicked()
-                {
-                    self.edit_track(id, |t| t.input_monitoring = !t.input_monitoring);
-                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    for mode in Monitor::ALL {
+                        if hint(
+                            toggle(ui, monitor == mode, mode.label(), ACTIVE, 22.0),
+                            "Monitor: In always plays the input, Auto plays it while the track is armed, Off never does.",
+                        )
+                        .clicked()
+                        {
+                            self.edit_track(id, |t| t.monitor = mode);
+                        }
+                    }
+                });
             }
             TrackKind::Instrument => {
                 let name = track
@@ -379,6 +472,19 @@ impl App {
                     self.show_devices();
                 }
             }
+        }
+        let mut chosen = output;
+        let combo = egui::ComboBox::from_id_salt(("io_output", id))
+            .width(70.0)
+            .selected_text(output.label())
+            .show_ui(ui, |ui| {
+                for option in [Output::Main, Output::None] {
+                    ui.selectable_value(&mut chosen, option, option.label());
+                }
+            });
+        hint(combo.response, "Output: where this track is sent.");
+        if chosen != output {
+            self.edit_track(id, |t| t.output = chosen);
         }
     }
 

@@ -184,7 +184,8 @@ impl App {
                 Settings::default()
             }
         };
-        let project = Project::new("Untitled", DEFAULT_SAMPLE_RATE);
+        let mut project = Project::new("Untitled", DEFAULT_SAMPLE_RATE);
+        edit::default_set(&mut project);
         let (plugins, plugin_problem) = crate::plugins::PluginHost::new();
         if plugin_problem.is_some() {
             message = plugin_problem;
@@ -554,6 +555,19 @@ impl App {
                 self.selection.regions.clear();
             }
             Command::Rename => self.rename_selection(),
+            Command::NewReturnTrack => {
+                let mut added = None;
+                self.edit(|p| added = edit::add_return(p, "Return", None));
+                match added {
+                    Some(index) => {
+                        self.chain_target = crate::chain::ChainTarget::Return(index);
+                        self.show_devices();
+                    }
+                    None => {
+                        self.message = Some("A project can have at most 8 return tracks.".into())
+                    }
+                }
+            }
             Command::InsertScene => {
                 let at = self
                     .session
@@ -727,7 +741,8 @@ impl App {
     fn proceed(&mut self, pending: Pending) {
         match pending {
             Pending::New => {
-                let project = Project::new("Untitled", self.sample_rate());
+                let mut project = Project::new("Untitled", self.sample_rate());
+                edit::default_set(&mut project);
                 self.replace_project(project, None);
             }
             Pending::Open => self.open(),
@@ -935,6 +950,7 @@ impl App {
             ui.menu_button("Create", |ui| {
                 self.menu_item(ui, "Insert Audio Track", Command::NewAudioTrack);
                 self.menu_item(ui, "Insert MIDI Track", Command::NewMidiTrack);
+                self.menu_item(ui, "Insert Return Track", Command::NewReturnTrack);
                 self.menu_item(ui, "Insert Several Tracks...", Command::NewTracks);
                 self.menu_item(ui, "Insert Scene", Command::InsertScene);
                 ui.separator();

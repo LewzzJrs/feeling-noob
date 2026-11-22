@@ -20,7 +20,10 @@ const CELL_H: f32 = 26.0;
 const LAUNCH_W: f32 = 22.0;
 const HEADER_H: f32 = 26.0;
 const SCENE_W: f32 = 150.0;
-const MIX_H: f32 = 64.0;
+const IO_H: f32 = 62.0;
+const STRIP_H: f32 = 196.0;
+const FADER_H: f32 = 110.0;
+const SPACER_MIN: f32 = 60.0;
 const PLAYING: Color32 = Color32::from_rgb(90, 200, 110);
 
 #[derive(Default)]
@@ -55,6 +58,8 @@ enum GridAction {
     InsertScene(usize),
     DuplicateScene(usize),
     DeleteScene(usize),
+    NewTrackFrom(BrowserItem),
+    ShowReturn(usize),
     RenameScene(usize, String),
 }
 
@@ -150,12 +155,24 @@ impl App {
             .map(|t| (t.id, t.kind, t.name.clone(), t.color))
             .collect();
         let scenes = self.project.scenes.len();
-        let mixer = if self.mixer_open { MIX_H } else { 0.0 };
+        let returns: Vec<String> = self
+            .project
+            .returns
+            .iter()
+            .map(|r| r.name.clone())
+            .collect();
+        let mixer = if self.mixer_open { IO_H + STRIP_H } else { 0.0 };
+        let right_w = returns.len() as f32 * CELL_W + SCENE_W;
+        let width = (tracks.len() as f32 * CELL_W + SPACER_MIN + right_w).max(ui.available_width());
         let size = vec2(
-            (tracks.len() + 2) as f32 * CELL_W + SCENE_W,
-            HEADER_H + (scenes as f32 + 1.0) * CELL_H + mixer,
+            width,
+            HEADER_H + (scenes as f32 + 1.0) * CELL_H + mixer + 8.0,
         );
         let (area, _) = ui.allocate_exact_size(size, Sense::hover());
+        let right_x = area.right() - right_w;
+        let main_x = right_x + returns.len() as f32 * CELL_W;
+        let stop_y = area.top() + HEADER_H + scenes as f32 * CELL_H;
+        let mixer_y = stop_y + CELL_H + 4.0;
         let painter = ui.painter_at(ui.clip_rect());
         let blink = (ui.input(|i| i.time) * 4.0) as i64 % 2 == 0;
         let base = ui.make_persistent_id("clip_grid");
@@ -352,28 +369,37 @@ impl App {
                 actions.push(GridAction::StopTrack(*track));
             }
             if mixer > 0.0 {
-                let cell = Rect::from_min_size(
-                    Pos2::new(x, stop.bottom() + 4.0),
-                    vec2(CELL_W - 2.0, MIX_H - 6.0),
-                );
-                self.grid_mix_cell(ui, &painter, cell, MixTarget::Track(*track));
+                self.grid_mixer(ui, &painter, x, mixer_y, MixTarget::Track(*track));
             }
         }
-        for (index, (target, name)) in [
-            (MixTarget::Bus, self.project.bus.name.clone()),
-            (MixTarget::Master, "Main".to_owned()),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let x = area.left() + (tracks.len() + index) as f32 * CELL_W;
+        let spacer = Rect::from_min_max(
+            Pos2::new(area.left() + tracks.len() as f32 * CELL_W, area.top()),
+            Pos2::new(right_x - 2.0, stop_y + CELL_H),
+        );
+        let spacer_response = hint(
+            ui.interact(spacer, base.with("spacer"), Sense::hover()),
+            "Drop samples, instruments or effects here to make a new track.",
+        );
+        let hovering = spacer_response.dnd_hover_payload::<BrowserItem>().is_some();
+        painter.text(
+            spacer.center(),
+            Align2::CENTER_CENTER,
+            "Drop Files and Devices Here",
+            FontId::proportional(13.0),
+            if hovering {
+                PLAYING
+            } else {
+                visuals.weak_text_color()
+            },
+        );
+        if let Some(item) = spacer_response.dnd_release_payload::<BrowserItem>() {
+            actions.push(GridAction::NewTrackFrom((*item).clone()));
+        }
+        for (index, name) in returns.iter().enumerate() {
+            let x = right_x + index as f32 * CELL_W;
             let header =
                 Rect::from_min_size(Pos2::new(x, area.top()), vec2(CELL_W - 2.0, HEADER_H - 2.0));
-            painter.rect_filled(
-                header,
-                2.0,
-                Color32::from_gray(if index == 0 { 150 } else { 205 }),
-            );
+            painter.rect_filled(header, 2.0, Color32::from_gray(150));
             painter.text(
                 header.left_center() + vec2(6.0, 0.0),
                 Align2::LEFT_CENTER,
@@ -381,28 +407,29 @@ impl App {
                 FontId::proportional(13.0),
                 Color32::BLACK,
             );
+            let response = hint(
+                ui.interact(header, base.with(("return", index)), Sense::click()),
+                "Return track: click to show its devices.",
+            );
+            if response.clicked() {
+                actions.push(GridAction::ShowReturn(index));
+            }
             if mixer > 0.0 {
-                let cell = Rect::from_min_size(
-                    Pos2::new(
-                        x,
-                        area.top() + HEADER_H + (scenes as f32 + 1.0) * CELL_H + 4.0,
-                    ),
-                    vec2(CELL_W - 2.0, MIX_H - 6.0),
-                );
-                self.grid_mix_cell(ui, &painter, cell, target);
+                self.grid_mixer(ui, &painter, x, mixer_y, MixTarget::Return(index));
             }
         }
-        let x = area.left() + (tracks.len() + 2) as f32 * CELL_W;
+        let x = main_x;
         let header = Rect::from_min_size(
             Pos2::new(x, area.top()),
             vec2(SCENE_W - 2.0, HEADER_H - 2.0),
         );
+        painter.rect_filled(header, 2.0, Color32::from_gray(205));
         painter.text(
             header.left_center() + vec2(6.0, 0.0),
             Align2::LEFT_CENTER,
-            "Scenes",
+            "Main",
             FontId::proportional(13.0),
-            visuals.strong_text_color(),
+            Color32::BLACK,
         );
         for scene in 0..scenes {
             let cell = Rect::from_min_size(
@@ -483,31 +510,51 @@ impl App {
         {
             actions.push(GridAction::StopAll);
         }
+        if mixer > 0.0 {
+            self.grid_mixer(ui, &painter, x, mixer_y, MixTarget::Master);
+        }
         hovered_cell
     }
 
-    fn grid_mix_cell(
+    fn grid_mixer(
         &mut self,
         ui: &mut Ui,
         painter: &egui::Painter,
-        cell: Rect,
+        x: f32,
+        top: f32,
         target: MixTarget,
     ) {
-        painter.rect_filled(cell, 2.0, ui.visuals().faint_bg_color);
-        let inner = Rect::from_min_max(cell.min + vec2(3.0, 3.0), cell.max - vec2(12.0, 3.0));
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-        child.set_clip_rect(inner.intersect(ui.clip_rect()));
+        let width = if target == MixTarget::Master {
+            SCENE_W
+        } else {
+            CELL_W
+        };
+        let io = Rect::from_min_size(Pos2::new(x, top), vec2(width - 2.0, IO_H - 4.0));
+        painter.rect_filled(io, 2.0, ui.visuals().faint_bg_color);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(io.shrink(3.0)));
+        child.set_clip_rect(io.intersect(ui.clip_rect()));
         child.vertical(|ui| {
             crate::ui_kit::compact(ui);
-            self.mix_buttons(ui, target);
-            self.mix_levels(ui, target);
-            self.mix_send(ui, target);
+            match target {
+                MixTarget::Track(id) => self.track_io(ui, id),
+                MixTarget::Return(_) => {
+                    ui.label(RichText::new("Audio To").small().weak());
+                    ui.label("Main");
+                }
+                MixTarget::Master => {
+                    ui.label(RichText::new("Main Out").small().weak());
+                    ui.label("Speakers");
+                }
+            }
         });
-        let meter = Rect::from_min_max(
-            egui::pos2(cell.right() - 9.0, cell.top() + 4.0),
-            egui::pos2(cell.right() - 4.0, cell.bottom() - 4.0),
-        );
-        self.paint_meter(painter, meter, target);
+        let strip = Rect::from_min_size(Pos2::new(x, top + IO_H), vec2(width - 2.0, STRIP_H - 4.0));
+        painter.rect_filled(strip, 2.0, ui.visuals().faint_bg_color);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(strip.shrink(3.0)));
+        child.set_clip_rect(strip.intersect(ui.clip_rect()));
+        child.vertical(|ui| {
+            crate::ui_kit::compact(ui);
+            self.mix_strip(ui, target, FADER_H);
+        });
     }
 
     fn session_file_drop(&mut self, ui: &Ui, area: Rect, cell: Option<(Id, usize)>) {
@@ -685,6 +732,17 @@ impl App {
             GridAction::DeleteScene(index) => self.edit(|p| {
                 session::delete_scene(p, index);
             }),
+            GridAction::NewTrackFrom(item) => match item {
+                BrowserItem::Sample(path) => self.import_to_slots(&[path], None, 0),
+                other => {
+                    let tick = self.playhead_tick();
+                    self.apply_browser_item(&other, None, tick);
+                }
+            },
+            GridAction::ShowReturn(index) => {
+                self.chain_target = crate::chain::ChainTarget::Return(index);
+                self.show_devices();
+            }
             GridAction::RenameScene(index, name) => {
                 self.session.renaming = None;
                 let name = name.trim().to_owned();
