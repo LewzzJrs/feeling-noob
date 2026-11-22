@@ -1,4 +1,5 @@
 pub mod audio_data;
+pub mod bounce;
 pub mod device;
 pub mod metronome;
 pub mod midi_in;

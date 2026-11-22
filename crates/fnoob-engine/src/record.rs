@@ -27,7 +27,7 @@ pub struct RecordedFile {
     pub frames: u64,
 }
 
-type Writer = hound::WavWriter<BufWriter<File>>;
+pub(crate) type Writer = hound::WavWriter<BufWriter<File>>;
 
 pub struct WavRecorder {
     stop: Arc<AtomicBool>,
@@ -67,7 +67,11 @@ pub fn start_recording(
     Ok((WavRecorder { stop, handle }, producer))
 }
 
-fn write_sample(writer: &mut Writer, format: RecordFormat, sample: f32) -> hound::Result<()> {
+pub(crate) fn write_sample(
+    writer: &mut Writer,
+    format: RecordFormat,
+    sample: f32,
+) -> hound::Result<()> {
     let sample = if sample.is_finite() { sample } else { 0.0 };
     match format {
         RecordFormat::Float32 => writer.write_sample(sample),
