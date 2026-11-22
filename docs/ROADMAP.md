@@ -47,9 +47,10 @@ Known limits of Phase 11: samples must already be at the project sample rate (no
 
 Done in Phase 12: clip-launch grid view (`Tab`) with scenes, launch quantize, launch modes (trigger, gate, toggle, repeat), follow actions with chance, per-track and global stop, back to timeline, moving and duplicating clips, copying between the grid and the timeline, and dropping samples onto slots.
 
+Done in Phase 13: device chain view in the bottom area (`Shift+Tab`) for the selected track or Bus 1, with the instrument and each effect as a card: on/off, move left/right, replace, remove, inline controls for built-in devices, and drop from the browser.
+
 Not started, in rough priority order:
 
-- Device chain view for the selected track in the bottom area
 - Punch in/out recording and capture of the last played MIDI
 - Take lanes and comping for audio
 - Tempo and time signature changes (tempo map), tap tempo

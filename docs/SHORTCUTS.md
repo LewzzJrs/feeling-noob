@@ -50,6 +50,7 @@ Each entry: file, what was skipped, when it needs fixing.
 | S56 | `crates/fnoob-app/src/piano_roll.rs` | Grid clips open in the piano roll at bar 1, and the piano roll playhead follows the timeline, not the clip. | When the clip editor gets its own view. |
 | S57 | `crates/fnoob-engine/src/session.rs` (`launch`) | A scene with an empty slot always stops that track; slots cannot hide their stop button. Clips have no legato option and no per-clip launch quantize. | If users need those launch options. |
 | S58 | `crates/fnoob-app/src/bounce.rs` | Bounce renders the timeline only; playing grid clips are not included. | With recording clips to the timeline. |
+| S59 | `crates/fnoob-app/src/chain.rs` | The device chain holds at most 4 effects per track (`MAX_INSERTS`). Devices move with buttons, not by dragging. Compressor and limiter show no gain-reduction meter. There are no device presets or racks. | When chains need more devices or presets. |
 
 ## Fixed
 

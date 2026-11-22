@@ -374,6 +374,7 @@ Autosave uses the same steps into `autosave\project.json`, without backups.
 | Musical Typing on/off | `Ctrl+K` |
 | Duplicate Track (in the clip grid: duplicate the selected clip) | `Ctrl+D` |
 | Switch Timeline / Clip Grid | `Tab` |
+| Show/Hide Devices | `Shift+Tab` |
 
 Rules:
 - Every shortcut goes through one table in `fnoob-core::keymap`. The UI never reads keys on its own.
