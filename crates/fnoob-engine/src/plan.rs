@@ -1,6 +1,8 @@
 use crate::audio_data::{AudioData, AudioPool};
 use crate::synth::Synth;
-use fnoob_core::model::{AudioInput, Id, Project, RegionContent, TrackKind};
+use fnoob_core::model::{
+    AudioInput, ChannelStrip, Id, Project, RegionContent, TrackKind, db_to_gain, pan_gains,
+};
 use fnoob_core::time::{Timeline, ticks_per_beat};
 use std::sync::Arc;
 
@@ -16,6 +18,7 @@ pub struct PlannedNote {
 pub struct TrackPlan {
     pub id: Id,
     pub audible: bool,
+    pub strip: StripPlan,
     pub notes: Vec<PlannedNote>,
     pub synth: Synth,
     pub cursor: usize,
@@ -34,6 +37,7 @@ pub struct Clip {
 pub struct AudioTrackPlan {
     pub id: Id,
     pub audible: bool,
+    pub strip: StripPlan,
     pub clips: Vec<Clip>,
     pub cursor: usize,
     pub input: AudioInput,
@@ -52,6 +56,40 @@ pub struct RenderPlan {
     pub tracks: Vec<TrackPlan>,
     pub audio_tracks: Vec<AudioTrackPlan>,
     pub records_audio: bool,
+    pub bus: (f32, f32),
+    pub master: f32,
+}
+
+pub const TRACK_METERS: usize = 256;
+pub const BUS_METER: usize = TRACK_METERS;
+pub const MASTER_METER: usize = TRACK_METERS + 1;
+pub const METER_SLOTS: usize = TRACK_METERS + 2;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StripPlan {
+    pub left: f32,
+    pub right: f32,
+    pub send: f32,
+    pub pre_fader: bool,
+    pub meter: usize,
+}
+
+impl StripPlan {
+    pub fn new(strip: &ChannelStrip, meter: usize) -> Self {
+        let gain = db_to_gain(strip.volume_db);
+        let (left, right) = pan_gains(strip.pan);
+        Self {
+            left: gain * left,
+            right: gain * right,
+            send: db_to_gain(strip.send.level_db),
+            pre_fader: strip.send.pre_fader,
+            meter: if meter < TRACK_METERS {
+                meter
+            } else {
+                METER_SLOTS
+            },
+        }
+    }
 }
 
 fn audio_track_plans(
@@ -62,8 +100,9 @@ fn audio_track_plans(
     project
         .tracks
         .iter()
-        .filter(|t| t.kind == TrackKind::Audio)
-        .map(|track| {
+        .enumerate()
+        .filter(|(_, t)| t.kind == TrackKind::Audio)
+        .map(|(index, track)| {
             let audible = project.is_track_audible(track);
             let mut clips: Vec<Clip> = track
                 .regions
@@ -94,6 +133,7 @@ fn audio_track_plans(
             AudioTrackPlan {
                 id: track.id,
                 audible,
+                strip: StripPlan::new(&track.strip, index),
                 clips,
                 cursor: 0,
                 input: track.audio_input.unwrap_or_default(),
@@ -108,7 +148,8 @@ fn track_plans(project: &Project, timeline: Timeline) -> Vec<TrackPlan> {
     project
         .tracks
         .iter()
-        .filter_map(|track| {
+        .enumerate()
+        .filter_map(|(index, track)| {
             let params = track.synth()?;
             let audible = project.is_track_audible(track);
             let mut notes: Vec<PlannedNote> = if audible {
@@ -141,6 +182,7 @@ fn track_plans(project: &Project, timeline: Timeline) -> Vec<TrackPlan> {
             Some(TrackPlan {
                 id: track.id,
                 audible,
+                strip: StripPlan::new(&track.strip, index),
                 notes,
                 synth: Synth::new(&params, timeline.sample_rate),
                 cursor: 0,
@@ -184,6 +226,16 @@ impl RenderPlan {
                 .filter(|(start, end)| end > start),
             tracks: track_plans(project, timeline),
             audio_tracks: audio_track_plans(project, timeline, pool),
+            bus: {
+                let gain = if project.bus.mute {
+                    0.0
+                } else {
+                    db_to_gain(project.bus.volume_db)
+                };
+                let (left, right) = pan_gains(project.bus.pan);
+                (gain * left, gain * right)
+            },
+            master: db_to_gain(project.master.volume_db),
             records_audio: project
                 .tracks
                 .iter()

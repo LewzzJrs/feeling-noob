@@ -1,11 +1,11 @@
 use crate::metronome::Metronome;
-use crate::plan::{AudioTrackPlan, RenderPlan};
+use crate::plan::{AudioTrackPlan, BUS_METER, MASTER_METER, METER_SLOTS, RenderPlan, StripPlan};
 use fnoob_core::model::Id;
 use fnoob_core::time::{beat_start_sample, first_beat_at_or_after};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 const COMMAND_CAPACITY: usize = 256;
 const GARBAGE_CAPACITY: usize = 64;
@@ -107,6 +107,7 @@ struct Shared {
     recording: AtomicBool,
     take_start: AtomicU64,
     overruns: AtomicU64,
+    meters: Box<[AtomicU32]>,
 }
 
 pub struct EngineHandle {
@@ -148,6 +149,13 @@ impl EngineHandle {
     pub fn audio_take_start(&self) -> Option<u64> {
         let start = self.shared.take_start.load(Ordering::Acquire);
         (start != NO_TAKE).then_some(start)
+    }
+
+    pub fn take_peak(&self, slot: usize) -> f32 {
+        self.shared
+            .meters
+            .get(slot)
+            .map_or(0.0, |m| f32::from_bits(m.swap(0, Ordering::Relaxed)))
     }
 
     pub fn record_overruns(&self) -> u64 {
@@ -214,6 +222,7 @@ pub struct Processor {
     garbage: Producer<Garbage>,
     midi: Option<Consumer<MidiEvent>>,
     input: Option<Consumer<f32>>,
+    peaks: [f32; METER_SLOTS],
     input_channels: usize,
     input_frame: [f32; MAX_INPUT_CHANNELS],
     sink: Option<Producer<f32>>,
@@ -242,12 +251,14 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         recording: AtomicBool::new(false),
         take_start: AtomicU64::new(NO_TAKE),
         overruns: AtomicU64::new(0),
+        meters: (0..METER_SLOTS).map(|_| AtomicU32::new(0)).collect(),
     });
     let mut processor = Processor {
         commands: command_rx,
         garbage: garbage_tx,
         midi: None,
         input: None,
+        peaks: [0.0; METER_SLOTS],
         input_channels: 0,
         input_frame: [0.0; MAX_INPUT_CHANNELS],
         sink: None,
@@ -410,6 +421,15 @@ impl Processor {
                 if let Some(old) = self.sink.replace(sink) {
                     let _ = self.garbage.push(Garbage::Sink(old));
                 }
+            }
+        }
+    }
+
+    fn publish_meters(&mut self) {
+        for (meter, peak) in self.shared.meters.iter().zip(self.peaks.iter_mut()) {
+            if *peak > 0.0 {
+                meter.fetch_max(peak.to_bits(), Ordering::Relaxed);
+                *peak = 0.0;
             }
         }
     }
@@ -581,34 +601,46 @@ impl Processor {
                 }
             };
             let position = self.position;
-            let mut mono = self.metronome.next_sample();
+            let mut mix = Mix::default();
             for track in &mut self.plan.tracks {
                 if track.audible {
-                    mono += track.synth.next_sample(position);
+                    let mono = track.synth.next_sample(position);
+                    mix.add(&track.strip, mono, mono, &mut self.peaks);
                 }
             }
-            let (mut left, mut right) = (mono, mono);
             for index in 0..self.plan.audio_tracks.len() {
                 let track = &self.plan.audio_tracks[index];
-                if track.monitor {
-                    let (l, r) = self.input_pair(track);
-                    left += l;
-                    right += r;
+                if !track.audible {
+                    continue;
                 }
+                let (mut left, mut right) = if track.monitor {
+                    self.input_pair(track)
+                } else {
+                    (0.0, 0.0)
+                };
                 if playing {
                     let (l, r) = clip_frame(&mut self.plan.audio_tracks[index], position);
                     left += l;
                     right += r;
                 }
+                let strip = self.plan.audio_tracks[index].strip;
+                mix.add(&strip, left, right, &mut self.peaks);
             }
             if playing && self.recording && self.plan.records_audio {
                 self.record_input_frame();
             }
-            write_frame(frame, left, right);
+            let (bus_l, bus_r) = (mix.bus.0 * self.plan.bus.0, mix.bus.1 * self.plan.bus.1);
+            peak(&mut self.peaks, BUS_METER, bus_l, bus_r);
+            let master = self.plan.master;
+            let (left, right) = ((mix.main.0 + bus_l) * master, (mix.main.1 + bus_r) * master);
+            peak(&mut self.peaks, MASTER_METER, left, right);
+            let click = self.metronome.next_sample();
+            write_frame(frame, left + click, right + click);
             if playing {
                 self.position += 1;
             }
         }
+        self.publish_meters();
         self.shared.position.store(self.position, Ordering::Relaxed);
         self.shared
             .state
@@ -616,6 +648,33 @@ impl Processor {
         self.shared
             .recording
             .store(self.recording, Ordering::Release);
+    }
+}
+
+#[derive(Default)]
+struct Mix {
+    main: (f32, f32),
+    bus: (f32, f32),
+}
+
+impl Mix {
+    fn add(&mut self, strip: &StripPlan, left: f32, right: f32, peaks: &mut [f32]) {
+        let post = (left * strip.left, right * strip.right);
+        self.main.0 += post.0;
+        self.main.1 += post.1;
+        let source = if strip.pre_fader { (left, right) } else { post };
+        self.bus.0 += source.0 * strip.send;
+        self.bus.1 += source.1 * strip.send;
+        peak(peaks, strip.meter, post.0, post.1);
+    }
+}
+
+fn peak(peaks: &mut [f32], slot: usize, left: f32, right: f32) {
+    if let Some(p) = peaks.get_mut(slot) {
+        let level = left.abs().max(right.abs());
+        if level.is_finite() && level > *p {
+            *p = level;
+        }
     }
 }
 
@@ -667,7 +726,7 @@ mod tests {
         add_audio_file, add_audio_region, add_midi_region, add_note, add_track,
     };
     use fnoob_core::model::{
-        AudioInput, Instrument, Note, Project, SynthParams, TrackKind, Waveform,
+        AudioInput, Instrument, Note, Project, SILENT_DB, SynthParams, TrackKind, Waveform,
     };
 
     const SR: u32 = 48_000;
@@ -1045,6 +1104,96 @@ mod tests {
         assert!(out.iter().any(|&s| s != 0.0));
     }
 
+    fn assert_close(got: &[f32], want: &[f32]) {
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-6, "{got:?} vs {want:?}");
+        }
+    }
+
+    fn mixer_project() -> (Project, Id, Id) {
+        let data = AudioData::from_samples(1, vec![0.5; 4000]);
+        let (project, track, _) = audio_project(&data, 0);
+        let file = project.audio_files[0].id;
+        (project, track, file)
+    }
+
+    fn mixer_pool(project: &Project) -> AudioPool {
+        let mut pool = AudioPool::new();
+        pool.insert(
+            project.audio_files[0].id,
+            Arc::new(AudioData::from_samples(1, vec![0.5; 4000])),
+        );
+        pool
+    }
+
+    fn first_frame(project: &Project) -> ([f32; 2], EngineHandle) {
+        let pool = mixer_pool(project);
+        let (mut p, mut h) = create(SR, 2, audio_plan(project, &pool));
+        h.send(Command::Play).unwrap();
+        let mut out = vec![0.0; 2];
+        p.process(&mut out);
+        ([out[0], out[1]], h)
+    }
+
+    #[test]
+    fn fader_and_pan_shape_the_track() {
+        let (mut project, track, _) = mixer_project();
+        let strip = &mut project.track_mut(track).unwrap().strip;
+        strip.volume_db = -6.0;
+        strip.pan = -1.0;
+        let (frame, _) = first_frame(&project);
+        assert!((frame[0] - 0.5 * 0.501_187).abs() < 1e-5);
+        assert!(frame[1].abs() < 1e-6);
+        project.track_mut(track).unwrap().strip.volume_db = SILENT_DB;
+        assert_eq!(first_frame(&project).0, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn send_feeds_bus_pre_or_post_fader() {
+        let (mut project, track, _) = mixer_project();
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        {
+            let strip = &mut project.track_mut(track).unwrap().strip;
+            strip.volume_db = SILENT_DB;
+            strip.send.level_db = 0.0;
+        }
+        assert_eq!(first_frame(&project).0, [0.0, 0.0]);
+        project.track_mut(track).unwrap().strip.send.pre_fader = true;
+        let (frame, h) = first_frame(&project);
+        assert_close(&frame, &[0.5 * c, 0.5 * c]);
+        assert!((h.take_peak(BUS_METER) - 0.5 * c).abs() < 1e-6);
+        assert_eq!(h.take_peak(BUS_METER), 0.0);
+        project.bus.mute = true;
+        assert_eq!(first_frame(&project).0, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn solo_never_silences_the_bus() {
+        let (mut project, track, _) = mixer_project();
+        let other = add_track(&mut project, TrackKind::Audio);
+        project.track_mut(other).unwrap().solo = true;
+        project.track_mut(track).unwrap().strip.send.level_db = 0.0;
+        assert_eq!(first_frame(&project).0, [0.0, 0.0]);
+        project.track_mut(track).unwrap().solo = true;
+        project.track_mut(track).unwrap().strip.volume_db = SILENT_DB;
+        project.track_mut(track).unwrap().strip.send.pre_fader = true;
+        let (frame, _) = first_frame(&project);
+        assert!(frame[0] > 0.0);
+    }
+
+    #[test]
+    fn master_scales_everything_and_meters_report_peaks() {
+        let (mut project, track, _) = mixer_project();
+        project.master.volume_db = SILENT_DB;
+        let (frame, h) = first_frame(&project);
+        assert_eq!(frame, [0.0, 0.0]);
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        let slot = project.tracks.iter().position(|t| t.id == track).unwrap();
+        assert!((h.take_peak(slot) - 0.5 * c).abs() < 1e-6);
+        assert_eq!(h.take_peak(MASTER_METER), 0.0);
+    }
+
     fn audio_project(data: &AudioData, start_tick: u64) -> (Project, Id, AudioPool) {
         let mut project = metronome_only();
         project.metronome.enabled = false;
@@ -1087,9 +1236,10 @@ mod tests {
         let mut out = vec![1.0; 2 * (BEAT + 300)];
         p.process(&mut out);
         let frames = out.as_chunks::<2>().0;
+        let c = std::f32::consts::FRAC_1_SQRT_2;
         assert_eq!(frames[BEAT - 1], [0.0, 0.0]);
-        assert_eq!(frames[BEAT], [0.5, -0.25]);
-        assert_eq!(frames[BEAT + 199], [0.5, -0.25]);
+        assert_close(&frames[BEAT], &[0.5 * c, -0.25 * c]);
+        assert_close(&frames[BEAT + 199], &[0.5 * c, -0.25 * c]);
         assert_eq!(frames[BEAT + 200], [0.0, 0.0]);
     }
 
@@ -1099,7 +1249,8 @@ mod tests {
         let (project, _, pool) = audio_project(&data, 0);
         let (mut p, mut h) = create(SR, 1, audio_plan(&project, &pool));
         h.send(Command::Play).unwrap();
-        assert_eq!(render(&mut p, 2), [0.4, 0.0]);
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        assert_close(&render(&mut p, 2), &[0.4 * c, 0.0]);
     }
 
     #[test]
@@ -1128,7 +1279,12 @@ mod tests {
         }
         let mut out = vec![0.0; 8];
         p.process(&mut out);
-        assert_eq!(out, [0.0, 0.0, 0.1, 0.1, 0.2, 0.2, 0.3, 0.3]);
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        let want: Vec<f32> = [0.0, 0.0, 0.1, 0.1, 0.2, 0.2, 0.3, 0.3]
+            .iter()
+            .map(|v| v * c)
+            .collect();
+        assert_close(&out, &want);
     }
 
     #[test]
