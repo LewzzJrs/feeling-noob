@@ -29,6 +29,7 @@ pub struct BounceRequest {
     pub path: PathBuf,
     pub format: RecordFormat,
     pub plugins: Vec<(usize, Box<PluginProcessor>)>,
+    pub builtins: Vec<(usize, Box<crate::effects::BuiltinProcessor>)>,
 }
 
 fn part_path(path: &std::path::Path) -> PathBuf {
@@ -82,6 +83,11 @@ pub fn start_bounce(mut request: BounceRequest) -> Result<BounceJob, String> {
     for (slot, plugin) in request.plugins.drain(..) {
         handle
             .send(Command::InstallPlugin { slot, plugin })
+            .map_err(|_| "too many plugins".to_owned())?;
+    }
+    for (slot, effect) in request.builtins.drain(..) {
+        handle
+            .send(Command::InstallBuiltin { slot, effect })
             .map_err(|_| "too many plugins".to_owned())?;
     }
     for command in [Command::Locate(request.start), Command::Play] {
@@ -201,6 +207,7 @@ mod tests {
             path: path.clone(),
             format: RecordFormat::Float32,
             plugins: Vec::new(),
+            builtins: Vec::new(),
         })
         .unwrap();
         while !job.is_finished() {
@@ -231,6 +238,7 @@ mod tests {
             path: path.clone(),
             format: RecordFormat::Int16,
             plugins: Vec::new(),
+            builtins: Vec::new(),
         })
         .unwrap();
         job.cancel();

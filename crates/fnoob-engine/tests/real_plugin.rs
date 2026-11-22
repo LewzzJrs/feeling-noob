@@ -38,6 +38,7 @@ fn insert_plugin_adds_a_reverb_tail() {
             bypass: false,
             component_state: String::new(),
             controller_state: None,
+            builtin: None,
         });
     let mut samples = vec![0.0; 4800];
     samples[0] = 1.0;

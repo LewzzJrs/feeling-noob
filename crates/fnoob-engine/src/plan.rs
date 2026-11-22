@@ -250,7 +250,12 @@ fn audio_track_plans(
         .collect()
 }
 
-fn track_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Vec<TrackPlan> {
+fn track_plans(
+    project: &Project,
+    timeline: Timeline,
+    pool: &AudioPool,
+    plugins: &PluginMap,
+) -> Vec<TrackPlan> {
     project
         .tracks
         .iter()
@@ -261,7 +266,6 @@ fn track_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Ve
                 Some(Instrument::Vst3(slot)) => plugins.get(&slot.id).copied(),
                 _ => None,
             };
-            let params = track.synth().unwrap_or_default();
             let audible = project.is_track_audible(track);
             let mut notes: Vec<PlannedNote> = if audible {
                 track
@@ -296,7 +300,7 @@ fn track_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Ve
                 strip: StripPlan::new(&track.strip, index, plugins),
                 envelopes: Envelopes::new(&track.automation, timeline),
                 notes,
-                synth: Synth::new(&params, timeline.sample_rate),
+                synth: Synth::for_instrument(track.instrument.as_ref(), timeline.sample_rate, pool),
                 instrument,
                 pending_offs: [NO_OFF; 128],
                 next_off: NO_OFF,
@@ -353,7 +357,7 @@ impl RenderPlan {
                     )
                 })
                 .filter(|(start, end)| end > start),
-            tracks: track_plans(project, timeline, plugins),
+            tracks: track_plans(project, timeline, pool, plugins),
             audio_tracks: audio_track_plans(project, timeline, pool, plugins),
             bus: {
                 let gain = if project.bus.mute {

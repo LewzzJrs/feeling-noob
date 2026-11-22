@@ -1,9 +1,11 @@
 use crate::audio_data::AudioData;
+use crate::effects::BuiltinProcessor;
 use crate::metronome::Metronome;
 use crate::plan::{
     AudioTrackPlan, BUS_METER, Inserts, MASTER_METER, MAX_BLOCK, MAX_PLUGINS, METER_SLOTS, NO_OFF,
     RenderPlan, StripPlan,
 };
+use fnoob_core::effects::BuiltinEffect;
 use fnoob_core::model::Id;
 use fnoob_core::time::{beat_start_sample, first_beat_at_or_after};
 use fnoob_platform::plugin::{PluginProcessor, Transport};
@@ -56,6 +58,14 @@ pub enum Command {
         plugin: Box<PluginProcessor>,
     },
     RemovePlugin(usize),
+    InstallBuiltin {
+        slot: usize,
+        effect: Box<BuiltinProcessor>,
+    },
+    SetBuiltinParams {
+        slot: usize,
+        params: BuiltinEffect,
+    },
     LiveNote(MidiEvent),
     PreviewAudio(Option<Arc<AudioData>>),
 }
@@ -79,6 +89,8 @@ impl fmt::Debug for Command {
             Self::SetRecordSink(_) => write!(f, "SetRecordSink"),
             Self::InstallPlugin { slot, .. } => write!(f, "InstallPlugin({slot})"),
             Self::RemovePlugin(slot) => write!(f, "RemovePlugin({slot})"),
+            Self::InstallBuiltin { slot, .. } => write!(f, "InstallBuiltin({slot})"),
+            Self::SetBuiltinParams { slot, .. } => write!(f, "SetBuiltinParams({slot})"),
             Self::LiveNote(event) => write!(f, "LiveNote({}, {})", event.pitch, event.velocity),
             Self::PreviewAudio(data) => write!(f, "PreviewAudio({})", data.is_some()),
         }
@@ -91,6 +103,7 @@ pub enum Garbage {
     Input(Consumer<f32>),
     Sink(Producer<f32>),
     Plugin(Box<PluginProcessor>),
+    Builtin(Box<BuiltinProcessor>),
     Audio(Arc<AudioData>),
 }
 
@@ -240,7 +253,7 @@ pub struct Processor {
     garbage: Producer<Garbage>,
     midi: Option<Consumer<MidiEvent>>,
     input: Option<Consumer<f32>>,
-    plugins: Vec<Option<Box<PluginProcessor>>>,
+    plugins: Vec<Option<EngineSlot>>,
     main_left: Vec<f32>,
     main_right: Vec<f32>,
     bus_left: Vec<f32>,
@@ -500,12 +513,14 @@ impl Processor {
                 }
             }
             Command::InstallPlugin { slot, plugin } => {
-                if let Some(target) = self.plugins.get_mut(slot) {
-                    if let Some(old) = target.replace(plugin) {
-                        let _ = self.garbage.push(Garbage::Plugin(old));
-                    }
-                } else {
-                    let _ = self.garbage.push(Garbage::Plugin(plugin));
+                self.install(slot, EngineSlot::Vst3(plugin));
+            }
+            Command::InstallBuiltin { slot, effect } => {
+                self.install(slot, EngineSlot::Builtin(effect));
+            }
+            Command::SetBuiltinParams { slot, params } => {
+                if let Some(Some(EngineSlot::Builtin(effect))) = self.plugins.get_mut(slot) {
+                    effect.set_params(params);
                 }
             }
             Command::LiveNote(event) => self.live_event(event),
@@ -518,7 +533,7 @@ impl Processor {
             }
             Command::RemovePlugin(slot) => {
                 if let Some(old) = self.plugins.get_mut(slot).and_then(Option::take) {
-                    let _ = self.garbage.push(Garbage::Plugin(old));
+                    let _ = self.garbage.push(old.into_garbage());
                 }
             }
             Command::SetRecordSink(sink) => {
@@ -611,6 +626,7 @@ impl Processor {
                     | Command::SetAudioInput { .. }
                     | Command::SetRecordSink(_)
                     | Command::InstallPlugin { .. }
+                    | Command::InstallBuiltin { .. }
                     | Command::RemovePlugin(_)
                     | Command::PreviewAudio(_)
             );
@@ -761,13 +777,13 @@ impl Processor {
             self.click[f] = self.metronome.next_sample();
             for track in &mut self.plan.tracks {
                 if track.audible {
-                    let mono = if track.instrument.is_some() {
-                        0.0
+                    let (left, right) = if track.instrument.is_some() {
+                        (0.0, 0.0)
                     } else {
-                        track.synth.next_sample(position)
+                        track.synth.next_frame(position)
                     };
-                    track.left[f] = mono;
-                    track.right[f] = mono;
+                    track.left[f] = left;
+                    track.right[f] = right;
                 }
             }
             for index in 0..self.plan.audio_tracks.len() {
@@ -880,18 +896,50 @@ impl Processor {
     }
 }
 
-fn plugin_of(
-    plugins: &[Option<Box<PluginProcessor>>],
-    slot: Option<usize>,
-) -> Option<&PluginProcessor> {
-    plugins.get(slot?)?.as_deref()
+pub enum EngineSlot {
+    Vst3(Box<PluginProcessor>),
+    Builtin(Box<BuiltinProcessor>),
+}
+
+impl EngineSlot {
+    fn into_garbage(self) -> Garbage {
+        match self {
+            Self::Vst3(plugin) => Garbage::Plugin(plugin),
+            Self::Builtin(effect) => Garbage::Builtin(effect),
+        }
+    }
+}
+
+impl Processor {
+    fn install(&mut self, slot: usize, device: EngineSlot) {
+        match self.plugins.get_mut(slot) {
+            Some(target) => {
+                if let Some(old) = target.replace(device) {
+                    let _ = self.garbage.push(old.into_garbage());
+                }
+            }
+            None => {
+                let _ = self.garbage.push(device.into_garbage());
+            }
+        }
+    }
+}
+
+fn plugin_of(plugins: &[Option<EngineSlot>], slot: Option<usize>) -> Option<&PluginProcessor> {
+    match plugins.get(slot?)? {
+        Some(EngineSlot::Vst3(plugin)) => Some(plugin),
+        _ => None,
+    }
 }
 
 fn plugin_of_mut(
-    plugins: &mut [Option<Box<PluginProcessor>>],
+    plugins: &mut [Option<EngineSlot>],
     slot: Option<usize>,
 ) -> Option<&mut PluginProcessor> {
-    plugins.get_mut(slot?)?.as_deref_mut()
+    match plugins.get_mut(slot?)? {
+        Some(EngineSlot::Vst3(plugin)) => Some(plugin),
+        _ => None,
+    }
 }
 
 fn run_plugin(
@@ -909,7 +957,7 @@ fn run_plugin(
 }
 
 fn run_inserts(
-    plugins: &mut [Option<Box<PluginProcessor>>],
+    plugins: &mut [Option<EngineSlot>],
     inserts: &Inserts,
     left: &mut [f32],
     right: &mut [f32],
@@ -919,8 +967,12 @@ fn run_inserts(
         if *bypass {
             continue;
         }
-        if let Some(plugin) = plugin_of_mut(plugins, Some(*slot)) {
-            run_plugin(plugin, left, right, transport);
+        match plugins.get_mut(*slot) {
+            Some(Some(EngineSlot::Vst3(plugin))) => run_plugin(plugin, left, right, transport),
+            Some(Some(EngineSlot::Builtin(effect))) => {
+                effect.process(left, right, transport.tempo);
+            }
+            _ => {}
         }
     }
 }
@@ -1696,5 +1748,43 @@ mod tests {
         render(&mut p, 1);
         h.collect_garbage();
         assert_eq!(Arc::strong_count(&data), 1);
+    }
+
+    #[test]
+    fn builtin_insert_runs_and_follows_new_params() {
+        let (mut project, track, _) = mixer_project();
+        let slot_id = project.alloc_id();
+        let mut effect = fnoob_core::effects::BuiltinEffect::all()[5];
+        project
+            .track_mut(track)
+            .unwrap()
+            .strip
+            .inserts
+            .push(fnoob_core::model::PluginSlot::builtin(slot_id, effect));
+        let pool = mixer_pool(&project);
+        let mut map = crate::plan::PluginMap::new();
+        map.insert(slot_id, 3);
+        let plan = Box::new(RenderPlan::build(&project, SR, &pool, &map));
+        let (mut p, mut h) = create(SR, 2, plan);
+        h.send(Command::InstallBuiltin {
+            slot: 3,
+            effect: Box::new(BuiltinProcessor::new(effect, SR)),
+        })
+        .unwrap();
+        if let fnoob_core::effects::BuiltinEffect::Utility(u) = &mut effect {
+            u.gain_db = -60.0;
+        }
+        h.send(Command::SetBuiltinParams {
+            slot: 3,
+            params: effect,
+        })
+        .unwrap();
+        h.send(Command::Play).unwrap();
+        let mut out = vec![0.0; 2 * 64];
+        p.process(&mut out);
+        assert!(out.iter().all(|s| s.abs() < 0.001));
+        h.send(Command::RemovePlugin(3)).unwrap();
+        p.process(&mut out);
+        h.collect_garbage();
     }
 }

@@ -1,6 +1,6 @@
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use fnoob_core::edit::{add_audio_file, add_audio_region, add_midi_region, add_note, add_track};
-use fnoob_core::model::{Note, Project, TrackKind};
+use fnoob_core::model::{Instrument, Note, Project, TrackKind};
 use fnoob_engine::audio_data::{AudioData, AudioPool};
 use fnoob_engine::processor::{MidiEvent, audio_channel, midi_channel};
 use fnoob_engine::{Command, RenderPlan, create};
@@ -34,6 +34,54 @@ fn process_does_not_allocate() {
         add_audio_region(&mut project, audio, bar * 1920, file, bar * 100);
     }
     project.tracks[1].input_monitoring = true;
+    let mut drums = fnoob_core::model::DrumParams::default();
+    for pad in &mut drums.pads {
+        pad.file = Some(file);
+    }
+    for instrument in [
+        Instrument::Sampler(fnoob_core::model::SamplerParams {
+            file: Some(file),
+            ..Default::default()
+        }),
+        Instrument::DrumSampler(Box::new(drums)),
+    ] {
+        let sampled = add_track(&mut project, TrackKind::Instrument);
+        let region = add_midi_region(&mut project, sampled, 0, 3840 * 4).unwrap();
+        for step in 0..64 {
+            add_note(
+                &mut project,
+                region,
+                Note {
+                    pitch: 30 + (step % 40) as u8,
+                    velocity: 100,
+                    start_tick: step * 240,
+                    length_tick: 200,
+                },
+            );
+        }
+        project.track_mut(sampled).unwrap().instrument = Some(instrument);
+    }
+    let mut builtin_slots = Vec::new();
+    for effect in fnoob_core::effects::BuiltinEffect::all() {
+        let id = project.alloc_id();
+        builtin_slots.push((id, effect));
+    }
+    for (id, effect) in &builtin_slots[..4] {
+        project.tracks[1]
+            .strip
+            .inserts
+            .push(fnoob_core::model::PluginSlot::builtin(*id, *effect));
+    }
+    for (id, effect) in &builtin_slots[4..] {
+        project
+            .bus
+            .inserts
+            .push(fnoob_core::model::PluginSlot::builtin(*id, *effect));
+    }
+    let mut map = fnoob_engine::plan::PluginMap::new();
+    for (index, (id, _)) in builtin_slots.iter().enumerate() {
+        map.insert(*id, index);
+    }
     project.tracks[1].record_enabled = true;
     let mut pool = AudioPool::new();
     pool.insert(
@@ -45,8 +93,18 @@ fn process_does_not_allocate() {
     let (mut processor, mut handle) = create(
         48_000,
         2,
-        Box::new(RenderPlan::with_audio(&project, 48_000, &pool)),
+        Box::new(RenderPlan::build(&project, 48_000, &pool, &map)),
     );
+    for (index, (_, effect)) in builtin_slots.iter().enumerate() {
+        handle
+            .send(Command::InstallBuiltin {
+                slot: index,
+                effect: Box::new(fnoob_engine::effects::BuiltinProcessor::new(
+                    *effect, 48_000,
+                )),
+            })
+            .unwrap();
+    }
     let (mut input_tx, input_rx) = audio_channel(1 << 16);
     let (sink_tx, mut sink_rx) = audio_channel(1 << 20);
     let (mut midi_tx, midi_rx) = midi_channel();
@@ -60,7 +118,7 @@ fn process_does_not_allocate() {
         },
         Command::SetRecordSink(sink_tx),
         Command::SetLiveTrack(Some(track)),
-        Command::SetPlan(Box::new(RenderPlan::with_audio(&project, 48_000, &pool))),
+        Command::SetPlan(Box::new(RenderPlan::build(&project, 48_000, &pool, &map))),
         Command::Preview {
             track,
             pitch: 70,
@@ -68,7 +126,7 @@ fn process_does_not_allocate() {
         },
         Command::Record,
         Command::Locate(1234),
-        Command::SetPlan(Box::new(RenderPlan::with_audio(&project, 48_000, &pool))),
+        Command::SetPlan(Box::new(RenderPlan::build(&project, 48_000, &pool, &map))),
     ];
     for command in commands {
         handle.send(command).unwrap();
