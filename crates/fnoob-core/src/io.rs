@@ -158,9 +158,7 @@ pub fn from_json(bytes: &[u8]) -> Result<Project, ProjectError> {
         return Err(ProjectError::UnsupportedVersion(probe.format_version));
     }
     let mut project: Project = serde_json::from_slice(bytes)?;
-    if project.bus.name == crate::model::OLD_RETURN_NAME {
-        project.bus.name = crate::model::RETURN_NAME.to_owned();
-    }
+    project.migrate();
     validate(&project).map_err(ProjectError::Invalid)?;
     Ok(project)
 }
@@ -182,14 +180,19 @@ pub fn validate(project: &Project) -> Result<(), String> {
         return Err("loop end must be after loop start".into());
     }
     let fader = SILENT_DB..=MAX_FADER_DB;
-    if !fader.contains(&project.bus.volume_db)
-        || !(-1.0..=1.0).contains(&project.bus.pan)
-        || !fader.contains(&project.master.volume_db)
-    {
-        return Err("bus or master settings are invalid".into());
+    if !fader.contains(&project.master.volume_db) {
+        return Err("main settings are invalid".into());
     }
-    if project.bus.inserts.len() > MAX_INSERTS {
-        return Err("the return track has too many inserts".into());
+    if project.returns.len() > crate::model::MAX_RETURNS {
+        return Err("too many return tracks".into());
+    }
+    for ret in &project.returns {
+        if !fader.contains(&ret.volume_db) || !(-1.0..=1.0).contains(&ret.pan) {
+            return Err(format!("return track {} has invalid settings", ret.name));
+        }
+        if ret.inserts.len() > MAX_INSERTS {
+            return Err(format!("return track {} has too many inserts", ret.name));
+        }
     }
     if project.scenes.is_empty() || project.scenes.len() > crate::session::MAX_SCENES {
         return Err("the clip grid must have 1 to 999 scenes".into());
@@ -224,7 +227,10 @@ pub fn validate(project: &Project) -> Result<(), String> {
             }
         }
     }
-    validate_slots(project.bus.inserts.iter(), &mut ids)?;
+    validate_slots(
+        project.returns.iter().flat_map(|r| r.inserts.iter()),
+        &mut ids,
+    )?;
     for marker in &project.markers {
         if !ids.insert(marker.id) {
             return Err(format!("duplicate id {}", marker.id));
@@ -382,17 +388,29 @@ mod tests {
     }
 
     #[test]
-    fn old_return_name_is_renamed_on_load() {
-        let mut p = sample_project();
-        p.bus.name = crate::model::OLD_RETURN_NAME.to_owned();
-        let json = serde_json::to_vec(&p).unwrap();
-        assert_eq!(
-            from_json(&json).unwrap().bus.name,
-            crate::model::RETURN_NAME
-        );
-        p.bus.name = "Reverb".to_owned();
-        let json = serde_json::to_vec(&p).unwrap();
-        assert_eq!(from_json(&json).unwrap().bus.name, "Reverb");
+    fn old_projects_are_migrated_on_load() {
+        let p = sample_project();
+        let mut value = serde_json::to_value(&p).unwrap();
+        value["bus"] = serde_json::json!({
+            "name": crate::model::OLD_RETURN_NAME,
+            "volume_db": -3.0,
+            "pan": 0.0,
+            "mute": false,
+            "inserts": []
+        });
+        value["tracks"][1]["strip"]["send"] =
+            serde_json::json!({ "level_db": -6.0, "pre_fader": true });
+        value["tracks"][1]["input_monitoring"] = serde_json::json!(true);
+        let loaded = from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(loaded.returns.len(), 1);
+        assert_eq!(loaded.returns[0].name, crate::model::RETURN_NAME);
+        assert_eq!(loaded.returns[0].volume_db, -3.0);
+        assert_eq!(loaded.tracks[1].strip.sends[0].level_db, -6.0);
+        assert!(loaded.tracks[1].strip.sends[0].pre_fader);
+        assert_eq!(loaded.tracks[1].monitor, crate::model::Monitor::In);
+        assert_eq!(loaded.tracks[0].monitor, crate::model::Monitor::Auto);
+        let again = serde_json::to_vec(&loaded).unwrap();
+        assert_eq!(from_json(&again).unwrap(), loaded);
     }
 
     #[test]
@@ -403,7 +421,8 @@ mod tests {
         let id = p.alloc_id();
         p.tracks[0].instrument = Some(Instrument::Vst3(test_slot(id)));
         let id = p.alloc_id();
-        p.bus.inserts.push(test_slot(id));
+        p.returns.push(crate::model::ReturnTrack::default());
+        p.returns[0].inserts.push(test_slot(id));
         validate(&p).unwrap();
         let json = serde_json::to_vec(&p).unwrap();
         assert_eq!(from_json(&json).unwrap(), p);
@@ -559,8 +578,11 @@ mod tests {
             },
             |p| p.tracks[0].strip.volume_db = 12.0,
             |p| p.tracks[0].strip.pan = 1.5,
-            |p| p.tracks[0].strip.send.level_db = f32::NAN,
-            |p| p.bus.volume_db = -200.0,
+            |p| p.tracks[0].strip.send_mut(0).level_db = f32::NAN,
+            |p| {
+                p.returns.push(crate::model::ReturnTrack::default());
+                p.returns[0].volume_db = -200.0;
+            },
             |p| p.master.volume_db = 7.0,
             |p| p.tracks[0].regions[0].fade_in_tick = 1_000_000,
             |p| {
@@ -596,7 +618,8 @@ mod tests {
             },
             |p| {
                 let slot = test_slot(p.tracks[0].id);
-                p.bus.inserts.push(slot);
+                p.returns.push(crate::model::ReturnTrack::default());
+                p.returns[0].inserts.push(slot);
             },
             |p| {
                 for _ in 0..5 {

@@ -74,7 +74,7 @@ impl TrackKind {
     pub fn default_name(self) -> &'static str {
         match self {
             TrackKind::Audio => "Audio",
-            TrackKind::Instrument => "Inst",
+            TrackKind::Instrument => "MIDI",
         }
     }
 }
@@ -334,12 +334,25 @@ pub struct Send {
     pub pre_fader: bool,
 }
 
+pub const SILENT_SEND: Send = Send {
+    level_db: SILENT_DB,
+    pre_fader: false,
+};
+
+pub const MAX_RETURNS: usize = 8;
+
+pub fn return_letter(index: usize) -> char {
+    char::from(b'A' + (index.min(25)) as u8)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChannelStrip {
     pub volume_db: f32,
     pub pan: f32,
-    pub send: Send,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send: Option<Send>,
+    pub sends: Vec<Send>,
     pub inserts: Vec<PluginSlot>,
 }
 
@@ -348,10 +361,8 @@ impl Default for ChannelStrip {
         Self {
             volume_db: 0.0,
             pan: 0.0,
-            send: Send {
-                level_db: SILENT_DB,
-                pre_fader: false,
-            },
+            send: None,
+            sends: Vec::new(),
             inserts: Vec::new(),
         }
     }
@@ -361,8 +372,56 @@ impl ChannelStrip {
     pub fn is_valid(&self) -> bool {
         let level = SILENT_DB..=MAX_FADER_DB;
         level.contains(&self.volume_db)
-            && level.contains(&self.send.level_db)
+            && self.sends.len() <= MAX_RETURNS
+            && self.sends.iter().all(|s| level.contains(&s.level_db))
             && (-1.0..=1.0).contains(&self.pan)
+    }
+
+    pub fn send_at(&self, index: usize) -> Send {
+        self.sends.get(index).copied().unwrap_or(SILENT_SEND)
+    }
+
+    pub fn send_mut(&mut self, index: usize) -> &mut Send {
+        if self.sends.len() <= index {
+            self.sends.resize(index + 1, SILENT_SEND);
+        }
+        &mut self.sends[index]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Monitor {
+    In,
+    #[default]
+    Auto,
+    Off,
+}
+
+impl Monitor {
+    pub const ALL: [Self; 3] = [Self::In, Self::Auto, Self::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::In => "In",
+            Self::Auto => "Auto",
+            Self::Off => "Off",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Output {
+    #[default]
+    Main,
+    None,
+}
+
+impl Output {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Main => "Main",
+            Self::None => "No Output",
+        }
     }
 }
 
@@ -371,7 +430,7 @@ pub const OLD_RETURN_NAME: &str = "Bus 1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Bus {
+pub struct ReturnTrack {
     pub name: String,
     pub volume_db: f32,
     pub pan: f32,
@@ -379,7 +438,7 @@ pub struct Bus {
     pub inserts: Vec<PluginSlot>,
 }
 
-impl Default for Bus {
+impl Default for ReturnTrack {
     fn default() -> Self {
         Self {
             name: RETURN_NAME.into(),
@@ -581,8 +640,12 @@ pub struct Track {
     pub mute: bool,
     pub solo: bool,
     pub record_enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub input_monitoring: bool,
+    #[serde(default)]
+    pub monitor: Monitor,
+    #[serde(default)]
+    pub output: Output,
     #[serde(default)]
     pub audio_input: Option<AudioInput>,
     #[serde(default)]
@@ -641,8 +704,10 @@ pub struct Project {
     pub next_id: Id,
     #[serde(default)]
     pub audio_files: Vec<AudioFile>,
+    #[serde(default, skip_serializing)]
+    pub bus: Option<ReturnTrack>,
     #[serde(default)]
-    pub bus: Bus,
+    pub returns: Vec<ReturnTrack>,
     #[serde(default)]
     pub master: Master,
     #[serde(default)]
@@ -655,6 +720,35 @@ pub struct Project {
 }
 
 impl Project {
+    pub fn migrate(&mut self) {
+        if let Some(mut old) = self.bus.take()
+            && self.returns.is_empty()
+        {
+            if old.name == OLD_RETURN_NAME {
+                old.name = RETURN_NAME.to_owned();
+            }
+            self.returns.push(old);
+        }
+        for track in &mut self.tracks {
+            if let Some(send) = track.strip.send.take()
+                && track.strip.sends.is_empty()
+            {
+                track.strip.sends.push(send);
+            }
+            if std::mem::take(&mut track.input_monitoring) {
+                track.monitor = Monitor::In;
+            }
+        }
+    }
+
+    pub fn monitors(&self, track: &Track) -> bool {
+        match track.monitor {
+            Monitor::In => true,
+            Monitor::Auto => track.record_enabled,
+            Monitor::Off => false,
+        }
+    }
+
     pub fn new(name: impl Into<String>, sample_rate: u32) -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -683,7 +777,8 @@ impl Project {
             },
             next_id: 1,
             audio_files: Vec::new(),
-            bus: Bus::default(),
+            bus: None,
+            returns: Vec::new(),
             master: Master::default(),
             markers: Vec::new(),
             scenes: crate::session::default_scenes(),
@@ -758,10 +853,10 @@ mod tests {
     #[test]
     fn old_projects_get_default_mixer() {
         let mut value = serde_json::to_value(Project::new("t", 48_000)).unwrap();
-        value.as_object_mut().unwrap().remove("bus");
+        value.as_object_mut().unwrap().remove("returns");
         value.as_object_mut().unwrap().remove("master");
         let project: Project = serde_json::from_value(value).unwrap();
-        assert_eq!(project.bus, Bus::default());
+        assert!(project.returns.is_empty());
         assert_eq!(project.master, Master::default());
     }
 }

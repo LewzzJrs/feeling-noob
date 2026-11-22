@@ -6,18 +6,20 @@ use crate::model::{
 use crate::time::{Timeline, snap_floor, snap_round};
 
 pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
-    let number = project.tracks.iter().filter(|t| t.kind == kind).count() + 1;
+    let number = project.tracks.len() + 1;
     let id = project.alloc_id();
     let color = (project.tracks.len() % usize::from(TRACK_COLORS)) as u8;
     project.tracks.push(Track {
         id,
-        name: format!("{} {number}", kind.default_name()),
+        name: format!("{number} {}", kind.default_name()),
         kind,
         color,
         mute: false,
         solo: false,
         record_enabled: false,
         input_monitoring: false,
+        monitor: Default::default(),
+        output: Default::default(),
         audio_input: (kind == TrackKind::Audio).then(AudioInput::default),
         instrument: (kind == TrackKind::Instrument).then(Instrument::default),
         strip: ChannelStrip::default(),
@@ -26,6 +28,69 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         session: Vec::new(),
     });
     id
+}
+
+pub fn add_return(
+    project: &mut Project,
+    name: &str,
+    effect: Option<crate::effects::BuiltinEffect>,
+) -> Option<usize> {
+    if project.returns.len() >= crate::model::MAX_RETURNS {
+        return None;
+    }
+    let index = project.returns.len();
+    let inserts = effect
+        .map(|e| vec![crate::model::PluginSlot::builtin(project.alloc_id(), e)])
+        .unwrap_or_default();
+    project.returns.push(crate::model::ReturnTrack {
+        name: format!("{} {name}", crate::model::return_letter(index)),
+        inserts,
+        ..Default::default()
+    });
+    Some(index)
+}
+
+pub fn delete_return(project: &mut Project, index: usize) -> bool {
+    if index >= project.returns.len() {
+        return false;
+    }
+    project.returns.remove(index);
+    for track in &mut project.tracks {
+        if index < track.strip.sends.len() {
+            track.strip.sends.remove(index);
+        }
+    }
+    true
+}
+
+pub fn default_set(project: &mut Project) {
+    for kind in [
+        TrackKind::Instrument,
+        TrackKind::Instrument,
+        TrackKind::Audio,
+        TrackKind::Audio,
+    ] {
+        add_track(project, kind);
+    }
+    for effect in crate::effects::BuiltinEffect::all() {
+        let (name, wet) = match effect {
+            crate::effects::BuiltinEffect::Reverb(mut p) => {
+                p.mix = 1.0;
+                ("Reverb", crate::effects::BuiltinEffect::Reverb(p))
+            }
+            crate::effects::BuiltinEffect::Delay(mut p) => {
+                p.mix = 1.0;
+                ("Delay", crate::effects::BuiltinEffect::Delay(p))
+            }
+            _ => continue,
+        };
+        add_return(project, name, Some(wet));
+    }
+    project.returns.sort_by(|a, b| b.name.cmp(&a.name));
+    for (index, ret) in project.returns.iter_mut().enumerate() {
+        let name = ret.name.split_once(' ').map_or("", |(_, n)| n).to_owned();
+        ret.name = format!("{} {name}", crate::model::return_letter(index));
+    }
 }
 
 pub fn delete_track(project: &mut Project, track_id: Id) -> bool {
@@ -948,13 +1013,29 @@ mod tests {
     }
 
     #[test]
-    fn track_names_count_per_kind() {
+    fn default_set_has_two_midi_two_audio_and_two_returns() {
+        let mut p = Project::new("t", 48_000);
+        default_set(&mut p);
+        let names: Vec<_> = p.tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["1 MIDI", "2 MIDI", "3 Audio", "4 Audio"]);
+        let returns: Vec<_> = p.returns.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(returns, ["A Reverb", "B Delay"]);
+        assert!(p.returns.iter().all(|r| r.inserts.len() == 1));
+        crate::io::validate(&p).unwrap();
+        assert!(delete_return(&mut p, 0));
+        assert_eq!(p.returns.len(), 1);
+        assert!(add_return(&mut p, "Chorus", None).is_some());
+        assert_eq!(p.returns[1].name, "B Chorus");
+    }
+
+    #[test]
+    fn track_names_carry_their_position() {
         let mut p = Project::new("t", 48_000);
         add_track(&mut p, TrackKind::Audio);
         add_track(&mut p, TrackKind::Instrument);
         add_track(&mut p, TrackKind::Audio);
         let names: Vec<_> = p.tracks.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["Audio 1", "Inst 1", "Audio 2"]);
+        assert_eq!(names, ["1 Audio", "2 MIDI", "3 Audio"]);
         assert_eq!(p.tracks[2].color, 2);
     }
 
@@ -1262,7 +1343,7 @@ mod tests {
         let order: Vec<Id> = p.tracks.iter().map(|t| t.id).collect();
         assert_eq!(order, [track, copy, other]);
         assert_ne!(p.track(copy).unwrap().regions[0].id, id);
-        assert_eq!(p.track(copy).unwrap().name, "Inst 1 copy");
+        assert_eq!(p.track(copy).unwrap().name, "1 MIDI copy");
         assert!(move_track(&mut p, other, -5));
         assert_eq!(p.tracks[0].id, other);
         assert!(!move_track(&mut p, other, -1));
