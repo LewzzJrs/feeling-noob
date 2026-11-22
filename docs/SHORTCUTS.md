@@ -51,6 +51,7 @@ Each entry: file, what was skipped, when it needs fixing.
 | S57 | `crates/fnoob-engine/src/session.rs` (`launch`) | A scene with an empty slot always stops that track; slots cannot hide their stop button. Clips have no legato option and no per-clip launch quantize. | If users need those launch options. |
 | S58 | `crates/fnoob-app/src/bounce.rs` | Bounce renders the timeline only; playing grid clips are not included. | With recording clips to the timeline. |
 | S59 | `crates/fnoob-app/src/chain.rs` | The device chain holds at most 4 effects per track (`MAX_INSERTS`). Devices move with buttons, not by dragging. Compressor and limiter show no gain-reduction meter. There are no device presets or racks. | When chains need more devices or presets. |
+| S60 | `crates/fnoob-app/src/midi.rs` (`capture_midi`) | Capture MIDI keeps the last 8192 played events and splits phrases at a fixed 4-second pause. Notes played while stopped keep the project tempo; the tempo is not guessed from the playing. Punch uses the loop area only, with no separate punch range and no pre-roll. | If players need these options. |
 
 ## Fixed
 

@@ -49,9 +49,10 @@ Done in Phase 12: clip-launch grid view (`Tab`) with scenes, launch quantize, la
 
 Done in Phase 13: device chain view in the bottom area (`Shift+Tab`) for the selected track or Bus 1, with the instrument and each effect as a card: on/off, move left/right, replace, remove, inline controls for built-in devices, and drop from the browser.
 
+Done in Phase 14: punch in and punch out (they use the loop area, shown as red lines on the ruler), and Capture MIDI (`Ctrl+Shift+C`), which turns the notes played last into a region, with or without the transport running.
+
 Not started, in rough priority order:
 
-- Punch in/out recording and capture of the last played MIDI
 - Take lanes and comping for audio
 - Tempo and time signature changes (tempo map), tap tempo
 - Audio warping and time stretch, clip tempo
