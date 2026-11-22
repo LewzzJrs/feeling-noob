@@ -267,10 +267,25 @@ fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
             return Err(format!("track {} has invalid automation", track.id));
         }
     }
-    if let Some(Instrument::BasicSynth(params)) = &track.instrument
-        && !params.is_valid()
+    let instrument_ok = match &track.instrument {
+        Some(Instrument::BasicSynth(params)) => params.is_valid(),
+        Some(Instrument::Sampler(params)) => params.is_valid(),
+        Some(Instrument::DrumSampler(params)) => params.is_valid(),
+        Some(Instrument::Vst3(_)) | None => true,
+    };
+    if !instrument_ok {
+        return Err(format!(
+            "track {} has invalid instrument settings",
+            track.id
+        ));
+    }
+    if let Some(instrument) = &track.instrument
+        && instrument
+            .sample_files()
+            .iter()
+            .any(|id| project.audio_file(*id).is_none())
     {
-        return Err(format!("track {} has invalid synth settings", track.id));
+        return Err(format!("track {} uses a missing sample", track.id));
     }
     if let Some(input) = track.audio_input
         && !(1..=2).contains(&input.channels)
@@ -325,7 +340,9 @@ fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::edit::{add_audio_file, add_audio_region, add_midi_region, add_track};
-    use crate::model::{AudioInput, AutomationPoint, Marker, Note, TrackKind};
+    use crate::model::{
+        AudioInput, AutomationPoint, DrumParams, Marker, Note, SamplerParams, TrackKind,
+    };
 
     fn sample_project() -> Project {
         let mut p = Project::new("Song", 48_000);
@@ -346,6 +363,7 @@ mod tests {
             bypass: false,
             component_state: "AAEC".into(),
             controller_state: None,
+            builtin: None,
         }
     }
 
@@ -362,6 +380,29 @@ mod tests {
         let json = serde_json::to_vec(&p).unwrap();
         assert_eq!(from_json(&json).unwrap(), p);
         assert_eq!(p.tracks[0].synth(), None);
+    }
+
+    #[test]
+    fn sampler_instruments_round_trip() {
+        let mut p = sample_project();
+        let file = p.audio_files[0].id;
+        let mut drums = DrumParams::default();
+        drums.pads[5].file = Some(file);
+        drums.pads[5].pan = -0.5;
+        p.tracks[0].instrument = Some(Instrument::DrumSampler(Box::new(drums)));
+        let other = add_track(&mut p, TrackKind::Instrument);
+        p.track_mut(other).unwrap().instrument = Some(Instrument::Sampler(SamplerParams {
+            file: Some(file),
+            root_pitch: 48,
+            ..SamplerParams::default()
+        }));
+        validate(&p).unwrap();
+        let json = serde_json::to_vec(&p).unwrap();
+        assert_eq!(from_json(&json).unwrap(), p);
+        assert_eq!(p.tracks[0].synth(), None);
+        assert_eq!(DrumParams::pad_for(41), Some(5));
+        assert_eq!(DrumParams::pad_for(35), None);
+        assert_eq!(DrumParams::pad_for(52), None);
     }
 
     #[test]
@@ -453,6 +494,17 @@ mod tests {
                 if let Some(Instrument::BasicSynth(s)) = &mut p.tracks[0].instrument {
                     s.attack_ms = f32::NAN;
                 }
+            },
+            |p| {
+                p.tracks[0].instrument = Some(Instrument::Sampler(SamplerParams {
+                    file: Some(p.tracks[0].id),
+                    ..SamplerParams::default()
+                }))
+            },
+            |p| {
+                let mut drums = DrumParams::default();
+                drums.pads[3].pan = 2.0;
+                p.tracks[0].instrument = Some(Instrument::DrumSampler(Box::new(drums)));
             },
             |p| p.audio_files[0].path = "../outside.wav".into(),
             |p| p.audio_files[0].path = "C:/Windows/evil.wav".into(),

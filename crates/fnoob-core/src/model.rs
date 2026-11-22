@@ -130,15 +130,122 @@ impl Default for SynthParams {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SamplerParams {
+    pub file: Option<Id>,
+    pub root_pitch: u8,
+    pub attack_ms: f32,
+    pub decay_ms: f32,
+    pub sustain: f32,
+    pub release_ms: f32,
+    pub level_db: f32,
+}
+
+impl SamplerParams {
+    pub fn is_valid(&self) -> bool {
+        let time = 0.0..=MAX_ENVELOPE_MS;
+        self.root_pitch <= 127
+            && time.contains(&self.attack_ms)
+            && time.contains(&self.decay_ms)
+            && time.contains(&self.release_ms)
+            && (0.0..=1.0).contains(&self.sustain)
+            && (MIN_LEVEL_DB..=MAX_LEVEL_DB).contains(&self.level_db)
+    }
+}
+
+impl Default for SamplerParams {
+    fn default() -> Self {
+        Self {
+            file: None,
+            root_pitch: 60,
+            attack_ms: 1.0,
+            decay_ms: 200.0,
+            sustain: 1.0,
+            release_ms: 200.0,
+            level_db: -6.0,
+        }
+    }
+}
+
+pub const DRUM_PADS: usize = 16;
+pub const DRUM_BASE_PITCH: u8 = 36;
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DrumPad {
+    pub file: Option<Id>,
+    pub gain_db: f32,
+    pub pan: f32,
+}
+
+impl Default for DrumPad {
+    fn default() -> Self {
+        Self {
+            file: None,
+            gain_db: 0.0,
+            pan: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DrumParams {
+    pub pads: [DrumPad; DRUM_PADS],
+    pub level_db: f32,
+}
+
+impl DrumParams {
+    pub fn is_valid(&self) -> bool {
+        (MIN_LEVEL_DB..=MAX_LEVEL_DB).contains(&self.level_db)
+            && self.pads.iter().all(|p| {
+                (MIN_LEVEL_DB..=MAX_LEVEL_DB).contains(&p.gain_db) && (-1.0..=1.0).contains(&p.pan)
+            })
+    }
+
+    pub fn pad_for(pitch: u8) -> Option<usize> {
+        let index = usize::from(pitch.checked_sub(DRUM_BASE_PITCH)?);
+        (index < DRUM_PADS).then_some(index)
+    }
+}
+
+impl Default for DrumParams {
+    fn default() -> Self {
+        Self {
+            pads: [DrumPad::default(); DRUM_PADS],
+            level_db: -6.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Instrument {
     BasicSynth(SynthParams),
     Vst3(PluginSlot),
+    Sampler(SamplerParams),
+    DrumSampler(Box<DrumParams>),
+}
+
+impl Instrument {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::BasicSynth(_) => "Basic Synth",
+            Self::Vst3(slot) => &slot.name,
+            Self::Sampler(_) => "Sampler",
+            Self::DrumSampler(_) => "Drum Sampler",
+        }
+    }
+
+    pub fn sample_files(&self) -> Vec<Id> {
+        match self {
+            Self::Sampler(p) => p.file.into_iter().collect(),
+            Self::DrumSampler(p) => p.pads.iter().filter_map(|pad| pad.file).collect(),
+            Self::BasicSynth(_) | Self::Vst3(_) => Vec::new(),
+        }
+    }
 }
 
 pub const MAX_INSERTS: usize = 4;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginSlot {
     pub id: Id,
     pub class_id: String,
@@ -147,11 +254,33 @@ pub struct PluginSlot {
     pub bypass: bool,
     pub component_state: String,
     pub controller_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<crate::effects::BuiltinEffect>,
 }
 
+pub const BUILTIN_CLASS: &str = "builtin";
+
 impl PluginSlot {
+    pub fn builtin(id: Id, effect: crate::effects::BuiltinEffect) -> Self {
+        Self {
+            id,
+            class_id: BUILTIN_CLASS.to_owned(),
+            name: effect.label().to_owned(),
+            path_hint: String::new(),
+            bypass: false,
+            component_state: String::new(),
+            controller_state: None,
+            builtin: Some(effect),
+        }
+    }
+
     pub fn is_valid(&self) -> bool {
-        self.class_id.len() == 32 && self.class_id.chars().all(|c| c.is_ascii_hexdigit())
+        match &self.builtin {
+            Some(effect) => self.class_id == BUILTIN_CLASS && effect.is_valid(),
+            None => {
+                self.class_id.len() == 32 && self.class_id.chars().all(|c| c.is_ascii_hexdigit())
+            }
+        }
     }
 }
 
@@ -468,7 +597,10 @@ impl Track {
     pub fn synth(&self) -> Option<SynthParams> {
         match (&self.kind, &self.instrument) {
             (TrackKind::Instrument, Some(Instrument::BasicSynth(params))) => Some(*params),
-            (TrackKind::Instrument, Some(Instrument::Vst3(_))) => None,
+            (
+                TrackKind::Instrument,
+                Some(Instrument::Vst3(_) | Instrument::Sampler(_) | Instrument::DrumSampler(_)),
+            ) => None,
             (TrackKind::Instrument, None) => Some(SynthParams::default()),
             (TrackKind::Audio, _) => None,
         }

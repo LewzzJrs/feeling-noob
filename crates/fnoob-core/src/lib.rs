@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod edit;
+pub mod effects;
 pub mod fsutil;
 pub mod history;
 pub mod io;
