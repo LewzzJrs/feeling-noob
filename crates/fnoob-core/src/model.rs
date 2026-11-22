@@ -24,6 +24,12 @@ pub struct LoopRange {
     pub end_tick: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Punch {
+    pub punch_in: bool,
+    pub punch_out: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MetronomeSettings {
     pub enabled: bool,
@@ -625,6 +631,8 @@ pub struct Project {
     pub time_signature: TimeSignature,
     #[serde(rename = "loop")]
     pub loop_range: LoopRange,
+    #[serde(default)]
+    pub punch: Punch,
     pub metronome: MetronomeSettings,
     pub snap: Snap,
     pub next_id: Id,
@@ -660,6 +668,7 @@ impl Project {
                 start_tick: 0,
                 end_tick: 4 * 3840,
             },
+            punch: Punch::default(),
             metronome: MetronomeSettings {
                 enabled: true,
                 count_in_enabled: false,

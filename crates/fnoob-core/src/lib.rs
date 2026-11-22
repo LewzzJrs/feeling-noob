@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod catalog;
 pub mod edit;
 pub mod effects;
