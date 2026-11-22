@@ -1,4 +1,5 @@
 use crate::audio_data::{AudioData, AudioPool};
+use crate::session::Session;
 use crate::synth::Synth;
 use fnoob_core::model::{
     AudioInput, Automation, ChannelStrip, Id, Instrument, MAX_INSERTS, PluginSlot, Project,
@@ -31,6 +32,7 @@ pub struct TrackPlan {
     pub envelopes: Envelopes,
     pub notes: Vec<PlannedNote>,
     pub synth: Synth,
+    pub session: Session,
     pub instrument: Option<usize>,
     pub pending_offs: [u64; 128],
     pub next_off: u64,
@@ -100,6 +102,7 @@ pub struct AudioTrackPlan {
     pub strip: StripPlan,
     pub envelopes: Envelopes,
     pub clips: Vec<Clip>,
+    pub session: Session,
     pub cursor: usize,
     pub input: AudioInput,
     pub monitor: bool,
@@ -119,6 +122,7 @@ pub struct RenderPlan {
     pub metronome: bool,
     pub count_in_beats: u64,
     pub loop_range: Option<(u64, u64)>,
+    pub launch_quantum: u64,
     pub tracks: Vec<TrackPlan>,
     pub audio_tracks: Vec<AudioTrackPlan>,
     pub records_audio: bool,
@@ -239,6 +243,7 @@ fn audio_track_plans(
                 strip: StripPlan::new(&track.strip, index, plugins),
                 envelopes: Envelopes::new(&track.automation, timeline),
                 clips,
+                session: Session::build(track, timeline, pool),
                 cursor: 0,
                 input: track.audio_input.unwrap_or_default(),
                 monitor: track.input_monitoring && audible,
@@ -300,6 +305,7 @@ fn track_plans(
                 strip: StripPlan::new(&track.strip, index, plugins),
                 envelopes: Envelopes::new(&track.automation, timeline),
                 notes,
+                session: Session::build(track, timeline, pool),
                 synth: Synth::for_instrument(track.instrument.as_ref(), timeline.sample_rate, pool),
                 instrument,
                 pending_offs: [NO_OFF; 128],
@@ -357,6 +363,8 @@ impl RenderPlan {
                     )
                 })
                 .filter(|(start, end)| end > start),
+            launch_quantum: (project.launch_quantize.ticks(ts) as f64 * samples_per_tick).round()
+                as u64,
             tracks: track_plans(project, timeline, pool, plugins),
             audio_tracks: audio_track_plans(project, timeline, pool, plugins),
             bus: {

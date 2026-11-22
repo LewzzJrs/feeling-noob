@@ -82,6 +82,29 @@ fn process_does_not_allocate() {
     for (index, (id, _)) in builtin_slots.iter().enumerate() {
         map.insert(*id, index);
     }
+    for scene in 0..3 {
+        let clip = fnoob_core::session::add_midi_clip(&mut project, track, scene, 1920).unwrap();
+        for step in 0..8 {
+            add_note(
+                &mut project,
+                clip,
+                Note {
+                    pitch: 50 + step as u8,
+                    velocity: 90,
+                    start_tick: step * 240,
+                    length_tick: 300,
+                },
+            );
+        }
+        fnoob_core::session::add_audio_clip(&mut project, audio, scene, file).unwrap();
+        let settings = fnoob_core::session::clip_mut(&mut project, track, scene).unwrap();
+        settings.follow.after_tick = 960;
+        settings.follow.a = fnoob_core::session::FollowAction::Any;
+        settings.follow.b = fnoob_core::session::FollowAction::Next;
+        settings.follow.chance_a = 0.5;
+        settings.launch = fnoob_core::session::LaunchMode::Repeat;
+    }
+    project.launch_quantize = fnoob_core::session::LaunchQuantize::Sixteenth;
     project.tracks[1].record_enabled = true;
     let mut pool = AudioPool::new();
     pool.insert(
@@ -125,6 +148,8 @@ fn process_does_not_allocate() {
             velocity: 90,
         },
         Command::Record,
+        Command::LaunchScene(0),
+        Command::LaunchClip { track, slot: 1 },
         Command::Locate(1234),
         Command::SetPlan(Box::new(RenderPlan::build(&project, 48_000, &pool, &map))),
     ];
@@ -141,6 +166,16 @@ fn process_does_not_allocate() {
             }
             for _ in 0..1024 {
                 let _ = input_tx.push(0.2);
+            }
+            if i == 900 {
+                let _ = handle.send(Command::ReleaseClip { track, slot: 1 });
+                let _ = handle.send(Command::StopClips(Some(audio)));
+            }
+            if i == 1200 {
+                let _ = handle.send(Command::LaunchScene(2));
+            }
+            if i == 1600 {
+                let _ = handle.send(Command::BackToArrangement);
             }
             processor.process(&mut out);
             while sink_rx.pop().is_ok() {}

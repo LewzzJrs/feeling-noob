@@ -7,6 +7,7 @@ pub mod midi_in;
 pub mod plan;
 pub mod processor;
 pub mod record;
+pub mod session;
 pub mod synth;
 
 pub use plan::RenderPlan;

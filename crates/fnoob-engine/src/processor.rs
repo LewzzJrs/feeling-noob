@@ -3,8 +3,9 @@ use crate::effects::BuiltinProcessor;
 use crate::metronome::Metronome;
 use crate::plan::{
     AudioTrackPlan, BUS_METER, Inserts, MASTER_METER, MAX_BLOCK, MAX_PLUGINS, METER_SLOTS, NO_OFF,
-    RenderPlan, StripPlan,
+    RenderPlan, StripPlan, TRACK_METERS, TrackPlan,
 };
+use crate::session::{Session, SessionStatus};
 use fnoob_core::effects::BuiltinEffect;
 use fnoob_core::model::Id;
 use fnoob_core::time::{beat_start_sample, first_beat_at_or_after};
@@ -68,6 +69,17 @@ pub enum Command {
     },
     LiveNote(MidiEvent),
     PreviewAudio(Option<Arc<AudioData>>),
+    LaunchClip {
+        track: Id,
+        slot: usize,
+    },
+    ReleaseClip {
+        track: Id,
+        slot: usize,
+    },
+    StopClips(Option<Id>),
+    LaunchScene(usize),
+    BackToArrangement,
 }
 
 impl fmt::Debug for Command {
@@ -93,6 +105,11 @@ impl fmt::Debug for Command {
             Self::SetBuiltinParams { slot, .. } => write!(f, "SetBuiltinParams({slot})"),
             Self::LiveNote(event) => write!(f, "LiveNote({}, {})", event.pitch, event.velocity),
             Self::PreviewAudio(data) => write!(f, "PreviewAudio({})", data.is_some()),
+            Self::LaunchClip { track, slot } => write!(f, "LaunchClip({track}, {slot})"),
+            Self::ReleaseClip { track, slot } => write!(f, "ReleaseClip({track}, {slot})"),
+            Self::StopClips(track) => write!(f, "StopClips({track:?})"),
+            Self::LaunchScene(scene) => write!(f, "LaunchScene({scene})"),
+            Self::BackToArrangement => write!(f, "BackToArrangement"),
         }
     }
 }
@@ -139,6 +156,7 @@ struct Shared {
     take_start: AtomicU64,
     overruns: AtomicU64,
     meters: Box<[AtomicU32]>,
+    session: Box<[AtomicU64]>,
 }
 
 pub struct EngineHandle {
@@ -187,6 +205,15 @@ impl EngineHandle {
             .meters
             .get(slot)
             .map_or(0.0, |m| f32::from_bits(m.swap(0, Ordering::Relaxed)))
+    }
+
+    pub fn session_status(&self, track_index: usize) -> SessionStatus {
+        self.shared
+            .session
+            .get(track_index)
+            .map_or_else(SessionStatus::default, |cell| {
+                SessionStatus::decode(cell.load(Ordering::Relaxed))
+            })
     }
 
     pub fn record_overruns(&self) -> u64 {
@@ -280,6 +307,7 @@ pub struct Processor {
     position: u64,
     next_beat: u64,
     next_beat_sample: u64,
+    rng: u64,
 }
 
 pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Processor, EngineHandle) {
@@ -293,6 +321,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         take_start: AtomicU64::new(NO_TAKE),
         overruns: AtomicU64::new(0),
         meters: (0..METER_SLOTS).map(|_| AtomicU32::new(0)).collect(),
+        session: (0..TRACK_METERS).map(|_| AtomicU64::new(0)).collect(),
     });
     let mut processor = Processor {
         commands: command_rx,
@@ -334,6 +363,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         position: 0,
         next_beat: 0,
         next_beat_sample: 0,
+        rng: 0x9E37_79B9_7F4A_7C15,
     };
     processor.resync();
     let handle = EngineHandle {
@@ -362,16 +392,81 @@ impl Processor {
     fn release_scheduled(&mut self) {
         let frame = self.frame;
         for track in &mut self.plan.tracks {
-            track.synth.release_scheduled();
-            if let Some(plugin) = plugin_of(&self.plugins, track.instrument) {
-                for pitch in 0..128u8 {
-                    if track.pending_offs[usize::from(pitch)] != NO_OFF {
-                        plugin.note(frame, pitch, 0);
-                    }
+            release_track(track, &self.plugins, frame);
+        }
+    }
+
+    fn session_mut(&mut self, id: Id) -> Option<&mut Session> {
+        if let Some(track) = self.plan.tracks.iter_mut().find(|t| t.id == id) {
+            return Some(&mut track.session);
+        }
+        self.plan
+            .audio_tracks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .map(|t| &mut t.session)
+    }
+
+    fn sessions(&mut self) -> impl Iterator<Item = &mut Session> {
+        self.plan
+            .tracks
+            .iter_mut()
+            .map(|t| &mut t.session)
+            .chain(self.plan.audio_tracks.iter_mut().map(|t| &mut t.session))
+    }
+
+    fn session_command(&mut self, command: Command) {
+        let stopped = self.state == TransportState::Stopped;
+        if stopped
+            && !matches!(
+                command,
+                Command::ReleaseClip { .. } | Command::StopClips(_) | Command::BackToArrangement
+            )
+        {
+            self.start(false);
+        }
+        let (position, quantum) = (self.position, self.plan.launch_quantum);
+        match command {
+            Command::LaunchClip { track, slot } => {
+                if let Some(session) = self.session_mut(track) {
+                    session.launch(slot, position, quantum, stopped, false);
                 }
             }
-            track.pending_offs = [NO_OFF; 128];
-            track.next_off = NO_OFF;
+            Command::ReleaseClip { track, slot } => {
+                if let Some(session) = self.session_mut(track) {
+                    session.release(slot, position, quantum);
+                }
+            }
+            Command::StopClips(Some(track)) => {
+                if let Some(session) = self.session_mut(track) {
+                    session.stop(position, quantum, stopped);
+                }
+            }
+            Command::StopClips(None) => {
+                for session in self.sessions() {
+                    session.stop(position, quantum, stopped);
+                }
+            }
+            Command::LaunchScene(scene) => {
+                for session in self.sessions() {
+                    session.launch(scene, position, quantum, stopped, true);
+                }
+            }
+            Command::BackToArrangement => {
+                for session in self.sessions() {
+                    session.halt();
+                    session.play.overrides = false;
+                }
+                self.release_scheduled();
+            }
+            _ => {}
+        }
+    }
+
+    fn fire_queued_now(&mut self) {
+        let position = self.position;
+        for session in self.sessions() {
+            session.fire_queued_now(position);
         }
     }
 
@@ -425,6 +520,9 @@ impl Processor {
         if self.recording {
             self.recorder.end_held(self.position);
         }
+        for session in self.sessions() {
+            session.halt();
+        }
         self.state = TransportState::Stopped;
         self.recording = false;
         self.metronome.stop();
@@ -445,6 +543,14 @@ impl Processor {
                     track.pending_offs = old.pending_offs;
                     track.next_off = old.next_off;
                 }
+            }
+            if let Some(old) = self.plan.tracks.iter().find(|t| t.id == track.id) {
+                track.session.take_state(&old.session);
+            }
+        }
+        for track in &mut plan.audio_tracks {
+            if let Some(old) = self.plan.audio_tracks.iter().find(|t| t.id == track.id) {
+                track.session.take_state(&old.session);
             }
         }
         let old = std::mem::replace(&mut self.plan, plan);
@@ -493,6 +599,7 @@ impl Processor {
                 self.metronome.stop();
                 self.release_scheduled();
                 self.resync();
+                self.fire_queued_now();
             }
             Command::SetPlan(plan) => self.set_plan(plan),
             Command::SetMidiInput(consumer) => {
@@ -524,6 +631,11 @@ impl Processor {
                 }
             }
             Command::LiveNote(event) => self.live_event(event),
+            Command::LaunchClip { .. }
+            | Command::ReleaseClip { .. }
+            | Command::StopClips(_)
+            | Command::LaunchScene(_)
+            | Command::BackToArrangement => self.session_command(command),
             Command::PreviewAudio(data) => {
                 self.preview_at = 0;
                 let old = std::mem::replace(&mut self.preview, data);
@@ -681,6 +793,7 @@ impl Processor {
             self.position = start;
             self.release_scheduled();
             self.resync();
+            self.fire_queued_now();
         }
         if self.position == self.next_beat_sample {
             if self.plan.metronome {
@@ -692,29 +805,76 @@ impl Processor {
         }
         self.send_due_offs();
         let (position, frame) = (self.position, self.frame);
+        let quantum = self.plan.launch_quantum;
         for track in &mut self.plan.tracks {
-            let plugin = plugin_of(&self.plugins, track.instrument);
-            while let Some(note) = track.notes.get(track.cursor)
+            let overrides = track.session.play.overrides;
+            while let Some(&note) = track.notes.get(track.cursor)
                 && note.start <= position
             {
-                if note.end > position {
-                    match plugin {
-                        Some(plugin) => {
-                            let slot = &mut track.pending_offs[usize::from(note.pitch.min(127))];
-                            if *slot != NO_OFF {
-                                plugin.note(frame, note.pitch, 0);
-                            }
-                            plugin.note(frame, note.pitch, note.velocity);
-                            *slot = note.end;
-                            track.next_off = track.next_off.min(note.end);
-                        }
-                        None => track
-                            .synth
-                            .note_on(note.pitch, note.velocity, note.end, false),
-                    }
+                if note.end > position && !overrides {
+                    trigger(
+                        track,
+                        &self.plugins,
+                        frame,
+                        note.pitch,
+                        note.velocity,
+                        note.end,
+                    );
                 }
                 track.cursor += 1;
             }
+            if track
+                .session
+                .step(position, quantum, &mut self.rng)
+                .is_some()
+            {
+                release_track(track, &self.plugins, frame);
+            }
+            if track.audible && track.session.play.playing.is_some() {
+                loop {
+                    let elapsed = track.session.play.elapsed;
+                    let Some(&note) = track
+                        .session
+                        .clip()
+                        .and_then(|c| c.notes.get(track.session.play.cursor))
+                        .filter(|n| n.start <= elapsed)
+                    else {
+                        break;
+                    };
+                    track.session.play.cursor += 1;
+                    if note.start == elapsed {
+                        let end = position + (note.end - note.start);
+                        trigger(track, &self.plugins, frame, note.pitch, note.velocity, end);
+                    }
+                }
+            }
+            track.session.advance();
+        }
+        for track in &mut self.plan.audio_tracks {
+            track.session.step(position, quantum, &mut self.rng);
+            if !track.audible {
+                track.session.advance();
+            }
+        }
+    }
+
+    fn publish_session(&self) {
+        for (index, cell) in self.shared.session.iter().enumerate() {
+            let status = self
+                .plan
+                .tracks
+                .iter()
+                .find(|t| t.strip.meter == index)
+                .map(|t| t.session.status())
+                .or_else(|| {
+                    self.plan
+                        .audio_tracks
+                        .iter()
+                        .find(|t| t.strip.meter == index)
+                        .map(|t| t.session.status())
+                })
+                .unwrap_or(0);
+            cell.store(status, Ordering::Relaxed);
         }
     }
 
@@ -732,6 +892,7 @@ impl Processor {
             self.render(chunk);
         }
         self.publish_meters();
+        self.publish_session();
         self.shared.position.store(self.position, Ordering::Relaxed);
         self.shared
             .state
@@ -797,9 +958,16 @@ impl Processor {
                     (0.0, 0.0)
                 };
                 if playing {
-                    let (l, r) = clip_frame(&mut self.plan.audio_tracks[index], position);
+                    let track = &mut self.plan.audio_tracks[index];
+                    if !track.session.play.overrides {
+                        let (l, r) = clip_frame(track, position);
+                        left += l;
+                        right += r;
+                    }
+                    let (l, r) = track.session.audio_frame();
                     left += l;
                     right += r;
+                    track.session.advance();
                 }
                 let track = &mut self.plan.audio_tracks[index];
                 track.left[f] = left;
@@ -1001,6 +1169,41 @@ fn peak(peaks: &mut [f32], slot: usize, left: f32, right: f32) {
         if level.is_finite() && level > *p {
             *p = level;
         }
+    }
+}
+
+fn release_track(track: &mut TrackPlan, plugins: &[Option<EngineSlot>], frame: usize) {
+    track.synth.release_scheduled();
+    if let Some(plugin) = plugin_of(plugins, track.instrument) {
+        for pitch in 0..128u8 {
+            if track.pending_offs[usize::from(pitch)] != NO_OFF {
+                plugin.note(frame, pitch, 0);
+            }
+        }
+    }
+    track.pending_offs = [NO_OFF; 128];
+    track.next_off = NO_OFF;
+}
+
+fn trigger(
+    track: &mut TrackPlan,
+    plugins: &[Option<EngineSlot>],
+    frame: usize,
+    pitch: u8,
+    velocity: u8,
+    end: u64,
+) {
+    match plugin_of(plugins, track.instrument) {
+        Some(plugin) => {
+            let slot = &mut track.pending_offs[usize::from(pitch.min(127))];
+            if *slot != NO_OFF {
+                plugin.note(frame, pitch, 0);
+            }
+            plugin.note(frame, pitch, velocity);
+            *slot = end;
+            track.next_off = track.next_off.min(end);
+        }
+        None => track.synth.note_on(pitch, velocity, end, false),
     }
 }
 
@@ -1363,6 +1566,72 @@ mod tests {
         h.send(Command::SetPlan(plan(&project))).unwrap();
         let out = render(&mut p, 1000);
         assert!(out[900..].iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn launched_clip_waits_for_the_bar_and_mutes_the_timeline() {
+        let (mut project, track, region) = synth_project();
+        add_note(&mut project, region, note(0, 480));
+        add_note(&mut project, region, note(8640, 480));
+        let clip = fnoob_core::session::add_midi_clip(&mut project, track, 0, 1920).unwrap();
+        add_note(&mut project, clip, note(0, 480));
+        let (mut p, mut h) = create(SR, 1, plan(&project));
+        h.send(Command::Play).unwrap();
+        let mut out = render(&mut p, 100);
+        h.send(Command::LaunchClip { track, slot: 0 }).unwrap();
+        out.extend(render(&mut p, 11 * BEAT - 100));
+        assert_eq!(
+            onsets(&out),
+            vec![0, 4 * BEAT, 6 * BEAT, 8 * BEAT, 10 * BEAT]
+        );
+        let status = h.session_status(0);
+        assert_eq!(status.playing, Some(0));
+        assert!(status.overrides);
+        h.send(Command::BackToArrangement).unwrap();
+        render(&mut p, 10);
+        assert!(!h.session_status(0).overrides);
+        h.send(Command::Stop).unwrap();
+        render(&mut p, 10);
+        assert_eq!(h.session_status(0).playing, None);
+    }
+
+    #[test]
+    fn scene_launch_starts_every_track_in_the_row() {
+        let mut project = metronome_only();
+        let mut tracks = Vec::new();
+        for _ in 0..3 {
+            let track = add_track(&mut project, TrackKind::Instrument);
+            let clip = fnoob_core::session::add_midi_clip(&mut project, track, 0, 3840).unwrap();
+            add_note(&mut project, clip, note(0, 480));
+            tracks.push(track);
+        }
+        let (mut p, mut h) = create(SR, 1, plan(&project));
+        h.send(Command::LaunchScene(0)).unwrap();
+        render(&mut p, 1000);
+        for index in 0..3 {
+            assert_eq!(h.session_status(index).playing, Some(0), "track {index}");
+        }
+    }
+
+    #[test]
+    fn launching_an_audio_clip_starts_the_transport() {
+        let mut project = metronome_only();
+        project.metronome.enabled = false;
+        let track = add_track(&mut project, TrackKind::Audio);
+        let file = add_audio_file(&mut project, "audio/a.wav".into(), 1, 1000);
+        fnoob_core::session::add_audio_clip(&mut project, track, 1, file).unwrap();
+        fnoob_core::session::clip_mut(&mut project, track, 1)
+            .unwrap()
+            .looping = false;
+        let mut pool = AudioPool::new();
+        pool.insert(file, Arc::new(AudioData::from_samples(1, vec![0.5; 1000])));
+        let (mut p, mut h) = create(SR, 1, Box::new(RenderPlan::with_audio(&project, SR, &pool)));
+        h.send(Command::LaunchClip { track, slot: 1 }).unwrap();
+        let out = render(&mut p, 2000);
+        assert!(out[0] != 0.0 && out[999] != 0.0);
+        assert!(out[1500..].iter().all(|&s| s == 0.0));
+        assert!(h.is_running());
+        assert_eq!(h.session_status(0).playing, None);
     }
 
     #[test]
