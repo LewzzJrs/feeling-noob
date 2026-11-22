@@ -336,46 +336,44 @@ Autosave uses the same steps into `autosave\project.json`, without backups.
 
 ## 6. Keyboard shortcuts
 
+Phase 15 replaced the first set of single-letter shortcuts with this set.
+
 | Command | Key |
 |---|---|
 | Play / Stop | `Space` |
-| Record | `R` |
-| Go to Beginning | `Enter` |
-| Rewind / Forward 1 bar | `,` / `.` |
-| Toggle Loop | `C` |
-| Toggle Metronome | `K` |
-| Toggle Count-in | `Shift+K` |
-| Show/Hide Mixer | `X` |
-| Show/Hide Piano Roll | `P` |
-| Show/Hide Editor (MVP: Piano Roll) | `E` |
-| Toggle Track Mute | `M` |
-| Toggle Track Solo | `S` |
-| Toggle Track Record Enable | `Ctrl+Alt+R` |
-| New Tracks | `Ctrl+Alt+N` |
-| Split at Playhead | `Ctrl+T` |
-| Repeat Regions | `Ctrl+R` |
-| Quantize | `Q` |
-| Toggle Snap | `Ctrl+G` |
-| Mute Region | `Ctrl+Alt+M` |
+| Record | `F9` |
+| Go to Beginning | `Home` |
+| Back / Forward 1 bar | `Left` / `Right` |
+| Loop on/off | `Ctrl+L` |
+| Metronome | `O` |
+| Switch Timeline / Clip Grid | `Tab` |
+| Switch Clip / Devices in the detail area | `Shift+Tab` |
+| Show/Hide Detail Area | `Ctrl+Alt+L` |
+| Show/Hide Browser | `Ctrl+Alt+B` |
+| Show/Hide Mixer Section (clip grid) | `Ctrl+Alt+M` |
+| Insert Audio Track / MIDI Track | `Ctrl+T` / `Ctrl+Shift+T` |
+| Insert Scene | `Ctrl+I` |
+| Rename | `Ctrl+R` |
+| Duplicate (regions, clip, or track) | `Ctrl+D` |
+| Split at Playhead | `Ctrl+E` |
+| Quantize | `Ctrl+U` |
+| Snap to Grid | `Ctrl+4` |
+| Mute regions, or the track when no region is selected | `0` |
 | Nudge Left / Right (1 grid step) | `Alt+Left` / `Alt+Right` |
-| Bounce | `Ctrl+B` |
-| Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
-| Cut / Copy / Paste (paste at playhead, selected track) | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` |
+| Draw Mode | `B` |
+| Automation | `A` |
+| Computer MIDI Keyboard | `M` |
+| Follow | `Ctrl+Shift+F` |
+| Capture MIDI | `Ctrl+Shift+C` |
+| Bounce / Export | `Ctrl+Shift+R` |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
+| Cut / Copy / Paste | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` |
 | Select All | `Ctrl+A` |
 | Delete | `Delete`, `Backspace` |
-| Zoom Horizontal Out / In | `Ctrl+Left` / `Ctrl+Right` |
+| Zoom In / Out | `+` or `=` / `-` |
 | Select Previous / Next Track | `Up` / `Down` |
-| New Project | `Ctrl+Shift+N` |
-| Open | `Ctrl+O` |
-| Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
-| Add Marker | `Alt+M` |
-| Previous / Next Marker | `Alt+,` / `Alt+.` |
-| Show/Hide Automation | `A` |
-| Musical Typing on/off | `Ctrl+K` |
-| Duplicate Track (in the clip grid: duplicate the selected clip) | `Ctrl+D` |
-| Switch Timeline / Clip Grid | `Tab` |
-| Show/Hide Devices | `Shift+Tab` |
-| Capture MIDI | `Ctrl+Shift+C` |
+| New / Open / Save / Save As | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` |
+| Add Marker, Previous / Next Marker | `Alt+M`, `Alt+,` / `Alt+.` |
 
 Rules:
 - Every shortcut goes through one table in `fnoob-core::keymap`. The UI never reads keys on its own.
@@ -389,18 +387,23 @@ Rules:
 Layout:
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│ Control bar: transport | position, tempo, meter | loop | metronome | count-in │
-├────────────┬──────────────────────────────────────────────────┤
-│ Track      │ Ruler + loop area                                │
-│ headers    ├──────────────────────────────────────────────────┤
-│ M S R I    │ Regions                                          │
-├────────────┴──────────────────────────────────────────────────┤
-│ Bottom panel: Piano Roll (P/E) or Mixer (X)                   │
-└───────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ Control bar: tempo, tap, meter, click | follow, position, transport,  │
+│ capture | punch, loop, loop start/length | snap, draw, keys, CPU, view│
+├──────────┬───────────────────────────────────────┬───────────────────┤
+│ Browser  │ Ruler + loop area                     │ Track headers:    │
+│ category │ Regions (timeline) or clip grid       │ name, I/O, mixer  │
+│ | items  ├───────────────────────────────────────┴───────────────────┤
+│          │ Bus 1 and Main rows                                       │
+│          ├───────────────────────────────────────────────────────────┤
+│          │ Detail area: Clip (properties + piano roll) or Devices    │
+├──────────┴───────────────────────────────────────────────────────────┤
+│ Status bar: what the control under the mouse does, or the last message│
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-- Menus: File, Edit, Track, Transport, View, Help (egui widgets, not native menus).
+- Menus: File, Edit, Create, Track, Transport, View (egui widgets, not native menus).
+- In the clip grid the mixer section sits under every column, with Bus 1 and Main columns next to the tracks.
 - Dark theme by default.
 - VST3 plugin editors in separate windows.
 

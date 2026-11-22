@@ -51,6 +51,8 @@ Done in Phase 13: device chain view in the bottom area (`Shift+Tab`) for the sel
 
 Done in Phase 14: punch in and punch out (they use the loop area, shown as red lines on the ruler), and Capture MIDI (`Ctrl+Shift+C`), which turns the notes played last into a region, with or without the transport running.
 
+Done in Phase 15: a new layout and way of working. Track headers with name, input and mixer controls sit right of the timeline, with Bus 1 and Main rows below. The clip grid has a mixer section under each column. A detail area at the bottom shows Clip (properties plus piano roll or waveform) or Devices. The browser has categories and places. The status bar explains the control under the mouse. The control bar adds tap tempo, loop start and length, draw mode and an overall CPU meter, and all keyboard shortcuts were replaced (see `SPEC.md` section 6).
+
 Not started, in rough priority order:
 
 - Take lanes and comping for audio
@@ -65,8 +67,7 @@ Not started, in rough priority order:
 - Return tracks, more sends, groups and nested groups, sidechain inputs
 - Crossfader and cue output
 - Freeze / bounce in place, consolidate
-- Info area that explains the control under the mouse
-- CPU meter per track and overall
+- CPU meter per track
 - Event list editor, project versions, MIDI output to hardware
 
 ## 4. Plugins and formats

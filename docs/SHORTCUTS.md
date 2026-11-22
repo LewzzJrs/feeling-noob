@@ -16,7 +16,6 @@ Each entry: file, what was skipped, when it needs fixing.
 | S12 | `crates/fnoob-app/src/app.rs` (`open`) | Open uses a folder picker for the `.fnoob` folder instead of picking `project.json`. | Phase 8 polish. |
 | S14 | `crates/fnoob-app/src/timeline.rs` (`update_region_drag`) | Dragging regions to another track only works for a single region; multi-region drags move horizontally only. | When multi-track moves are needed. |
 | S16 | `crates/fnoob-core/src/history.rs` | Undo stores a full copy of the project per step (planned in `SPEC.md` 4.6). | If memory use becomes a problem. |
-| S18 | `crates/fnoob-app/src/app.rs` (`control_bar`) | The control bar does not wrap; on narrow windows its right side is cut off. | When window layout is polished (Phase 8). |
 | S19 | `crates/fnoob-engine/src/processor.rs` (`drain_midi`), `midi_in.rs` | MIDI input is applied at the start of each audio block; the `midir` timestamp is ignored. Timing can be off by up to one buffer (about 10 ms). | Phase 5, together with latency measurement. |
 | S20 | `crates/fnoob-engine/src/midi_in.rs` (`parse_message`) | Only note on/off is read. Sustain pedal, pitch bend, and other controllers are ignored. | After the MVP. |
 | S22 | `crates/fnoob-engine/src/synth.rs` (`free_voice`) | When all 16 voices are busy, the stolen voice is cut instantly, which can click. | If it is audible in normal use. |
@@ -52,11 +51,14 @@ Each entry: file, what was skipped, when it needs fixing.
 | S58 | `crates/fnoob-app/src/bounce.rs` | Bounce renders the timeline only; playing grid clips are not included. | With recording clips to the timeline. |
 | S59 | `crates/fnoob-app/src/chain.rs` | The device chain holds at most 4 effects per track (`MAX_INSERTS`). Devices move with buttons, not by dragging. Compressor and limiter show no gain-reduction meter. There are no device presets or racks. | When chains need more devices or presets. |
 | S60 | `crates/fnoob-app/src/midi.rs` (`capture_midi`) | Capture MIDI keeps the last 8192 played events and splits phrases at a fixed 4-second pause. Notes played while stopped keep the project tempo; the tempo is not guessed from the playing. Punch uses the loop area only, with no separate punch range and no pre-roll. | If players need these options. |
+| S61 | `crates/fnoob-app/src/ui_kit.rs` (`hint`) | The status bar explains only controls that call `hint`; menus and some editor controls show nothing there. | When more controls get descriptions. |
+| S62 | `crates/fnoob-app/src/timeline.rs` (`draw_headers`) | Track headers have a fixed width and height; they cannot be resized or folded, and there is no output routing choice (every track goes to Main). | With track groups and routing. |
 
 ## Fixed
 
 | # | Fixed in | Note |
 |---|---|---|
+| S18 | Phase 15 | The control bar wraps onto a second row when the window is narrow. |
 | S4 | Phase 3 | Tempo, metronome, and meter now live in the `Project` model. |
 | S5 | Phase 3 | Keymap added; the position display shows bar.beat.division.tick. |
 | S8 | Phase 4 | The placeholder beep is gone; MIDI regions play their notes through the Basic Synth. |
