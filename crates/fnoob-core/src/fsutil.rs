@@ -10,6 +10,14 @@ pub fn temp_path_for(path: &Path) -> PathBuf {
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_with(path, bytes, || Ok(()))
+}
+
+pub fn write_atomic_with(
+    path: &Path,
+    bytes: &[u8],
+    before_replace: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
@@ -19,6 +27,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
             file.write_all(bytes)?;
             file.sync_all()
         })
+        .and_then(|()| before_replace())
         .and_then(|()| fs::rename(&tmp, path));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);

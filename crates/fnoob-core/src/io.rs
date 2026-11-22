@@ -1,4 +1,4 @@
-use crate::fsutil::write_atomic;
+use crate::fsutil::{write_atomic, write_atomic_with};
 use crate::model::{
     FORMAT_VERSION, Id, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MAX_INSERTS, MIN_GAIN_DB,
     PluginSlot, Project, RegionContent, SILENT_DB, Track,
@@ -9,10 +9,14 @@ use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PROJECT_FILE: &str = "project.json";
 pub const PROJECT_EXTENSION: &str = "fnoob";
 pub const AUDIO_DIR: &str = "audio";
+pub const BACKUP_DIR: &str = "backups";
+pub const AUTOSAVE_DIR: &str = "autosave";
+pub const MAX_BACKUPS: usize = 10;
 
 #[derive(Debug)]
 pub enum ProjectError {
@@ -58,8 +62,89 @@ struct VersionProbe {
 pub fn save(dir: &Path, project: &Project) -> Result<(), ProjectError> {
     validate(project).map_err(ProjectError::Invalid)?;
     let bytes = serde_json::to_vec_pretty(project)?;
-    write_atomic(&dir.join(PROJECT_FILE), &bytes)?;
+    let target = dir.join(PROJECT_FILE);
+    write_atomic_with(&target, &bytes, || backup(dir, &target))?;
     Ok(())
+}
+
+fn civil_time(time: SystemTime) -> String {
+    let secs = time.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}-{:02}{:02}{:02}",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+fn backup(dir: &Path, current: &Path) -> io::Result<()> {
+    if !current.exists() {
+        return Ok(());
+    }
+    let folder = dir.join(BACKUP_DIR);
+    std::fs::create_dir_all(&folder)?;
+    let stamp = civil_time(SystemTime::now());
+    let mut target = folder.join(format!("project-{stamp}.json"));
+    let mut n = 1;
+    while target.exists() {
+        target = folder.join(format!("project-{stamp}-{n:03}.json"));
+        n += 1;
+    }
+    std::fs::copy(current, &target)?;
+    let mut backups: Vec<_> = std::fs::read_dir(&folder)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("project-") && n.ends_with(".json"))
+        })
+        .collect();
+    backups.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    while backups.len() > MAX_BACKUPS {
+        let _ = std::fs::remove_file(backups.remove(0));
+    }
+    Ok(())
+}
+
+fn autosave_file(dir: &Path) -> std::path::PathBuf {
+    dir.join(AUTOSAVE_DIR).join(PROJECT_FILE)
+}
+
+pub fn save_autosave(dir: &Path, project: &Project) -> Result<(), ProjectError> {
+    validate(project).map_err(ProjectError::Invalid)?;
+    write_atomic(&autosave_file(dir), &serde_json::to_vec_pretty(project)?)?;
+    Ok(())
+}
+
+pub fn load_autosave(dir: &Path) -> Result<Project, ProjectError> {
+    from_json(&std::fs::read(autosave_file(dir))?)
+}
+
+pub fn remove_autosave(dir: &Path) {
+    let _ = std::fs::remove_file(autosave_file(dir));
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+pub fn newer_autosave(dir: &Path) -> Option<SystemTime> {
+    let autosave = modified(&autosave_file(dir))?;
+    match modified(&dir.join(PROJECT_FILE)) {
+        Some(saved) if saved >= autosave => None,
+        _ => Some(autosave),
+    }
 }
 
 pub fn load(dir: &Path) -> Result<Project, ProjectError> {
@@ -417,6 +502,49 @@ mod tests {
         let project = from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert_eq!(project.tracks[0].instrument, None);
         assert!(project.tracks[0].synth().is_some());
+    }
+
+    #[test]
+    fn saves_keep_at_most_ten_backups() {
+        let dir = scratch_dir("backups");
+        let mut project = sample_project();
+        for i in 0..13 {
+            project.name = format!("v{i}");
+            save(&dir, &project).unwrap();
+        }
+        let backups: Vec<_> = std::fs::read_dir(dir.join(BACKUP_DIR))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(backups.len(), MAX_BACKUPS);
+        assert_eq!(load(&dir).unwrap().name, "v12");
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn autosave_is_offered_only_when_newer() {
+        let dir = scratch_dir("autosave");
+        let mut project = sample_project();
+        save(&dir, &project).unwrap();
+        assert_eq!(newer_autosave(&dir), None);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        project.name = "changed".into();
+        save_autosave(&dir, &project).unwrap();
+        assert!(newer_autosave(&dir).is_some());
+        assert_eq!(load_autosave(&dir).unwrap().name, "changed");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        save(&dir, &project).unwrap();
+        assert_eq!(newer_autosave(&dir), None);
+        remove_autosave(&dir);
+        assert!(load_autosave(&dir).is_err());
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn backup_names_use_calendar_time() {
+        let time = UNIX_EPOCH + std::time::Duration::from_secs(1_763_700_000);
+        assert_eq!(civil_time(time), "20251121-044000");
+        assert_eq!(civil_time(UNIX_EPOCH), "19700101-000000");
     }
 
     #[test]

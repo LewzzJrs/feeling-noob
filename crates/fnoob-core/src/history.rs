@@ -37,6 +37,10 @@ impl History {
         }
     }
 
+    pub fn snapshots(&self) -> impl Iterator<Item = &Project> {
+        self.undo.iter().chain(self.redo.iter())
+    }
+
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();

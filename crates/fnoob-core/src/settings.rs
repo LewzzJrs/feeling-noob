@@ -13,6 +13,19 @@ pub struct Settings {
     pub record_format: RecordFormat,
     pub midi_input: MidiInputChoice,
     pub plugin_folders: Vec<String>,
+    pub recent_projects: Vec<String>,
+}
+
+pub const MAX_RECENT: usize = 10;
+
+impl Settings {
+    pub fn add_recent(&mut self, dir: &Path) {
+        let entry = dir.display().to_string();
+        self.recent_projects
+            .retain(|p| !p.eq_ignore_ascii_case(&entry));
+        self.recent_projects.insert(0, entry);
+        self.recent_projects.truncate(MAX_RECENT);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +146,7 @@ mod tests {
             record_format: RecordFormat::Int24,
             midi_input: MidiInputChoice::Port("Keyboard 1".into()),
             plugin_folders: vec!["D:/Plugins".into()],
+            recent_projects: vec!["D:/Songs/A.fnoob".into()],
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);
@@ -151,5 +165,22 @@ mod tests {
         write_atomic(&path, b"{not json").unwrap();
         assert!(matches!(Settings::load(&path), Err(SettingsError::Json(_))));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn recent_projects_move_to_the_front_and_are_capped() {
+        let mut settings = Settings::default();
+        for i in 0..12 {
+            settings.add_recent(Path::new(&format!("C:/s/{i}.fnoob")));
+        }
+        settings.add_recent(Path::new("C:/s/5.fnoob"));
+        assert_eq!(settings.recent_projects.len(), MAX_RECENT);
+        assert_eq!(settings.recent_projects[0], "C:/s/5.fnoob");
+        let copies = settings
+            .recent_projects
+            .iter()
+            .filter(|p| p.as_str() == "C:/s/5.fnoob")
+            .count();
+        assert_eq!(copies, 1);
     }
 }
