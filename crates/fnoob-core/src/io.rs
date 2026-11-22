@@ -1,7 +1,7 @@
 use crate::fsutil::{write_atomic, write_atomic_with};
 use crate::model::{
-    FORMAT_VERSION, Id, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MAX_INSERTS, MIN_GAIN_DB,
-    PluginSlot, Project, RegionContent, SILENT_DB, Track,
+    AutomationParam, FORMAT_VERSION, Id, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MAX_INSERTS,
+    MIN_GAIN_DB, PluginSlot, Project, RegionContent, SILENT_DB, Track,
 };
 use crate::time::{MAX_BPM, MIN_BPM};
 use serde::Deserialize;
@@ -219,6 +219,11 @@ pub fn validate(project: &Project) -> Result<(), String> {
         }
     }
     validate_slots(project.bus.inserts.iter(), &mut ids)?;
+    for marker in &project.markers {
+        if !ids.insert(marker.id) {
+            return Err(format!("duplicate id {}", marker.id));
+        }
+    }
     if ids.iter().any(|&id| id >= project.next_id) {
         return Err("next_id is lower than an existing id".into());
     }
@@ -255,6 +260,13 @@ fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
     if !track.strip.is_valid() {
         return Err(format!("track {} has invalid mixer settings", track.id));
     }
+    for param in AutomationParam::ALL {
+        let lane = track.automation.lane(param);
+        let sorted = lane.windows(2).all(|w| w[0].tick < w[1].tick);
+        if !sorted || !lane.iter().all(|p| param.is_valid(p.value)) {
+            return Err(format!("track {} has invalid automation", track.id));
+        }
+    }
     if let Some(Instrument::BasicSynth(params)) = &track.instrument
         && !params.is_valid()
     {
@@ -268,6 +280,9 @@ fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
     for region in &track.regions {
         if region.length_tick == 0 {
             return Err(format!("region {} has zero length", region.id));
+        }
+        if region.fade_in_tick + region.fade_out_tick > region.length_tick {
+            return Err(format!("region {} has fades longer than itself", region.id));
         }
         if region.kind() != track.kind {
             return Err(format!(
@@ -310,7 +325,7 @@ fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::edit::{add_audio_file, add_audio_region, add_midi_region, add_track};
-    use crate::model::{AudioInput, Note, TrackKind};
+    use crate::model::{AudioInput, AutomationPoint, Marker, Note, TrackKind};
 
     fn sample_project() -> Project {
         let mut p = Project::new("Song", 48_000);
@@ -467,6 +482,32 @@ mod tests {
             |p| p.tracks[0].strip.send.level_db = f32::NAN,
             |p| p.bus.volume_db = -200.0,
             |p| p.master.volume_db = 7.0,
+            |p| p.tracks[0].regions[0].fade_in_tick = 1_000_000,
+            |p| {
+                p.tracks[0].automation.volume = vec![
+                    AutomationPoint {
+                        tick: 10,
+                        value: 0.0,
+                    },
+                    AutomationPoint {
+                        tick: 5,
+                        value: 0.0,
+                    },
+                ]
+            },
+            |p| {
+                p.tracks[0].automation.pan = vec![AutomationPoint {
+                    tick: 0,
+                    value: 3.0,
+                }]
+            },
+            |p| {
+                p.markers.push(Marker {
+                    id: p.tracks[0].id,
+                    tick: 0,
+                    name: "A".into(),
+                })
+            },
             |p| {
                 let mut slot = test_slot(p.next_id);
                 p.next_id += 1;

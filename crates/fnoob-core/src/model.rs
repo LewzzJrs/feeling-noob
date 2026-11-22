@@ -307,7 +307,97 @@ pub struct Region {
     pub start_tick: u64,
     pub length_tick: u64,
     pub muted: bool,
+    #[serde(default)]
+    pub fade_in_tick: u64,
+    #[serde(default)]
+    pub fade_out_tick: u64,
     pub content: RegionContent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AutomationPoint {
+    pub tick: u64,
+    pub value: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AutomationParam {
+    #[default]
+    Volume,
+    Pan,
+}
+
+impl AutomationParam {
+    pub const ALL: [AutomationParam; 2] = [AutomationParam::Volume, AutomationParam::Pan];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Volume => "Volume",
+            Self::Pan => "Pan",
+        }
+    }
+
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            Self::Volume => (-60.0, MAX_FADER_DB),
+            Self::Pan => (-1.0, 1.0),
+        }
+    }
+
+    pub fn is_valid(self, value: f32) -> bool {
+        match self {
+            Self::Volume => (SILENT_DB..=MAX_FADER_DB).contains(&value),
+            Self::Pan => (-1.0..=1.0).contains(&value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Automation {
+    pub volume: Vec<AutomationPoint>,
+    pub pan: Vec<AutomationPoint>,
+}
+
+impl Automation {
+    pub fn lane(&self, param: AutomationParam) -> &[AutomationPoint] {
+        match param {
+            AutomationParam::Volume => &self.volume,
+            AutomationParam::Pan => &self.pan,
+        }
+    }
+
+    pub fn lane_mut(&mut self, param: AutomationParam) -> &mut Vec<AutomationPoint> {
+        match param {
+            AutomationParam::Volume => &mut self.volume,
+            AutomationParam::Pan => &mut self.pan,
+        }
+    }
+}
+
+pub fn value_at(points: &[AutomationPoint], tick: u64, default: f32) -> f32 {
+    let next = points.partition_point(|p| p.tick <= tick);
+    match (next.checked_sub(1).map(|i| points[i]), points.get(next)) {
+        (None, None) => default,
+        (None, Some(first)) => first.value,
+        (Some(last), None) => last.value,
+        (Some(a), Some(b)) => {
+            let span = (b.tick - a.tick) as f32;
+            let t = if span > 0.0 {
+                (tick - a.tick) as f32 / span
+            } else {
+                1.0
+            };
+            a.value + (b.value - a.value) * t
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Marker {
+    pub id: Id,
+    pub tick: u64,
+    pub name: String,
 }
 
 impl Region {
@@ -361,6 +451,8 @@ pub struct Track {
     pub instrument: Option<Instrument>,
     #[serde(default)]
     pub strip: ChannelStrip,
+    #[serde(default)]
+    pub automation: Automation,
     pub regions: Vec<Region>,
 }
 
@@ -402,6 +494,8 @@ pub struct Project {
     pub bus: Bus,
     #[serde(default)]
     pub master: Master,
+    #[serde(default)]
+    pub markers: Vec<Marker>,
     pub tracks: Vec<Track>,
 }
 
@@ -435,6 +529,7 @@ impl Project {
             audio_files: Vec::new(),
             bus: Bus::default(),
             master: Master::default(),
+            markers: Vec::new(),
             tracks: Vec::new(),
         }
     }

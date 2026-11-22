@@ -38,6 +38,12 @@ pub enum Command {
     Open,
     Save,
     SaveAs,
+    AddMarker,
+    PreviousMarker,
+    NextMarker,
+    ToggleAutomation,
+    ToggleMusicalTyping,
+    DuplicateTrack,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -122,6 +128,12 @@ const fn letter(c: char) -> Key {
 }
 
 pub const BINDINGS: &[(KeyCombo, Command)] = &[
+    (alt(letter('M')), Command::AddMarker),
+    (alt(Key::Comma), Command::PreviousMarker),
+    (alt(Key::Period), Command::NextMarker),
+    (plain(letter('A')), Command::ToggleAutomation),
+    (ctrl(letter('K')), Command::ToggleMusicalTyping),
+    (ctrl(letter('D')), Command::DuplicateTrack),
     (plain(Key::Space), Command::PlayStop),
     (plain(letter('R')), Command::Record),
     (plain(Key::Enter), Command::GoToBeginning),

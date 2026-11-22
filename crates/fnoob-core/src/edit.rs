@@ -1,6 +1,7 @@
 use crate::model::{
-    AudioFile, AudioInput, ChannelStrip, Id, Instrument, Note, Project, Region, RegionContent,
-    TRACK_COLORS, Track, TrackKind,
+    AudioFile, AudioInput, AutomationParam, AutomationPoint, ChannelStrip, Id, Instrument,
+    MAX_GAIN_DB, MIN_GAIN_DB, Marker, Note, Project, Region, RegionContent, TRACK_COLORS, Track,
+    TrackKind,
 };
 use crate::time::{Timeline, snap_floor, snap_round};
 
@@ -20,6 +21,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         audio_input: (kind == TrackKind::Audio).then(AudioInput::default),
         instrument: (kind == TrackKind::Instrument).then(Instrument::default),
         strip: ChannelStrip::default(),
+        automation: Default::default(),
         regions: Vec::new(),
     });
     id
@@ -52,6 +54,8 @@ pub fn add_midi_region(
         start_tick,
         length_tick,
         muted: false,
+        fade_in_tick: 0,
+        fade_out_tick: 0,
         content: RegionContent::Midi { notes: Vec::new() },
     });
     Some(id)
@@ -177,9 +181,13 @@ pub fn split_regions_at(project: &mut Project, ids: &[Id], tick: u64) -> Vec<Id>
                 start_tick: tick,
                 length_tick: region.length_tick - cut,
                 muted: region.muted,
+                fade_in_tick: 0,
+                fade_out_tick: region.fade_out_tick.min(region.length_tick - cut),
                 content,
             };
             region.length_tick = cut;
+            region.fade_out_tick = 0;
+            region.fade_in_tick = region.fade_in_tick.min(cut);
             new_regions.push(right);
             created.push(id);
         }
@@ -333,6 +341,8 @@ pub fn add_audio_region(
         start_tick,
         length_tick,
         muted: false,
+        fade_in_tick: 0,
+        fade_out_tick: 0,
         content: RegionContent::Audio {
             file_id,
             offset_frames,
@@ -520,6 +530,205 @@ pub fn add_recorded_take(
     let id = add_midi_region(project, track_id, start, end - start)?;
     *notes_of(project, id)? = relative;
     Some(id)
+}
+
+pub fn set_region_fades(project: &mut Project, id: Id, fade_in: u64, fade_out: u64) -> bool {
+    let Some(region) = region_mut(project, id) else {
+        return false;
+    };
+    let fade_in = fade_in.min(region.length_tick);
+    let fade_out = fade_out.min(region.length_tick - fade_in);
+    let changed = (region.fade_in_tick, region.fade_out_tick) != (fade_in, fade_out);
+    region.fade_in_tick = fade_in;
+    region.fade_out_tick = fade_out;
+    changed
+}
+
+pub fn set_region_gain(project: &mut Project, id: Id, gain: f32) -> bool {
+    let Some(region) = region_mut(project, id) else {
+        return false;
+    };
+    match &mut region.content {
+        RegionContent::Audio { gain_db, .. } => {
+            *gain_db = gain.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+            true
+        }
+        RegionContent::Midi { .. } => false,
+    }
+}
+
+pub fn trim_region_start(project: &mut Project, id: Id, new_start: u64) -> bool {
+    let Some((_, region)) = project.find_region(id) else {
+        return false;
+    };
+    let (start, end) = (region.start_tick, region.end_tick());
+    let new_start = match region.content {
+        RegionContent::Audio { offset_frames, .. } => {
+            let earliest = start.saturating_sub(frames_to_ticks(project, offset_frames));
+            new_start.max(earliest)
+        }
+        RegionContent::Midi { .. } => new_start,
+    };
+    if new_start >= end || new_start == start {
+        return false;
+    }
+    let frames_shift = if new_start > start {
+        ticks_to_frames(project, start, new_start - start) as i64
+    } else {
+        -(ticks_to_frames(project, new_start, start - new_start) as i64)
+    };
+    let Some(region) = region_mut(project, id) else {
+        return false;
+    };
+    let delta = new_start as i64 - start as i64;
+    match &mut region.content {
+        RegionContent::Audio { offset_frames, .. } => {
+            *offset_frames = (*offset_frames as i64 + frames_shift).max(0) as u64;
+        }
+        RegionContent::Midi { notes } => {
+            notes.retain_mut(|note| {
+                let begin = note.start_tick as i64 - delta;
+                let finish = begin + note.length_tick as i64;
+                if finish <= 0 {
+                    return false;
+                }
+                note.start_tick = begin.max(0) as u64;
+                note.length_tick = (finish - begin.max(0)) as u64;
+                true
+            });
+        }
+    }
+    region.start_tick = new_start;
+    region.length_tick = end - new_start;
+    region.fade_in_tick = region.fade_in_tick.min(region.length_tick);
+    region.fade_out_tick = region
+        .fade_out_tick
+        .min(region.length_tick - region.fade_in_tick);
+    true
+}
+
+fn automation_lane(
+    project: &mut Project,
+    track: Id,
+    param: AutomationParam,
+) -> Option<&mut Vec<AutomationPoint>> {
+    Some(project.track_mut(track)?.automation.lane_mut(param))
+}
+
+pub fn add_automation_point(
+    project: &mut Project,
+    track: Id,
+    param: AutomationParam,
+    tick: u64,
+    value: f32,
+) -> Option<usize> {
+    if !param.is_valid(value) {
+        return None;
+    }
+    let lane = automation_lane(project, track, param)?;
+    let index = lane.partition_point(|p| p.tick < tick);
+    if lane.get(index).is_some_and(|p| p.tick == tick) {
+        lane[index].value = value;
+    } else {
+        lane.insert(index, AutomationPoint { tick, value });
+    }
+    Some(index)
+}
+
+pub fn move_automation_point(
+    project: &mut Project,
+    track: Id,
+    param: AutomationParam,
+    index: usize,
+    tick: u64,
+    value: f32,
+) -> Option<usize> {
+    let lane = automation_lane(project, track, param)?;
+    if index >= lane.len() {
+        return None;
+    }
+    lane.remove(index);
+    add_automation_point(project, track, param, tick, value)
+}
+
+pub fn delete_automation_point(
+    project: &mut Project,
+    track: Id,
+    param: AutomationParam,
+    index: usize,
+) -> bool {
+    match automation_lane(project, track, param) {
+        Some(lane) if index < lane.len() => {
+            lane.remove(index);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn add_marker(project: &mut Project, tick: u64) -> Id {
+    let id = project.alloc_id();
+    let number = project.markers.len() + 1;
+    let index = project.markers.partition_point(|m| m.tick <= tick);
+    project.markers.insert(
+        index,
+        Marker {
+            id,
+            tick,
+            name: format!("Marker {number}"),
+        },
+    );
+    id
+}
+
+pub fn rename_marker(project: &mut Project, id: Id, name: &str) -> bool {
+    let name = name.trim();
+    match project.markers.iter_mut().find(|m| m.id == id) {
+        Some(marker) if !name.is_empty() => {
+            marker.name = name.to_owned();
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn delete_marker(project: &mut Project, id: Id) -> bool {
+    let before = project.markers.len();
+    project.markers.retain(|m| m.id != id);
+    project.markers.len() != before
+}
+
+pub fn duplicate_track(project: &mut Project, id: Id) -> Option<Id> {
+    let index = project.tracks.iter().position(|t| t.id == id)?;
+    let mut copy = project.tracks[index].clone();
+    copy.id = project.alloc_id();
+    copy.name = format!("{} copy", copy.name);
+    copy.record_enabled = false;
+    for region in &mut copy.regions {
+        region.id = project.alloc_id();
+    }
+    if let Some(Instrument::Vst3(slot)) = &mut copy.instrument {
+        slot.id = project.alloc_id();
+    }
+    for slot in &mut copy.strip.inserts {
+        slot.id = project.alloc_id();
+    }
+    let new_id = copy.id;
+    project.tracks.insert(index + 1, copy);
+    Some(new_id)
+}
+
+pub fn move_track(project: &mut Project, id: Id, delta: i64) -> bool {
+    let Some(index) = project.tracks.iter().position(|t| t.id == id) else {
+        return false;
+    };
+    let target = (index as i64 + delta).clamp(0, project.tracks.len() as i64 - 1) as usize;
+    if target == index {
+        return false;
+    }
+    let track = project.tracks.remove(index);
+    project.tracks.insert(target, track);
+    true
 }
 
 pub fn all_region_ids(project: &Project) -> Vec<Id> {
@@ -884,5 +1093,133 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), count);
+    }
+
+    #[test]
+    fn automation_points_stay_sorted_and_valid() {
+        let (mut p, track, _) = project_with_region();
+        let param = AutomationParam::Volume;
+        assert_eq!(
+            add_automation_point(&mut p, track, param, 960, -6.0),
+            Some(0)
+        );
+        assert_eq!(add_automation_point(&mut p, track, param, 0, 0.0), Some(0));
+        assert_eq!(
+            add_automation_point(&mut p, track, param, 960, -3.0),
+            Some(1)
+        );
+        assert_eq!(add_automation_point(&mut p, track, param, 0, 50.0), None);
+        let lane = p.track(track).unwrap().automation.lane(param).to_vec();
+        assert_eq!(lane.len(), 2);
+        assert_eq!(lane[1].value, -3.0);
+        assert_eq!(
+            move_automation_point(&mut p, track, param, 0, 2000, -12.0),
+            Some(1)
+        );
+        let ticks: Vec<u64> = p
+            .track(track)
+            .unwrap()
+            .automation
+            .volume
+            .iter()
+            .map(|q| q.tick)
+            .collect();
+        assert_eq!(ticks, [960, 2000]);
+        assert!(delete_automation_point(&mut p, track, param, 0));
+        assert!(!delete_automation_point(&mut p, track, param, 5));
+    }
+
+    #[test]
+    fn automation_values_interpolate_between_points() {
+        let points = [
+            AutomationPoint {
+                tick: 100,
+                value: 0.0,
+            },
+            AutomationPoint {
+                tick: 300,
+                value: -10.0,
+            },
+        ];
+        assert_eq!(crate::model::value_at(&points, 0, 5.0), 0.0);
+        assert_eq!(crate::model::value_at(&points, 200, 5.0), -5.0);
+        assert_eq!(crate::model::value_at(&points, 999, 5.0), -10.0);
+        assert_eq!(crate::model::value_at(&[], 50, 5.0), 5.0);
+    }
+
+    #[test]
+    fn fades_and_gain_are_clamped() {
+        let (mut p, _, file, id) = project_with_audio();
+        assert!(set_region_fades(&mut p, id, 10_000, 10_000));
+        let r = region(&p, id);
+        assert_eq!((r.fade_in_tick, r.fade_out_tick), (3840, 0));
+        assert!(set_region_gain(&mut p, id, 100.0));
+        assert_eq!(
+            region(&p, id).content,
+            RegionContent::Audio {
+                file_id: file,
+                offset_frames: 0,
+                gain_db: MAX_GAIN_DB
+            }
+        );
+    }
+
+    #[test]
+    fn trimming_audio_moves_the_offset_and_stops_at_the_file_start() {
+        let (mut p, _, file, id) = project_with_audio();
+        assert!(trim_region_start(&mut p, id, 3840 + 960));
+        let r = region(&p, id);
+        assert_eq!((r.start_tick, r.length_tick), (4800, 2880));
+        assert_eq!(
+            r.content,
+            RegionContent::Audio {
+                file_id: file,
+                offset_frames: 24_000,
+                gain_db: 0.0
+            }
+        );
+        assert!(trim_region_start(&mut p, id, 0));
+        assert_eq!(region(&p, id).start_tick, 3840);
+        assert!(!trim_region_start(&mut p, id, 7680));
+    }
+
+    #[test]
+    fn trimming_midi_shifts_and_cuts_notes() {
+        let (mut p, _, id) = project_with_region();
+        add_note(&mut p, id, note(60, 0, 100));
+        add_note(&mut p, id, note(62, 400, 400));
+        add_note(&mut p, id, note(64, 1000, 10));
+        assert!(trim_region_start(&mut p, id, 3840 + 500));
+        assert_eq!(notes(&p, id), [note(62, 0, 300), note(64, 500, 10)]);
+        assert!(trim_region_start(&mut p, id, 3840));
+        assert_eq!(notes(&p, id)[0], note(62, 500, 300));
+    }
+
+    #[test]
+    fn markers_are_sorted_named_and_removable() {
+        let mut p = Project::new("t", 48_000);
+        let b = add_marker(&mut p, 3840);
+        let a = add_marker(&mut p, 0);
+        assert_eq!(p.markers[0].id, a);
+        assert!(rename_marker(&mut p, b, "  Chorus "));
+        assert!(!rename_marker(&mut p, b, "   "));
+        assert_eq!(p.markers[1].name, "Chorus");
+        assert!(delete_marker(&mut p, a));
+        assert_eq!(p.markers.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_and_move_tracks() {
+        let (mut p, track, id) = project_with_region();
+        let other = add_track(&mut p, TrackKind::Audio);
+        let copy = duplicate_track(&mut p, track).unwrap();
+        let order: Vec<Id> = p.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(order, [track, copy, other]);
+        assert_ne!(p.track(copy).unwrap().regions[0].id, id);
+        assert_eq!(p.track(copy).unwrap().name, "Inst 1 copy");
+        assert!(move_track(&mut p, other, -5));
+        assert_eq!(p.tracks[0].id, other);
+        assert!(!move_track(&mut p, other, -1));
+        crate::io::validate(&p).unwrap();
     }
 }
