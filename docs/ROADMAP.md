@@ -39,25 +39,30 @@ Features that are **not** in the MVP. Order within each group is a rough priorit
 
 Done after the MVP (Phase 9): volume and pan automation, region gain and fades, trimming region starts, markers, computer-keyboard note input, duplicating and reordering tracks.
 
+Done in Phase 10: browser panel (instruments, effects, sample folders with preview, drag onto tracks), inspector panel (region and track settings, markers), toolbar with visible buttons for every editing command, track context menu (rename, colour, duplicate, move, delete), follow-playhead switch.
+
 Not started, in rough priority order:
 
-- Built-in effects: EQ, compressor, delay, reverb
-- Punch in/out recording
-- Take folders and comping for audio
-- Tempo and time signature changes (tempo map)
-- Automation of plugin parameters, and automation recording
-- Crossfades between overlapping regions
-- Quantize strength and swing
-- Rubber-band selection and tools in the piano roll
-- Sidechain inputs and more buses and sends
-- Track folders / grouped tracks and mixer groups
-- Freeze / render in place
-- Inspector panel and sound/patch browser
-- On-screen keyboard
-- Event list editor
-- Region time stretch
-- Project versions (alternative mixes in one project)
-- MIDI output to hardware
+- Built-in effects: EQ, compressor, delay, reverb, utility, limiter
+- Built-in instruments beyond Basic Synth: sampler, drum sampler
+- Clip-launch grid view with scenes, launch modes and follow actions
+- Device chain view for the selected track in the bottom area
+- Punch in/out recording and capture of the last played MIDI
+- Take lanes and comping for audio
+- Tempo and time signature changes (tempo map), tap tempo
+- Audio warping and time stretch, clip tempo
+- MIDI tools: transpose, humanize, legato, chop, strum, arpeggiate, rhythm and chord generators
+- Scale mode (root and scale, fold and highlight in the piano roll)
+- Automation of plugin parameters, automation recording, clip envelopes
+- Crossfades between overlapping regions, fade handles on region corners
+- Quantize strength and swing, groove templates
+- Rubber-band selection, draw mode and chance lane in the piano roll
+- Return tracks, more sends, groups and nested groups, sidechain inputs
+- Crossfader and cue output
+- Freeze / bounce in place, consolidate
+- Info area that explains the control under the mouse
+- CPU meter per track and overall
+- Event list editor, project versions, MIDI output to hardware
 
 ## 4. Plugins and formats
 

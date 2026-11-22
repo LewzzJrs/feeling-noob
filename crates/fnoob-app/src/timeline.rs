@@ -129,6 +129,21 @@ pub enum UiAction {
         fade_out: Option<u64>,
     },
     MuteRegion(Id),
+    BrowserDrop {
+        item: crate::browser::BrowserItem,
+        track: Option<Id>,
+        tick: u64,
+    },
+    DuplicateTrack(Id),
+    MoveTrack {
+        id: Id,
+        delta: i64,
+    },
+    DeleteTrack(Id),
+    SetColor {
+        id: Id,
+        color: u8,
+    },
     DeleteRegion(Id),
     SplitRegion(Id),
     LocateMarker(u64),
@@ -240,6 +255,38 @@ impl App {
             );
         }
         self.handle_file_drop(ui, &geometry, area, &mut actions);
+        if let Some(item) = area_response.dnd_release_payload::<crate::browser::BrowserItem>() {
+            let pointer = ui.input(|i| i.pointer.latest_pos());
+            let inside = pointer.filter(|p| geometry.lanes.contains(*p));
+            let track = inside.and_then(|p| {
+                let index =
+                    ((p.y - geometry.lanes.top() + geometry.scroll_y) / LANE_HEIGHT).floor();
+                (index >= 0.0)
+                    .then(|| self.project.tracks.get(index as usize))
+                    .flatten()
+                    .map(|t| t.id)
+            });
+            let tick = inside.map_or_else(
+                || self.playhead_tick(),
+                |p| self.snapped(geometry.tick(p.x)),
+            );
+            actions.push(UiAction::BrowserDrop {
+                item: (*item).clone(),
+                track,
+                tick,
+            });
+        }
+        if area_response
+            .dnd_hover_payload::<crate::browser::BrowserItem>()
+            .is_some()
+        {
+            ui.painter_at(area).rect_stroke(
+                geometry.lanes,
+                0.0,
+                Stroke::new(2.0, MARKER),
+                StrokeKind::Inside,
+            );
+        }
         for action in actions {
             self.apply_ui_action(action);
         }
@@ -830,6 +877,51 @@ impl App {
             if row_response.clicked() {
                 actions.push(UiAction::SelectTrack(track.id));
             }
+            row_response.context_menu(|ui| {
+                if ui.button("Rename").clicked() {
+                    actions.push(UiAction::StartRename(track.id));
+                    ui.close();
+                }
+                ui.menu_button("Color", |ui| {
+                    ui.horizontal(|ui| {
+                        for color in 0..fnoob_core::model::TRACK_COLORS {
+                            let (rect, response) =
+                                ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                            ui.painter().rect_filled(rect, 3.0, track_color(color));
+                            if response.clicked() {
+                                actions.push(UiAction::SetColor {
+                                    id: track.id,
+                                    color,
+                                });
+                                ui.close();
+                            }
+                        }
+                    });
+                });
+                if ui.button("Duplicate").clicked() {
+                    actions.push(UiAction::DuplicateTrack(track.id));
+                    ui.close();
+                }
+                if ui.button("Move up").clicked() {
+                    actions.push(UiAction::MoveTrack {
+                        id: track.id,
+                        delta: -1,
+                    });
+                    ui.close();
+                }
+                if ui.button("Move down").clicked() {
+                    actions.push(UiAction::MoveTrack {
+                        id: track.id,
+                        delta: 1,
+                    });
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Delete track").clicked() {
+                    actions.push(UiAction::DeleteTrack(track.id));
+                    ui.close();
+                }
+            });
             let fill = if selected {
                 ui.visuals().selection.bg_fill.gamma_multiply(0.35)
             } else {
@@ -1058,6 +1150,28 @@ impl App {
                     });
                 }
             }
+            UiAction::BrowserDrop { item, track, tick } => {
+                self.apply_browser_item(&item, track, tick);
+            }
+            UiAction::DuplicateTrack(id) => {
+                self.selection.track = Some(id);
+                self.run(fnoob_core::keymap::Command::DuplicateTrack);
+            }
+            UiAction::MoveTrack { id, delta } => {
+                self.edit(|p| {
+                    edit::move_track(p, id, delta);
+                });
+            }
+            UiAction::DeleteTrack(id) => {
+                self.edit(|p| {
+                    edit::delete_track(p, id);
+                });
+                if self.selection.track == Some(id) {
+                    self.selection.track = None;
+                    self.selection.regions.clear();
+                }
+            }
+            UiAction::SetColor { id, color } => self.edit_track(id, |t| t.color = color),
             UiAction::MuteRegion(region) => {
                 self.edit(|p| edit::toggle_regions_muted(p, &[region]));
             }

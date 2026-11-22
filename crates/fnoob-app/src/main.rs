@@ -3,7 +3,9 @@
 mod app;
 mod audio;
 mod bounce;
+mod browser;
 mod files;
+mod inspector;
 mod instrument;
 mod keys;
 mod midi;

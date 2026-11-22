@@ -96,6 +96,7 @@ pub struct View {
     pub pixels_per_tick: f32,
     pub scroll_tick: f32,
     pub scroll_y: f32,
+    pub follow: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -142,6 +143,8 @@ pub struct App {
     pub(crate) renaming: Option<(Id, String)>,
     pub(crate) editor: Editor,
     pub(crate) mixer_open: bool,
+    pub(crate) browser: crate::browser::Browser,
+    pub(crate) inspector: crate::inspector::Inspector,
     pub(crate) automation_view: bool,
     pub(crate) automation_params: std::collections::HashMap<Id, AutomationParam>,
     pub(crate) marker_rename: Option<(Id, String)>,
@@ -211,11 +214,14 @@ impl App {
                 pixels_per_tick: 0.04,
                 scroll_tick: 0.0,
                 scroll_y: 0.0,
+                follow: true,
             },
             drag: None,
             renaming: None,
             editor: Editor::default(),
             mixer_open: false,
+            browser: crate::browser::Browser::shown(),
+            inspector: crate::inspector::Inspector::shown(),
             automation_view: false,
             automation_params: std::collections::HashMap::new(),
             marker_rename: None,
@@ -941,6 +947,19 @@ impl App {
                 self.menu_item(ui, "Mixer", Command::ToggleMixer);
                 self.menu_item(ui, "Piano Roll", Command::TogglePianoRoll);
                 self.menu_item(ui, "Automation", Command::ToggleAutomation);
+                if ui.button("Browser").clicked() {
+                    self.browser.open = !self.browser.open;
+                    ui.close();
+                }
+                if ui.button("Inspector").clicked() {
+                    self.inspector.open = !self.inspector.open;
+                    ui.close();
+                }
+                if ui.button("Follow Playhead").clicked() {
+                    self.view.follow = !self.view.follow;
+                    ui.close();
+                }
+                ui.separator();
                 ui.separator();
                 self.menu_item(ui, "Zoom In", Command::ZoomIn);
                 self.menu_item(ui, "Zoom Out", Command::ZoomOut);
@@ -951,6 +970,134 @@ impl App {
 
     fn toggle_button(ui: &mut egui::Ui, on: bool, text: &str, tip: &str) -> bool {
         ui.selectable_label(on, text).on_hover_text(tip).clicked()
+    }
+
+    fn tool_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        on: bool,
+        text: &str,
+        tip: &str,
+        command: Command,
+    ) {
+        let tip = match shortcut_label(command) {
+            Some(keys) => format!("{tip} ({keys})"),
+            None => tip.to_owned(),
+        };
+        if ui.selectable_label(on, text).on_hover_text(tip).clicked() {
+            self.run(command);
+        }
+    }
+
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .selectable_label(self.browser.open, "Browser")
+                .on_hover_text("Show instruments, effects and samples")
+                .clicked()
+            {
+                self.browser.open = !self.browser.open;
+            }
+            if ui
+                .selectable_label(self.inspector.open, "Inspector")
+                .on_hover_text("Show settings of the selected track and region")
+                .clicked()
+            {
+                self.inspector.open = !self.inspector.open;
+            }
+            let (editor, mixer, automation) =
+                (self.editor.open, self.mixer_open, self.automation_view);
+            self.tool_button(
+                ui,
+                editor,
+                "Piano Roll",
+                "Show the piano roll",
+                Command::TogglePianoRoll,
+            );
+            self.tool_button(ui, mixer, "Mixer", "Show the mixer", Command::ToggleMixer);
+            self.tool_button(
+                ui,
+                automation,
+                "Automation",
+                "Show automation lanes",
+                Command::ToggleAutomation,
+            );
+            ui.separator();
+            self.tool_button(ui, false, "New Track", "Add tracks", Command::NewTracks);
+            self.tool_button(
+                ui,
+                false,
+                "Duplicate",
+                "Duplicate the selected track",
+                Command::DuplicateTrack,
+            );
+            ui.separator();
+            self.tool_button(
+                ui,
+                false,
+                "Split",
+                "Split selected regions at the playhead",
+                Command::SplitAtPlayhead,
+            );
+            self.tool_button(
+                ui,
+                false,
+                "Repeat",
+                "Repeat selected regions",
+                Command::RepeatRegions,
+            );
+            self.tool_button(ui, false, "Quantize", "Quantize notes", Command::Quantize);
+            self.tool_button(
+                ui,
+                false,
+                "Delete",
+                "Delete selected regions",
+                Command::Delete,
+            );
+            ui.separator();
+            self.tool_button(
+                ui,
+                false,
+                "+ Marker",
+                "Add a marker at the playhead",
+                Command::AddMarker,
+            );
+            self.tool_button(
+                ui,
+                false,
+                "< Marker",
+                "Go to the previous marker",
+                Command::PreviousMarker,
+            );
+            self.tool_button(
+                ui,
+                false,
+                "Marker >",
+                "Go to the next marker",
+                Command::NextMarker,
+            );
+            ui.separator();
+            if ui
+                .selectable_label(self.view.follow, "Follow")
+                .on_hover_text("Scroll the timeline with the playhead")
+                .clicked()
+            {
+                self.view.follow = !self.view.follow;
+            }
+            let typing = self.musical.on;
+            let label = self.musical.label();
+            self.tool_button(
+                ui,
+                typing,
+                &label,
+                "Play notes with the computer keyboard",
+                Command::ToggleMusicalTyping,
+            );
+            ui.separator();
+            self.tool_button(ui, false, "Undo", "Undo", Command::Undo);
+            self.tool_button(ui, false, "Redo", "Redo", Command::Redo);
+            self.tool_button(ui, false, "Bounce", "Bounce to WAV", Command::Bounce);
+        });
     }
 
     fn control_bar(&mut self, ui: &mut egui::Ui) {
@@ -1054,18 +1201,6 @@ impl App {
                 "Count-in before recording (Shift+K)",
             ) {
                 self.run(Command::ToggleCountIn);
-            }
-            ui.separator();
-            if Self::toggle_button(ui, self.automation_view, "Auto", "Show automation (A)") {
-                self.run(Command::ToggleAutomation);
-            }
-            if Self::toggle_button(
-                ui,
-                self.musical.on,
-                &self.musical.label(),
-                "Play notes with the computer keyboard (Ctrl+K)",
-            ) {
-                self.run(Command::ToggleMusicalTyping);
             }
             ui.separator();
             if Self::toggle_button(ui, snap, "Snap", "Snap to grid (Ctrl+G)") {
@@ -1440,7 +1575,10 @@ impl App {
     }
 
     fn follow_playhead(&mut self, width: f32) {
-        if self.transport_state() != TransportState::Playing || self.drag.is_some() {
+        if !self.view.follow
+            || self.transport_state() != TransportState::Playing
+            || self.drag.is_some()
+        {
             return;
         }
         let visible = width / self.view.pixels_per_tick;
@@ -1500,6 +1638,7 @@ impl eframe::App for App {
         }
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("control_bar").show(ui, |ui| self.control_bar(ui));
+        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         self.editor_rect = None;
         self.update_meters();
@@ -1516,6 +1655,20 @@ impl eframe::App for App {
                 .size_range(160.0..=900.0)
                 .show(ui, |ui| self.piano_roll(ui));
             self.editor_rect = Some(panel.response.rect);
+        }
+        if self.browser.open {
+            egui::Panel::left("browser")
+                .resizable(true)
+                .default_size(240.0)
+                .size_range(180.0..=480.0)
+                .show(ui, |ui| self.browser_panel(ui));
+        }
+        if self.inspector.open {
+            egui::Panel::right("inspector")
+                .resizable(true)
+                .default_size(260.0)
+                .size_range(200.0..=480.0)
+                .show(ui, |ui| self.inspector_panel(ui));
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
