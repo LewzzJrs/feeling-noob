@@ -23,6 +23,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         strip: ChannelStrip::default(),
         automation: Default::default(),
         regions: Vec::new(),
+        session: Vec::new(),
     });
     id
 }
@@ -285,7 +286,11 @@ pub fn region_mut(project: &mut Project, id: Id) -> Option<&mut Region> {
     project
         .tracks
         .iter_mut()
-        .flat_map(|t| t.regions.iter_mut())
+        .flat_map(|t| {
+            t.regions
+                .iter_mut()
+                .chain(t.session.iter_mut().flatten().map(|c| &mut c.region))
+        })
         .find(|r| r.id == id)
 }
 
@@ -717,6 +722,9 @@ pub fn duplicate_track(project: &mut Project, id: Id) -> Option<Id> {
     copy.record_enabled = false;
     for region in &mut copy.regions {
         region.id = project.alloc_id();
+    }
+    for clip in copy.session.iter_mut().flatten() {
+        clip.region.id = project.alloc_id();
     }
     if let Some(Instrument::Vst3(slot)) = &mut copy.instrument {
         slot.id = project.alloc_id();

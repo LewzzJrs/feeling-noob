@@ -44,11 +44,13 @@ pub enum Command {
     ToggleAutomation,
     ToggleMusicalTyping,
     DuplicateTrack,
+    ToggleClipGrid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
     Space,
+    Tab,
     Enter,
     Comma,
     Period,
@@ -134,6 +136,7 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (plain(letter('A')), Command::ToggleAutomation),
     (ctrl(letter('K')), Command::ToggleMusicalTyping),
     (ctrl(letter('D')), Command::DuplicateTrack),
+    (plain(Key::Tab), Command::ToggleClipGrid),
     (plain(Key::Space), Command::PlayStop),
     (plain(letter('R')), Command::Record),
     (plain(Key::Enter), Command::GoToBeginning),
@@ -185,6 +188,7 @@ pub fn lookup(combo: KeyCombo) -> Option<Command> {
 fn key_label(key: Key) -> String {
     match key {
         Key::Space => "Space".into(),
+        Key::Tab => "Tab".into(),
         Key::Enter => "Enter".into(),
         Key::Comma => ",".into(),
         Key::Period => ".".into(),

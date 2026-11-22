@@ -188,6 +188,9 @@ pub fn validate(project: &Project) -> Result<(), String> {
     if project.bus.inserts.len() > MAX_INSERTS {
         return Err("Bus 1 has too many inserts".into());
     }
+    if project.scenes.is_empty() || project.scenes.len() > crate::session::MAX_SCENES {
+        return Err("the clip grid must have 1 to 999 scenes".into());
+    }
     if !(1..=8).contains(&project.metronome.count_in_bars) {
         return Err("count-in must be 1 to 8 bars".into());
     }
@@ -212,7 +215,7 @@ pub fn validate(project: &Project) -> Result<(), String> {
         }
         validate_track(project, track)?;
         validate_slots(track.plugin_slots(), &mut ids)?;
-        for region in &track.regions {
+        for region in track.all_regions() {
             if !ids.insert(region.id) {
                 return Err(format!("duplicate id {}", region.id));
             }
@@ -292,7 +295,15 @@ fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
     {
         return Err(format!("track {} has an invalid audio input", track.id));
     }
-    for region in &track.regions {
+    if track.session.len() > project.scenes.len() {
+        return Err(format!("track {} has clips outside the scenes", track.id));
+    }
+    for clip in track.session.iter().flatten() {
+        if clip.region.start_tick != 0 || !clip.follow.is_valid() {
+            return Err(format!("clip {} has invalid settings", clip.region.id));
+        }
+    }
+    for region in track.all_regions() {
         if region.length_tick == 0 {
             return Err(format!("region {} has zero length", region.id));
         }

@@ -583,9 +583,17 @@ pub struct Track {
     #[serde(default)]
     pub automation: Automation,
     pub regions: Vec<Region>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session: Vec<Option<crate::session::SessionClip>>,
 }
 
 impl Track {
+    pub fn all_regions(&self) -> impl Iterator<Item = &Region> {
+        self.regions
+            .iter()
+            .chain(self.session.iter().flatten().map(|c| &c.region))
+    }
+
     pub fn plugin_slots(&self) -> impl Iterator<Item = &PluginSlot> {
         let instrument = match &self.instrument {
             Some(Instrument::Vst3(slot)) => Some(slot),
@@ -628,6 +636,10 @@ pub struct Project {
     pub master: Master,
     #[serde(default)]
     pub markers: Vec<Marker>,
+    #[serde(default = "crate::session::default_scenes")]
+    pub scenes: Vec<crate::session::Scene>,
+    #[serde(default)]
+    pub launch_quantize: crate::session::LaunchQuantize,
     pub tracks: Vec<Track>,
 }
 
@@ -662,6 +674,8 @@ impl Project {
             bus: Bus::default(),
             master: Master::default(),
             markers: Vec::new(),
+            scenes: crate::session::default_scenes(),
+            launch_quantize: crate::session::LaunchQuantize::default(),
             tracks: Vec::new(),
         }
     }
@@ -687,7 +701,7 @@ impl Project {
     pub fn find_region(&self, id: Id) -> Option<(&Track, &Region)> {
         self.tracks
             .iter()
-            .find_map(|t| t.regions.iter().find(|r| r.id == id).map(|r| (t, r)))
+            .find_map(|t| t.all_regions().find(|r| r.id == id).map(|r| (t, r)))
     }
 
     pub fn any_solo(&self) -> bool {
