@@ -122,6 +122,7 @@ pub struct App {
     pub(crate) renaming: Option<(Id, String)>,
     pub(crate) editor: Editor,
     pub(crate) mixer_open: bool,
+    pub(crate) plugins: crate::plugins::PluginHost,
     pub(crate) meters: crate::mixer::Meters,
     pub(crate) focus: Focus,
     editor_rect: Option<Rect>,
@@ -152,6 +153,10 @@ impl App {
             }
         };
         let project = Project::new("Untitled", DEFAULT_SAMPLE_RATE);
+        let (plugins, plugin_problem) = crate::plugins::PluginHost::new();
+        if plugin_problem.is_some() {
+            message = plugin_problem;
+        }
         let mut app = Self {
             settings,
             settings_path,
@@ -181,6 +186,7 @@ impl App {
             renaming: None,
             editor: Editor::default(),
             mixer_open: false,
+            plugins,
             meters: crate::mixer::Meters::default(),
             focus: Focus::Tracks,
             editor_rect: None,
@@ -205,6 +211,9 @@ impl App {
         if let Some(dir) = open {
             app.open_dir(dir);
         }
+        if app.plugins.catalog.plugins.is_empty() && app.plugins.catalog.failed.is_empty() {
+            app.start_plugin_scan();
+        }
         app
     }
 
@@ -222,7 +231,7 @@ impl App {
     }
 
     fn is_dirty(&self) -> bool {
-        self.project != self.saved
+        self.project != self.saved || self.plugins.edited
     }
 
     pub(crate) fn playhead_tick(&self) -> u64 {
@@ -249,6 +258,8 @@ impl App {
         let tick = self.playhead_tick();
         self.audio_take = None;
         self.input = None;
+        self.capture_plugin_states();
+        self.release_engine_plugins();
         self.audio = None;
         let (project, pool) = (&self.project, &self.pool);
         match open_output(
@@ -263,6 +274,7 @@ impl App {
         self.take = None;
         self.connect_midi();
         self.open_input_device();
+        self.sync_plan();
         self.locate(tick);
         self.check_sample_rate();
     }
@@ -300,7 +312,7 @@ impl App {
         self.open_device();
     }
 
-    fn save_settings(&mut self) {
+    pub(crate) fn save_settings(&mut self) {
         if let Some(path) = &self.settings_path
             && let Err(e) = self.settings.save(path)
         {
@@ -318,7 +330,13 @@ impl App {
 
     pub(crate) fn sync_plan(&mut self) {
         let rate = self.sample_rate();
-        let plan = Box::new(RenderPlan::with_audio(&self.project, rate, &self.pool));
+        self.sync_plugins();
+        let plan = Box::new(RenderPlan::build(
+            &self.project,
+            rate,
+            &self.pool,
+            &self.plugins.map(),
+        ));
         self.send(EngineCommand::SetPlan(plan));
     }
 
@@ -598,6 +616,7 @@ impl App {
         self.send(EngineCommand::Stop);
         self.saved = project.clone();
         self.project = project;
+        self.plugins.edited = false;
         self.project_dir = dir;
         self.history.clear();
         self.selection = Selection::default();
@@ -686,9 +705,11 @@ impl App {
     }
 
     fn save_to(&mut self, dir: &Path) -> bool {
+        self.capture_plugin_states();
         match io::save(dir, &self.project) {
             Ok(()) => {
                 self.saved = self.project.clone();
+                self.plugins.edited = false;
                 self.message = Some(format!("Saved {}", dir.display()));
                 true
             }
@@ -720,6 +741,10 @@ impl App {
                 ui.separator();
                 if ui.button("Import Audio File...").clicked() {
                     self.import_audio();
+                    ui.close();
+                }
+                if ui.button("Plugin Manager...").clicked() {
+                    self.plugins.show_manager = true;
                     ui.close();
                 }
                 ui.separator();
@@ -1307,6 +1332,7 @@ impl App {
         }
         self.poll_take();
         self.poll_audio_take();
+        self.poll_plugins();
         if self.audio.is_none() {
             return;
         }
@@ -1354,6 +1380,7 @@ impl eframe::App for App {
             });
         self.settings_window(&ctx);
         self.synth_settings_window(&ctx);
+        self.plugin_manager(&ctx);
         self.new_tracks_window(&ctx);
         self.confirm_window(&ctx);
         self.update_title(&ctx);

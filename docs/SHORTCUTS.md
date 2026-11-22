@@ -35,9 +35,15 @@ Each entry: file, what was skipped, when it needs fixing.
 | S31 | `crates/fnoob-app/src/audio.rs` (`prepare_audio_take`, `import_audio`) | Recording and importing audio need a saved project folder; there is no temporary folder for untitled projects. | Phase 7. |
 | S32 | `crates/fnoob-app/src/timeline.rs` | Audio regions have no fades, and their gain can only be changed in `project.json`. | Phase 6 (mixer) or later. |
 | S33 | `crates/fnoob-app/src/timeline.rs` (`input_options`) | The input channel list follows the currently open input device; with no input open it shows 2 channels. | When devices with many inputs are tested. |
-| S34 | `crates/fnoob-app/src/mixer.rs` | Insert slots are shown but disabled until VST3 hosting arrives. | Phase 6b. |
 | S35 | `crates/fnoob-app/src/mixer.rs` | Meters show a decaying peak only: no peak hold, no clip indicator, no dB scale. | Phase 8 polish. |
 | S36 | `crates/fnoob-core/src/model.rs` (`Track`) | Track mute and solo stay on `Track`, not inside `strip` as the `SPEC.md` 4.3 example shows. | When the project format is next changed. |
+| S37 | `crates/fnoob-engine/src/processor.rs` | Plugin latency is ignored: there is no delay compensation between tracks. | When latency-heavy plugins are used. |
+| S38 | `crates/fnoob-platform/src/plugin/instance.rs` | Only the main stereo bus of a plugin is used. Side-chain and extra output buses get silence. Parameter changes and events sent back by plugins are ignored. | After the MVP. |
+| S39 | `crates/fnoob-app/src/plugins.rs` | Removing an insert and undoing it reloads the plugin from the state of the last save; tweaks made since then are lost. | Phase 7, with autosave. |
+| S40 | `crates/fnoob-platform/src/plugin/editor.rs` | Editor windows cannot be resized by the user and ignore display scaling requests. | Phase 8 polish. |
+| S41 | `crates/fnoob-engine/src/processor.rs` (`run_plugin`) | Plugins may allocate inside their own processing; the no-allocation check is switched off around plugin calls. | Cannot be fixed for third-party code. |
+| S42 | `crates/fnoob-app/src/plugins.rs` (`start_scan`) | Rescan always scans every plugin again. There is no way to rescan or block a single plugin. Some broken plugins show their own error dialogs during a scan. | When the plugin list grows. |
+| S43 | `crates/fnoob-app/src/plugins.rs` (`scanner_path`) | `fnoob-scan.exe` must sit next to the app; during development it is built with `cargo build --workspace`. | Phase 8 (installer). |
 
 ## Fixed
 
@@ -49,3 +55,4 @@ Each entry: file, what was skipped, when it needs fixing.
 | S10 | Phase 5 | Record captures audio on armed audio tracks as well as MIDI. |
 | S13 | Phase 5 | Playback and recording are blocked when the project and device sample rates differ. |
 | S21 | Phase 6 | Tracks go through the mixer (volume, pan, send, Bus 1, Master) before the output safety clamp. |
+| S34 | Phase 6 | Insert slots load VST3 effects; instrument tracks can use a VST3 instrument. |

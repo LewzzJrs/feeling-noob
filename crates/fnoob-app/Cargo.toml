@@ -6,9 +6,11 @@ license.workspace = true
 
 [dependencies]
 assert_no_alloc = "1.1.2"
+base64 = "0.23.1"
 eframe = "0.37"
 fnoob-core = { version = "0.1.0", path = "../fnoob-core" }
 fnoob-engine = { version = "0.1.0", path = "../fnoob-engine" }
+fnoob-platform = { version = "0.1.0", path = "../fnoob-platform" }
 rfd = "0.18.0"
 
 [lints]

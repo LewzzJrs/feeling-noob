@@ -2,7 +2,7 @@
 
 A digital audio workstation for Windows, written in Rust.
 
-> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, resize, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, a built-in synth, a piano roll with quantize, MIDI keyboard input and MIDI recording, audio recording and WAV import with waveforms and input monitoring, a mixer with volume, pan, send to Bus 1, Master, and meters, undo/redo, keyboard shortcuts, and project save/load. Plugins, autosave, and export are not there yet.
+> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, resize, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, a built-in synth, a piano roll with quantize, MIDI keyboard input and MIDI recording, audio recording and WAV import with waveforms and input monitoring, a mixer with volume, pan, send to Bus 1, Master, and meters, VST3 effects and instruments with their editors, undo/redo, keyboard shortcuts, and project save/load. Autosave and export are not there yet.
 
 ## Goals
 
@@ -27,6 +27,12 @@ The full plan is in [SPEC.md](SPEC.md). Features planned for later are in [docs/
 - Visual Studio Build Tools with the "Desktop development with C++" workload (needed for the MSVC linker)
 
 ## Build and run
+
+Build everything once, so the plugin scanner `fnoob-scan.exe` sits next to the app:
+
+```powershell
+cargo build --workspace
+```
 
 ```powershell
 cargo run -p fnoob-app
@@ -56,10 +62,10 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Two tests use real devices: one plays a short metronome on the default output, the other reads the default input and prints the reported latency. They are skipped by default; run them with:
+Some tests use real devices or installed plugins (ValhallaSupermassive, free from Valhalla DSP). They are skipped by default; run them with:
 
 ```powershell
-cargo test -p fnoob-engine --test real_device -- --ignored --nocapture
+cargo test --workspace -- --ignored --nocapture
 ```
 
 ## Project layout
@@ -68,11 +74,13 @@ cargo test -p fnoob-engine --test real_device -- --ignored --nocapture
 |---|---|
 | `crates/fnoob-core` | Project model, editing, undo, project files, keymap, settings, time math. No audio or UI code. |
 | `crates/fnoob-engine` | Audio engine: render plan, transport, loop, count-in, metronome, Basic Synth, MIDI input, audio clips, audio input and recording to WAV, audio devices. |
+| `crates/fnoob-platform` | VST3 hosting: loading plugin files, processing, state, editor windows. The only crate with `unsafe` code. |
+| `crates/fnoob-scan` | `fnoob-scan.exe`: reads one plugin file in its own process, so a broken plugin cannot crash the app. |
 | `crates/fnoob-app` | The desktop app (egui). |
 
 The audio callback never allocates, locks, or does file I/O. Debug builds and tests enforce the no-allocation rule with `assert_no_alloc`.
 
-Settings are stored in `%APPDATA%\feeling-noob\settings.json`.
+Settings are stored in `%APPDATA%\feeling-noob\settings.json`, and the scanned plugin list in `%APPDATA%\feeling-noob\plugins.json`.
 
 ## License
 

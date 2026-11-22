@@ -413,8 +413,8 @@ Project rule: every new dependency is justified before it is added. Each one is 
 | `midir` | 4 | MIDI input. |
 | `hound` | 5 | WAV read/write. |
 | `base64` | 6 | Plugin state in JSON. |
-| `vst3` | 6 | VST3 bindings, unless the Phase 6 evaluation picks another host. |
-| `windows` | 6 | HWND for plugin editors, `LoadLibraryW`. |
+| `vst3` | 6 | VST3 bindings. The host itself is our own code in `fnoob-platform`. |
+| `windows-sys` | 6 | HWND for plugin editors, `LoadLibraryW`. |
 
 Deliberately **not** used in the MVP: `tokio` (no async needed), `uuid` (replaced by a counter), `symphonia` (WAV only), `basedrop` (old plans are dropped on the UI thread via `rtrb`).
 
@@ -453,5 +453,4 @@ Ordering note: basic save/load is needed early for manual testing. Phase 3 alrea
 
 ## 11. Open decisions
 
-1. VST3 host: write our own on top of the `vst3` crate, or use an existing host crate (`maolan-plugin-host`, BSD-2). Decided at the start of Phase 6.
-2. WASAPI exclusive mode (lower latency). Decided after shared-mode latency is measured in Phase 5.
+1. WASAPI exclusive mode (lower latency). Decided after shared-mode latency is measured in Phase 5.

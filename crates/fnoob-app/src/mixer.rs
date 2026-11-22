@@ -1,13 +1,17 @@
 use crate::app::App;
+use crate::plugins::Owner;
 use crate::timeline::track_color;
 use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, Vec2};
-use fnoob_core::model::{Id, MAX_FADER_DB, Project, SILENT_DB};
+use fnoob_core::catalog::CatalogEntry;
+use fnoob_core::model::{
+    Id, Instrument, MAX_FADER_DB, MAX_INSERTS, PluginSlot, Project, SILENT_DB, TrackKind,
+};
 use fnoob_engine::plan::{BUS_METER, MASTER_METER, METER_SLOTS, TRACK_METERS};
 
 const STRIP_WIDTH: f32 = 96.0;
 const FADER_FLOOR_DB: f32 = -60.0;
 const METER_DECAY: f32 = 0.88;
-const INSERT_SLOTS: usize = 4;
+const NAME_CHARS: usize = 11;
 
 pub struct Meters {
     levels: Vec<f32>,
@@ -187,14 +191,25 @@ impl App {
                 let (bar, _) = ui.allocate_exact_size(Vec2::new(STRIP_WIDTH, 4.0), Sense::hover());
                 ui.painter().rect_filled(bar, 0.0, color);
                 ui.label(RichText::new(name).strong());
-                if let Target::Track(_) | Target::Bus = target {
-                    for slot_number in 1..=INSERT_SLOTS {
-                        ui.add_enabled(
-                            false,
-                            egui::Button::new(format!("Insert {slot_number}"))
-                                .min_size(Vec2::new(STRIP_WIDTH - 8.0, 0.0)),
-                        )
-                        .on_disabled_hover_text("VST3 effects come in the next step.");
+                if let Target::Track(id) = target {
+                    self.instrument_button(ui, id);
+                }
+                let owner = match target {
+                    Target::Track(id) => Some(Owner::Track(id)),
+                    Target::Bus => Some(Owner::Bus),
+                    Target::Master => None,
+                };
+                if let Some(owner) = owner {
+                    let slots: Vec<PluginSlot> = match owner {
+                        Owner::Track(id) => self
+                            .project
+                            .track(id)
+                            .map(|t| t.strip.inserts.clone())
+                            .unwrap_or_default(),
+                        Owner::Bus => self.project.bus.inserts.clone(),
+                    };
+                    for index in 0..MAX_INSERTS {
+                        self.insert_button(ui, owner, index, slots.get(index));
                     }
                 }
                 if let Some(send) = send {
@@ -280,6 +295,157 @@ impl App {
                     }
                 });
             });
+        });
+    }
+}
+
+fn short(name: &str) -> String {
+    if name.chars().count() > NAME_CHARS {
+        let cut: String = name.chars().take(NAME_CHARS - 1).collect();
+        format!("{cut}…")
+    } else {
+        name.to_owned()
+    }
+}
+
+impl App {
+    fn plugin_choices(&self, ui: &mut egui::Ui, instruments: bool) -> Option<CatalogEntry> {
+        let mut chosen = None;
+        let entries: Vec<&CatalogEntry> = self
+            .plugins
+            .catalog
+            .plugins
+            .iter()
+            .filter(|e| e.class.instrument == instruments)
+            .collect();
+        if entries.is_empty() {
+            ui.label("No plugins found. Open File > Plugin Manager.");
+            return None;
+        }
+        egui::ScrollArea::vertical()
+            .max_height(360.0)
+            .show(ui, |ui| {
+                for entry in entries {
+                    let text = if entry.class.vendor.is_empty() {
+                        entry.class.name.clone()
+                    } else {
+                        format!("{}  ({})", entry.class.name, entry.class.vendor)
+                    };
+                    if ui.button(text).clicked() {
+                        chosen = Some(entry.clone());
+                    }
+                }
+            });
+        chosen
+    }
+
+    fn insert_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        owner: Owner,
+        index: usize,
+        slot: Option<&PluginSlot>,
+    ) {
+        let label = match slot {
+            Some(slot) => {
+                let mut text = short(&slot.name);
+                if slot.bypass {
+                    text = format!("({text})");
+                }
+                if !self.is_plugin_loaded(slot.id) {
+                    text = format!("! {text}");
+                }
+                text
+            }
+            None => "Insert".to_owned(),
+        };
+        let response = ui.menu_button(label, |ui| {
+            if let Some(slot) = slot {
+                if let Some(problem) = self.plugins.problem(slot.id) {
+                    ui.colored_label(ui.visuals().warn_fg_color, problem);
+                }
+                if ui
+                    .add_enabled(
+                        self.is_plugin_loaded(slot.id),
+                        egui::Button::new("Open editor"),
+                    )
+                    .clicked()
+                {
+                    self.open_plugin_editor(slot.id);
+                    ui.close();
+                }
+                if ui
+                    .button(if slot.bypass { "Turn on" } else { "Bypass" })
+                    .clicked()
+                {
+                    self.toggle_bypass(owner, index);
+                    ui.close();
+                }
+                if ui.button("Remove").clicked() {
+                    self.set_insert(owner, index, None);
+                    ui.close();
+                }
+                ui.separator();
+                ui.label("Replace with");
+            }
+            if let Some(entry) = self.plugin_choices(ui, false) {
+                self.set_insert(owner, index, Some(&entry));
+                ui.close();
+            }
+        });
+        if let Some(slot) = slot {
+            response.response.on_hover_text(&slot.name);
+        }
+    }
+
+    fn instrument_button(&mut self, ui: &mut egui::Ui, id: Id) {
+        let Some(track) = self.project.track(id) else {
+            return;
+        };
+        if track.kind != TrackKind::Instrument {
+            return;
+        }
+        let slot = match &track.instrument {
+            Some(Instrument::Vst3(slot)) => Some(slot.clone()),
+            _ => None,
+        };
+        let label = slot
+            .as_ref()
+            .map_or("Basic Synth".to_owned(), |s| short(&s.name));
+        ui.menu_button(RichText::new(label).strong(), |ui| {
+            match &slot {
+                Some(slot) => {
+                    if let Some(problem) = self.plugins.problem(slot.id) {
+                        ui.colored_label(ui.visuals().warn_fg_color, problem);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.is_plugin_loaded(slot.id),
+                            egui::Button::new("Open editor"),
+                        )
+                        .clicked()
+                    {
+                        self.open_plugin_editor(slot.id);
+                        ui.close();
+                    }
+                    if ui.button("Use Basic Synth").clicked() {
+                        self.set_instrument(id, None);
+                        ui.close();
+                    }
+                }
+                None => {
+                    if ui.button("Synth settings...").clicked() {
+                        self.synth_window = Some(id);
+                        ui.close();
+                    }
+                }
+            }
+            ui.separator();
+            ui.label("Instrument plugins");
+            if let Some(entry) = self.plugin_choices(ui, true) {
+                self.set_instrument(id, Some(&entry));
+                ui.close();
+            }
         });
     }
 }

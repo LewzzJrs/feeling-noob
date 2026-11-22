@@ -7,6 +7,7 @@ mod keys;
 mod midi;
 mod mixer;
 mod piano_roll;
+mod plugins;
 mod timeline;
 
 #[cfg(debug_assertions)]
