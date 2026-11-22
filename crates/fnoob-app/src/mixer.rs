@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::plugins::Owner;
+use crate::plugins::{InstrumentChoice, Owner};
 use crate::timeline::track_color;
 use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, Vec2};
 use fnoob_core::catalog::CatalogEntry;
@@ -388,6 +388,15 @@ impl App {
                 ui.separator();
                 ui.label("Replace with");
             }
+            ui.label(RichText::new("Built-in").weak());
+            for effect in fnoob_core::effects::BuiltinEffect::all() {
+                if ui.button(effect.label()).clicked() {
+                    self.set_builtin_insert(owner, index, effect);
+                    ui.close();
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new("Plugins").weak());
             if let Some(entry) = self.plugin_choices(ui, false) {
                 self.set_insert(owner, index, Some(&entry));
                 ui.close();
@@ -409,9 +418,12 @@ impl App {
             Some(Instrument::Vst3(slot)) => Some(slot.clone()),
             _ => None,
         };
-        let label = slot
-            .as_ref()
-            .map_or("Basic Synth".to_owned(), |s| short(&s.name));
+        let label = short(
+            track
+                .instrument
+                .as_ref()
+                .map_or("Basic Synth", Instrument::label),
+        );
         ui.menu_button(RichText::new(label).strong(), |ui| {
             match &slot {
                 Some(slot) => {
@@ -428,22 +440,26 @@ impl App {
                         self.open_plugin_editor(slot.id);
                         ui.close();
                     }
-                    if ui.button("Use Basic Synth").clicked() {
-                        self.set_instrument(id, None);
-                        ui.close();
-                    }
                 }
                 None => {
-                    if ui.button("Synth settings...").clicked() {
-                        self.synth_window = Some(id);
+                    if ui.button("Instrument settings...").clicked() {
+                        self.open_instrument(id);
                         ui.close();
                     }
                 }
             }
             ui.separator();
+            ui.label(RichText::new("Built-in").weak());
+            for choice in InstrumentChoice::BUILTIN {
+                if ui.button(choice.label()).clicked() {
+                    self.set_instrument(id, &choice);
+                    ui.close();
+                }
+            }
+            ui.separator();
             ui.label("Instrument plugins");
             if let Some(entry) = self.plugin_choices(ui, true) {
-                self.set_instrument(id, Some(&entry));
+                self.set_instrument(id, &InstrumentChoice::Vst3(entry));
                 ui.close();
             }
         });

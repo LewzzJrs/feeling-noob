@@ -3,7 +3,7 @@ use fnoob_core::edit;
 use fnoob_core::io::AUDIO_DIR;
 use fnoob_core::model::{Id, TrackKind};
 use fnoob_core::settings::InputChoice;
-use fnoob_engine::audio_data::load_wav;
+use fnoob_engine::audio_data::{AudioData, load_wav};
 use fnoob_engine::device::{DeviceError, list_input_devices, open_input};
 use fnoob_engine::record::{RecordTarget, WavRecorder, start_recording};
 use fnoob_engine::{Command as EngineCommand, TransportState};
@@ -256,6 +256,46 @@ impl App {
         self.import_files(&sources, target, tick);
     }
 
+    fn copy_one(
+        &self,
+        dir: &Path,
+        source: &Path,
+        taken: &mut HashSet<String>,
+    ) -> Result<(String, AudioData), String> {
+        let data = load_wav(source, self.project.sample_rate)
+            .map_err(|e| format!("{}: {e}", source.display()))?;
+        let stem = source.file_stem().map_or_else(
+            || "Audio".to_owned(),
+            |s| file_stem_for(&s.to_string_lossy()),
+        );
+        let rel = unique_audio_path(dir, &stem, taken);
+        taken.insert(rel.clone());
+        let destination = dir.join(&rel);
+        destination
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::copy(source, &destination).map(|_| ()))
+            .map_err(|e| format!("{}: {e}", source.display()))?;
+        Ok((rel, data))
+    }
+
+    pub(crate) fn copy_into_project(&mut self, source: &Path) -> Option<(String, AudioData)> {
+        if self.project_dir.is_none() && !self.save_as() {
+            self.message = Some(
+                "Samples are copied into the project folder, so save the project first.".into(),
+            );
+            return None;
+        }
+        let dir = self.project_dir.clone()?;
+        match self.copy_one(&dir, source, &mut HashSet::new()) {
+            Ok(item) => Some(item),
+            Err(e) => {
+                self.message = Some(format!("Cannot load sample. {e}"));
+                None
+            }
+        }
+    }
+
     pub(crate) fn import_files(&mut self, sources: &[PathBuf], target: Option<Id>, tick: u64) {
         if sources.is_empty() {
             return;
@@ -272,27 +312,9 @@ impl App {
         let mut ready = Vec::new();
         let mut taken = HashSet::new();
         for source in sources {
-            let data = match load_wav(source, self.project.sample_rate) {
-                Ok(data) => data,
-                Err(e) => {
-                    problems.push(format!("{}: {e}", source.display()));
-                    continue;
-                }
-            };
-            let stem = source.file_stem().map_or_else(
-                || "Audio".to_owned(),
-                |s| file_stem_for(&s.to_string_lossy()),
-            );
-            let rel = unique_audio_path(&dir, &stem, &taken);
-            taken.insert(rel.clone());
-            let destination = dir.join(&rel);
-            let copied = destination
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::copy(source, &destination).map(|_| ()));
-            match copied {
-                Ok(()) => ready.push((rel, data)),
-                Err(e) => problems.push(format!("{}: {e}", source.display())),
+            match self.copy_one(&dir, source, &mut taken) {
+                Ok(item) => ready.push(item),
+                Err(e) => problems.push(e),
             }
         }
         let first_track = target.filter(|id| {

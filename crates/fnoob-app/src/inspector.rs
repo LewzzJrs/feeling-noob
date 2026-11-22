@@ -262,10 +262,11 @@ impl App {
         });
         match track.kind {
             TrackKind::Instrument => {
-                let label = match &track.instrument {
-                    Some(Instrument::Vst3(slot)) => slot.name.clone(),
-                    _ => "Basic Synth".to_owned(),
-                };
+                let label = track
+                    .instrument
+                    .as_ref()
+                    .map_or("Basic Synth", Instrument::label)
+                    .to_owned();
                 ui.horizontal(|ui| {
                     ui.label(format!("Instrument: {label}"));
                     match &track.instrument {
@@ -276,7 +277,7 @@ impl App {
                         }
                         _ => {
                             if ui.button("Settings").clicked() {
-                                self.synth_window = Some(id);
+                                self.open_instrument(id);
                             }
                         }
                     }

@@ -54,7 +54,7 @@ impl App {
             self.message = Some("There is nothing to bounce.".into());
             return;
         };
-        let (map, processors, plugins) = self.bounce_plugins();
+        let (map, processors, builtins, plugins) = self.bounce_plugins();
         let mut project = self.project.clone();
         project.loop_range.enabled = false;
         let rate = self.sample_rate();
@@ -69,6 +69,7 @@ impl App {
             path,
             format,
             plugins: processors,
+            builtins,
         };
         match start_bounce(request) {
             Ok(job) => {

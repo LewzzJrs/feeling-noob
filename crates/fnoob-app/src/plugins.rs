@@ -5,8 +5,12 @@ use eframe::egui;
 use fnoob_core::catalog::{
     Catalog, CatalogEntry, STANDARD_VST3_FOLDER, ScanReport, default_catalog_path, find_vst3,
 };
-use fnoob_core::model::{Id, Instrument, MAX_INSERTS, PluginSlot, Project, SynthParams};
+use fnoob_core::effects::BuiltinEffect;
+use fnoob_core::model::{
+    Id, Instrument, MAX_INSERTS, PluginSlot, Project, SamplerParams, SynthParams,
+};
 use fnoob_engine::Command as EngineCommand;
+use fnoob_engine::effects::BuiltinProcessor;
 use fnoob_engine::plan::{MAX_BLOCK, MAX_PLUGINS, PluginMap};
 use fnoob_platform::plugin::{ClassInfo, Editor, Module, Plugin, cid_from_hex, instantiate};
 use std::collections::{HashMap, HashSet};
@@ -22,9 +26,40 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 const SCAN_WORKERS: usize = 4;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum InstrumentChoice {
+    BasicSynth,
+    Sampler,
+    DrumSampler,
+    Vst3(CatalogEntry),
+}
+
+impl InstrumentChoice {
+    pub const BUILTIN: [Self; 3] = [Self::BasicSynth, Self::Sampler, Self::DrumSampler];
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::BasicSynth => "Basic Synth".to_owned(),
+            Self::Sampler => "Sampler".to_owned(),
+            Self::DrumSampler => "Drum Sampler".to_owned(),
+            Self::Vst3(entry) => entry.class.name.clone(),
+        }
+    }
+
+    pub fn detail(&self) -> String {
+        match self {
+            Self::BasicSynth => "Built-in synthesizer".to_owned(),
+            Self::Sampler => "Plays one sample across the keyboard".to_owned(),
+            Self::DrumSampler => "16 one-shot pads".to_owned(),
+            Self::Vst3(entry) => entry.class.vendor.clone(),
+        }
+    }
+}
+
 pub type BouncePlugins = (
     PluginMap,
     Vec<(usize, Box<fnoob_platform::plugin::PluginProcessor>)>,
+    Vec<(usize, Box<BuiltinProcessor>)>,
     Vec<Plugin>,
 );
 
@@ -34,10 +69,17 @@ pub enum Owner {
     Bus,
 }
 
+enum LoadedKind {
+    Vst3 {
+        plugin: Plugin,
+        editor: Option<Editor>,
+    },
+    Builtin(BuiltinEffect),
+}
+
 struct LoadedPlugin {
-    plugin: Plugin,
+    kind: LoadedKind,
     engine_slot: usize,
-    editor: Option<Editor>,
 }
 
 struct ScanJob {
@@ -258,10 +300,12 @@ impl App {
         }
         let mut edited = false;
         for loaded in self.plugins.loaded.values_mut() {
-            if loaded.editor.as_ref().is_some_and(Editor::is_closed) {
-                loaded.editor = None;
+            if let LoadedKind::Vst3 { plugin, editor } = &mut loaded.kind {
+                if editor.as_ref().is_some_and(Editor::is_closed) {
+                    *editor = None;
+                }
+                edited |= plugin.take_edited();
             }
-            edited |= loaded.plugin.take_edited();
         }
         self.plugins.edited |= edited;
     }
@@ -339,6 +383,20 @@ impl App {
         }
         self.plugins.failed.retain(|id, _| ids.contains(id));
         for slot in wanted {
+            if let (Some(effect), Some(loaded)) =
+                (slot.builtin, self.plugins.loaded.get_mut(&slot.id))
+                && let LoadedKind::Builtin(current) = &mut loaded.kind
+            {
+                if *current != effect {
+                    *current = effect;
+                    let engine_slot = loaded.engine_slot;
+                    self.send(EngineCommand::SetBuiltinParams {
+                        slot: engine_slot,
+                        params: effect,
+                    });
+                }
+                continue;
+            }
             if self.plugins.loaded.contains_key(&slot.id)
                 || self.plugins.failed.contains_key(&slot.id)
             {
@@ -350,6 +408,21 @@ impl App {
                     .insert(slot.id, "too many plugins".into());
                 continue;
             };
+            if let Some(effect) = slot.builtin {
+                let rate = self.sample_rate();
+                self.send(EngineCommand::InstallBuiltin {
+                    slot: engine_slot,
+                    effect: Box::new(BuiltinProcessor::new(effect, rate)),
+                });
+                self.plugins.loaded.insert(
+                    slot.id,
+                    LoadedPlugin {
+                        kind: LoadedKind::Builtin(effect),
+                        engine_slot,
+                    },
+                );
+                continue;
+            }
             match self.load_slot(&slot) {
                 Ok((plugin, processor)) => {
                     plugin.take_edited();
@@ -360,9 +433,11 @@ impl App {
                     self.plugins.loaded.insert(
                         slot.id,
                         LoadedPlugin {
-                            plugin,
+                            kind: LoadedKind::Vst3 {
+                                plugin,
+                                editor: None,
+                            },
                             engine_slot,
-                            editor: None,
                         },
                     );
                 }
@@ -384,11 +459,19 @@ impl App {
             .collect();
         let mut map = PluginMap::new();
         let mut processors = Vec::new();
+        let mut builtins = Vec::new();
         let mut plugins = Vec::new();
+        let rate = self.sample_rate();
         for slot in slots {
+            if let Some(effect) = slot.builtin {
+                let index = processors.len() + builtins.len();
+                map.insert(slot.id, index);
+                builtins.push((index, Box::new(BuiltinProcessor::new(effect, rate))));
+                continue;
+            }
             match self.load_slot(&slot) {
                 Ok((plugin, processor)) => {
-                    let index = processors.len();
+                    let index = processors.len() + builtins.len();
                     map.insert(slot.id, index);
                     processors.push((index, processor));
                     plugins.push(plugin);
@@ -396,17 +479,18 @@ impl App {
                 Err(e) => self.message = Some(format!("{}: {e}", slot.name)),
             }
         }
-        (map, processors, plugins)
+        (map, processors, builtins, plugins)
     }
 
     pub(crate) fn capture_plugin_states(&mut self) {
         let loaded = &self.plugins.loaded;
         let mut problems = Vec::new();
         for slot in project_slots_mut(&mut self.project) {
-            let Some(plugin) = loaded.get(&slot.id) else {
+            let Some(LoadedKind::Vst3 { plugin, .. }) = loaded.get(&slot.id).map(|l| &l.kind)
+            else {
                 continue;
             };
-            match plugin.plugin.state() {
+            match plugin.state() {
                 Ok((component, controller)) => {
                     slot.component_state = STANDARD.encode(component);
                     slot.controller_state = controller.map(|c| STANDARD.encode(c));
@@ -448,15 +532,38 @@ impl App {
         let Some(loaded) = self.plugins.loaded.get_mut(&slot) else {
             return;
         };
-        if let Some(editor) = &loaded.editor {
+        let LoadedKind::Vst3 { plugin, editor } = &mut loaded.kind else {
+            self.device_window = Some(slot);
+            return;
+        };
+        if let Some(editor) = editor {
             editor.focus();
             return;
         }
-        let title = format!("{} - feeling-noob", loaded.plugin.info.name);
-        match loaded.plugin.open_editor(&title) {
-            Ok(editor) => loaded.editor = Some(editor),
+        let title = format!("{} - feeling-noob", plugin.info.name);
+        match plugin.open_editor(&title) {
+            Ok(opened) => *editor = Some(opened),
             Err(e) => self.message = Some(e.to_string()),
         }
+    }
+
+    pub(crate) fn set_builtin_insert(&mut self, owner: Owner, index: usize, effect: BuiltinEffect) {
+        self.capture_plugin_states();
+        self.edit(|p| {
+            let slot = PluginSlot::builtin(p.alloc_id(), effect);
+            let inserts = match owner {
+                Owner::Track(id) => match p.track_mut(id) {
+                    Some(t) => &mut t.strip.inserts,
+                    None => return,
+                },
+                Owner::Bus => &mut p.bus.inserts,
+            };
+            if index < inserts.len() {
+                inserts[index] = slot;
+            } else if inserts.len() < MAX_INSERTS {
+                inserts.push(slot);
+            }
+        });
     }
 
     pub(crate) fn is_plugin_loaded(&self, slot: Id) -> bool {
@@ -472,6 +579,7 @@ impl App {
             bypass: false,
             component_state: String::new(),
             controller_state: None,
+            builtin: None,
         }
     }
 
@@ -510,12 +618,14 @@ impl App {
         });
     }
 
-    pub(crate) fn set_instrument(&mut self, track: Id, entry: Option<&CatalogEntry>) {
+    pub(crate) fn set_instrument(&mut self, track: Id, choice: &InstrumentChoice) {
         self.capture_plugin_states();
         self.edit(|p| {
-            let instrument = match entry {
-                Some(e) => Instrument::Vst3(Self::new_slot(p, e)),
-                None => Instrument::BasicSynth(SynthParams::default()),
+            let instrument = match choice {
+                InstrumentChoice::Vst3(e) => Instrument::Vst3(Self::new_slot(p, e)),
+                InstrumentChoice::BasicSynth => Instrument::BasicSynth(SynthParams::default()),
+                InstrumentChoice::Sampler => Instrument::Sampler(SamplerParams::default()),
+                InstrumentChoice::DrumSampler => Instrument::DrumSampler(Box::default()),
             };
             if let Some(t) = p.track_mut(track) {
                 t.instrument = Some(instrument);

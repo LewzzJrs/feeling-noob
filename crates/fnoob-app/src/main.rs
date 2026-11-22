@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod bounce;
 mod browser;
+mod devices;
 mod files;
 mod inspector;
 mod instrument;

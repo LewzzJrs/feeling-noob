@@ -154,6 +154,7 @@ pub struct App {
     pub(crate) focus: Focus,
     editor_rect: Option<Rect>,
     pub(crate) synth_window: Option<Id>,
+    pub(crate) device_window: Option<Id>,
     live_origin: Option<(egui::Id, Project)>,
     stopped_tick: u64,
     show_settings: bool,
@@ -231,6 +232,7 @@ impl App {
             focus: Focus::Tracks,
             editor_rect: None,
             synth_window: None,
+            device_window: None,
             live_origin: None,
             stopped_tick: 0,
             show_settings: false,
@@ -903,7 +905,9 @@ impl App {
                     .add_enabled(synth.is_some(), egui::Button::new("Instrument Settings..."))
                     .clicked()
                 {
-                    self.synth_window = synth;
+                    if let Some(track) = synth {
+                        self.open_instrument(track);
+                    }
                     ui.close();
                 }
                 ui.separator();
@@ -1678,6 +1682,7 @@ impl eframe::App for App {
             });
         self.settings_window(&ctx);
         self.synth_settings_window(&ctx);
+        self.device_window(&ctx);
         self.project_settings_window(&ctx);
         self.cleanup_window(&ctx);
         self.recovery_window(&ctx);

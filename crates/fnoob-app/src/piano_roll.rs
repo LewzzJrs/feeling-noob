@@ -428,8 +428,8 @@ impl App {
             {
                 self.editor_command(Command::Quantize);
             }
-            if ui.button("Synth...").clicked() {
-                self.synth_window = Some(track);
+            if ui.button("Instrument...").clicked() {
+                self.open_instrument(track);
             }
             if ui.button("Close").clicked() {
                 self.editor.open = false;

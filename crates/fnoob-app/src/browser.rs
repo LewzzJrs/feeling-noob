@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::plugins::Owner;
+use crate::plugins::{InstrumentChoice, Owner};
 use eframe::egui::{self, RichText};
 use fnoob_core::catalog::CatalogEntry;
 use fnoob_core::model::{Id, MAX_INSERTS, TrackKind};
@@ -10,18 +10,20 @@ use std::sync::Arc;
 
 const MAX_SAMPLES: usize = 2000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BrowserItem {
-    Instrument(Option<CatalogEntry>),
+    Instrument(InstrumentChoice),
     Effect(CatalogEntry),
+    Builtin(fnoob_core::effects::BuiltinEffect),
     Sample(PathBuf),
 }
 
 impl BrowserItem {
     pub fn label(&self) -> String {
         match self {
-            Self::Instrument(None) => "Basic Synth".to_owned(),
-            Self::Instrument(Some(entry)) | Self::Effect(entry) => entry.class.name.clone(),
+            Self::Instrument(choice) => choice.label(),
+            Self::Effect(entry) => entry.class.name.clone(),
+            Self::Builtin(effect) => effect.label().to_owned(),
             Self::Sample(path) => path
                 .file_name()
                 .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
@@ -116,7 +118,7 @@ impl App {
 
     pub(crate) fn apply_browser_item(&mut self, item: &BrowserItem, track: Option<Id>, tick: u64) {
         match item {
-            BrowserItem::Instrument(entry) => {
+            BrowserItem::Instrument(choice) => {
                 let target = track.filter(|id| {
                     self.project
                         .track(*id)
@@ -132,7 +134,23 @@ impl App {
                         created
                     }
                 };
-                self.set_instrument(target, entry.as_ref());
+                self.set_instrument(target, choice);
+                self.selection.track = Some(target);
+            }
+            BrowserItem::Builtin(effect) => {
+                let Some(target) = track.or(self.selection.track) else {
+                    self.message = Some("Select a track first, or drop the effect on one.".into());
+                    return;
+                };
+                let used = self
+                    .project
+                    .track(target)
+                    .map_or(MAX_INSERTS, |t| t.strip.inserts.len());
+                if used >= MAX_INSERTS {
+                    self.message = Some("All insert slots on this track are full.".into());
+                    return;
+                }
+                self.set_builtin_insert(Owner::Track(target), used, *effect);
                 self.selection.track = Some(target);
             }
             BrowserItem::Effect(entry) => {
@@ -234,8 +252,11 @@ impl App {
             egui::CollapsingHeader::new("Instruments")
                 .default_open(true)
                 .show(ui, |ui| {
-                    if matches(&search, "Basic Synth") {
-                        self.browser_row(ui, BrowserItem::Instrument(None), "Built-in synthesizer");
+                    for choice in InstrumentChoice::BUILTIN {
+                        if matches(&search, &choice.label()) {
+                            let detail = choice.detail();
+                            self.browser_row(ui, BrowserItem::Instrument(choice), &detail);
+                        }
                     }
                     let entries: Vec<CatalogEntry> = self
                         .plugins
@@ -246,13 +267,19 @@ impl App {
                         .cloned()
                         .collect();
                     for entry in entries {
-                        let detail = entry.class.vendor.clone();
-                        self.browser_row(ui, BrowserItem::Instrument(Some(entry)), &detail);
+                        let choice = InstrumentChoice::Vst3(entry);
+                        let detail = choice.detail();
+                        self.browser_row(ui, BrowserItem::Instrument(choice), &detail);
                     }
                 });
             egui::CollapsingHeader::new("Audio Effects")
                 .default_open(true)
                 .show(ui, |ui| {
+                    for effect in fnoob_core::effects::BuiltinEffect::all() {
+                        if matches(&search, effect.label()) {
+                            self.browser_row(ui, BrowserItem::Builtin(effect), "Built-in effect");
+                        }
+                    }
                     let entries: Vec<CatalogEntry> = self
                         .plugins
                         .catalog
