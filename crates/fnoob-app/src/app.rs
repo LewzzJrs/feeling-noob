@@ -121,6 +121,8 @@ pub struct App {
     pub(crate) drag: Option<Drag>,
     pub(crate) renaming: Option<(Id, String)>,
     pub(crate) editor: Editor,
+    pub(crate) mixer_open: bool,
+    pub(crate) meters: crate::mixer::Meters,
     pub(crate) focus: Focus,
     editor_rect: Option<Rect>,
     pub(crate) synth_window: Option<Id>,
@@ -178,6 +180,8 @@ impl App {
             drag: None,
             renaming: None,
             editor: Editor::default(),
+            mixer_open: false,
+            meters: crate::mixer::Meters::default(),
             focus: Focus::Tracks,
             editor_rect: None,
             synth_window: None,
@@ -464,7 +468,7 @@ impl App {
             Command::ToggleCountIn => {
                 self.edit(|p| p.metronome.count_in_enabled = !p.metronome.count_in_enabled);
             }
-            Command::ToggleMixer => self.not_yet("The mixer"),
+            Command::ToggleMixer => self.toggle_mixer(),
             Command::TogglePianoRoll | Command::ToggleEditor => self.toggle_editor(),
             Command::Quantize => {
                 if regions.is_empty() {
@@ -791,6 +795,7 @@ impl App {
                 self.menu_item(ui, "Count-in", Command::ToggleCountIn);
             });
             ui.menu_button("View", |ui| {
+                self.menu_item(ui, "Mixer", Command::ToggleMixer);
                 self.menu_item(ui, "Piano Roll", Command::TogglePianoRoll);
                 ui.separator();
                 self.menu_item(ui, "Zoom In", Command::ZoomIn);
@@ -1326,7 +1331,14 @@ impl eframe::App for App {
         egui::Panel::top("control_bar").show(ui, |ui| self.control_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         self.editor_rect = None;
-        if self.editor.open {
+        self.update_meters();
+        if self.mixer_open {
+            egui::Panel::bottom("mixer")
+                .resizable(true)
+                .default_size(400.0)
+                .size_range(260.0..=900.0)
+                .show(ui, |ui| self.mixer(ui));
+        } else if self.editor.open {
             let panel = egui::Panel::bottom("piano_roll")
                 .resizable(true)
                 .default_size(320.0)
@@ -1352,6 +1364,8 @@ impl eframe::App for App {
         self.update_preview();
         if self.transport_state() != TransportState::Stopped || self.editor.preview.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
+        } else if self.mixer_open {
+            ctx.request_repaint_after(Duration::from_millis(33));
         }
     }
 }

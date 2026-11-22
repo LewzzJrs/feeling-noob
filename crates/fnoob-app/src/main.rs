@@ -5,6 +5,7 @@ mod audio;
 mod instrument;
 mod keys;
 mod midi;
+mod mixer;
 mod piano_roll;
 mod timeline;
 

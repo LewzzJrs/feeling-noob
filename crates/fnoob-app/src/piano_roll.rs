@@ -183,6 +183,7 @@ impl App {
         self.editor.region = Some(region_id);
         self.editor.selected.clear();
         self.editor.open = true;
+        self.mixer_open = false;
     }
 
     pub(crate) fn toggle_editor(&mut self) {
@@ -200,6 +201,7 @@ impl App {
             Some(id) if self.project.find_region(id).is_some() => self.open_editor(id),
             _ => self.editor.open = true,
         }
+        self.mixer_open = false;
     }
 
     fn preview(&mut self, track: Id, pitch: u8, velocity: u8) {

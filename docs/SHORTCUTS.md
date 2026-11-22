@@ -19,11 +19,10 @@ Each entry: file, what was skipped, when it needs fixing.
 | S14 | `crates/fnoob-app/src/timeline.rs` (`update_region_drag`) | Dragging regions to another track only works for a single region; multi-region drags move horizontally only. | When multi-track moves are needed. |
 | S15 | `crates/fnoob-app/src/timeline.rs` (`update_region_resize`) | Only the right edge of a region can be dragged. The left edge (trim the start) is not supported. | When trimming starts is needed. |
 | S16 | `crates/fnoob-core/src/history.rs` | Undo stores a full copy of the project per step (planned in `SPEC.md` 4.6). | If memory use becomes a problem. |
-| S17 | `crates/fnoob-app/src/app.rs` (`run`) | Mixer and Bounce commands only show "not available yet". | Phases 6 and 7. |
+| S17 | `crates/fnoob-app/src/app.rs` (`run`) | The Bounce command only shows "not available yet". | Phase 7. |
 | S18 | `crates/fnoob-app/src/app.rs` (`control_bar`) | The control bar does not wrap; on narrow windows its right side is cut off. | When window layout is polished (Phase 8). |
 | S19 | `crates/fnoob-engine/src/processor.rs` (`drain_midi`), `midi_in.rs` | MIDI input is applied at the start of each audio block; the `midir` timestamp is ignored. Timing can be off by up to one buffer (about 10 ms). | Phase 5, together with latency measurement. |
 | S20 | `crates/fnoob-engine/src/midi_in.rs` (`parse_message`) | Only note on/off is read. Sustain pedal, pitch bend, and other controllers are ignored. | After the MVP. |
-| S21 | `crates/fnoob-engine/src/processor.rs` (`process`) | Tracks are summed without a mixer and clamped to ±1.0. Many loud notes can clip. | Phase 6 (mixer). |
 | S22 | `crates/fnoob-engine/src/synth.rs` (`free_voice`) | When all 16 voices are busy, the stolen voice is cut instantly, which can click. | If it is audible in normal use. |
 | S23 | `crates/fnoob-engine/src/processor.rs` (`set_plan`) | A voice that is already sounding keeps its old end time when its note is moved or deleted during playback. | If it confuses users. |
 | S24 | `crates/fnoob-app/src/piano_roll.rs` | No rubber-band selection and no separate pointer/pencil tools: clicking empty space always adds a note. Notes moved past the region end are kept but do not play. | When the editor gets more tools. |
@@ -36,6 +35,9 @@ Each entry: file, what was skipped, when it needs fixing.
 | S31 | `crates/fnoob-app/src/audio.rs` (`prepare_audio_take`, `import_audio`) | Recording and importing audio need a saved project folder; there is no temporary folder for untitled projects. | Phase 7. |
 | S32 | `crates/fnoob-app/src/timeline.rs` | Audio regions have no fades, and their gain can only be changed in `project.json`. | Phase 6 (mixer) or later. |
 | S33 | `crates/fnoob-app/src/timeline.rs` (`input_options`) | The input channel list follows the currently open input device; with no input open it shows 2 channels. | When devices with many inputs are tested. |
+| S34 | `crates/fnoob-app/src/mixer.rs` | Insert slots are shown but disabled until VST3 hosting arrives. | Phase 6b. |
+| S35 | `crates/fnoob-app/src/mixer.rs` | Meters show a decaying peak only: no peak hold, no clip indicator, no dB scale. | Phase 8 polish. |
+| S36 | `crates/fnoob-core/src/model.rs` (`Track`) | Track mute and solo stay on `Track`, not inside `strip` as the `SPEC.md` 4.3 example shows. | When the project format is next changed. |
 
 ## Fixed
 
@@ -46,3 +48,4 @@ Each entry: file, what was skipped, when it needs fixing.
 | S8 | Phase 4 | The placeholder beep is gone; MIDI regions play their notes through the Basic Synth. |
 | S10 | Phase 5 | Record captures audio on armed audio tracks as well as MIDI. |
 | S13 | Phase 5 | Playback and recording are blocked when the project and device sample rates differ. |
+| S21 | Phase 6 | Tracks go through the mixer (volume, pan, send, Bus 1, Master) before the output safety clamp. |
