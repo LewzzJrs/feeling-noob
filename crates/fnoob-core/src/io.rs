@@ -1,7 +1,7 @@
 use crate::fsutil::write_atomic;
 use crate::model::{
-    FORMAT_VERSION, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MIN_GAIN_DB, Project, RegionContent,
-    SILENT_DB, Track,
+    FORMAT_VERSION, Id, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MAX_INSERTS, MIN_GAIN_DB,
+    PluginSlot, Project, RegionContent, SILENT_DB, Track,
 };
 use crate::time::{MAX_BPM, MIN_BPM};
 use serde::Deserialize;
@@ -100,6 +100,9 @@ pub fn validate(project: &Project) -> Result<(), String> {
     {
         return Err("bus or master settings are invalid".into());
     }
+    if project.bus.inserts.len() > MAX_INSERTS {
+        return Err("Bus 1 has too many inserts".into());
+    }
     if !(1..=8).contains(&project.metronome.count_in_bars) {
         return Err("count-in must be 1 to 8 bars".into());
     }
@@ -123,12 +126,14 @@ pub fn validate(project: &Project) -> Result<(), String> {
             return Err(format!("duplicate id {}", track.id));
         }
         validate_track(project, track)?;
+        validate_slots(track.plugin_slots(), &mut ids)?;
         for region in &track.regions {
             if !ids.insert(region.id) {
                 return Err(format!("duplicate id {}", region.id));
             }
         }
     }
+    validate_slots(project.bus.inserts.iter(), &mut ids)?;
     if ids.iter().any(|&id| id >= project.next_id) {
         return Err("next_id is lower than an existing id".into());
     }
@@ -143,7 +148,25 @@ pub fn is_safe_relative_path(path: &str) -> bool {
             .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
+fn validate_slots<'a>(
+    slots: impl Iterator<Item = &'a PluginSlot>,
+    ids: &mut HashSet<Id>,
+) -> Result<(), String> {
+    for slot in slots {
+        if !slot.is_valid() {
+            return Err(format!("plugin slot {} has an invalid class id", slot.id));
+        }
+        if !ids.insert(slot.id) {
+            return Err(format!("duplicate id {}", slot.id));
+        }
+    }
+    Ok(())
+}
+
 fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
+    if track.strip.inserts.len() > MAX_INSERTS {
+        return Err(format!("track {} has too many inserts", track.id));
+    }
     if !track.strip.is_valid() {
         return Err(format!("track {} has invalid mixer settings", track.id));
     }
@@ -212,6 +235,33 @@ mod tests {
         let file = add_audio_file(&mut p, "audio/Audio 1-01.wav".into(), 1, 48_000);
         add_audio_region(&mut p, audio, 0, file, 0);
         p
+    }
+
+    fn test_slot(id: Id) -> PluginSlot {
+        PluginSlot {
+            id,
+            class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
+            name: "Verb".into(),
+            path_hint: "C:/Program Files/Common Files/VST3/Verb.vst3".into(),
+            bypass: false,
+            component_state: "AAEC".into(),
+            controller_state: None,
+        }
+    }
+
+    #[test]
+    fn plugin_slots_round_trip() {
+        let mut p = sample_project();
+        let id = p.alloc_id();
+        p.tracks[1].strip.inserts.push(test_slot(id));
+        let id = p.alloc_id();
+        p.tracks[0].instrument = Some(Instrument::Vst3(test_slot(id)));
+        let id = p.alloc_id();
+        p.bus.inserts.push(test_slot(id));
+        validate(&p).unwrap();
+        let json = serde_json::to_vec(&p).unwrap();
+        assert_eq!(from_json(&json).unwrap(), p);
+        assert_eq!(p.tracks[0].synth(), None);
     }
 
     #[test]
@@ -332,6 +382,23 @@ mod tests {
             |p| p.tracks[0].strip.send.level_db = f32::NAN,
             |p| p.bus.volume_db = -200.0,
             |p| p.master.volume_db = 7.0,
+            |p| {
+                let mut slot = test_slot(p.next_id);
+                p.next_id += 1;
+                slot.class_id = "nothex".into();
+                p.tracks[0].strip.inserts.push(slot);
+            },
+            |p| {
+                let slot = test_slot(p.tracks[0].id);
+                p.bus.inserts.push(slot);
+            },
+            |p| {
+                for _ in 0..5 {
+                    let slot = test_slot(p.next_id);
+                    p.next_id += 1;
+                    p.tracks[0].strip.inserts.push(slot);
+                }
+            },
         ];
         for (i, break_it) in cases.into_iter().enumerate() {
             let mut p = sample_project();

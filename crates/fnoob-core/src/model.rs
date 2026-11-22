@@ -133,6 +133,26 @@ impl Default for SynthParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Instrument {
     BasicSynth(SynthParams),
+    Vst3(PluginSlot),
+}
+
+pub const MAX_INSERTS: usize = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSlot {
+    pub id: Id,
+    pub class_id: String,
+    pub name: String,
+    pub path_hint: String,
+    pub bypass: bool,
+    pub component_state: String,
+    pub controller_state: Option<String>,
+}
+
+impl PluginSlot {
+    pub fn is_valid(&self) -> bool {
+        self.class_id.len() == 32 && self.class_id.chars().all(|c| c.is_ascii_hexdigit())
+    }
 }
 
 impl Default for Instrument {
@@ -179,12 +199,13 @@ pub struct Send {
     pub pre_fader: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChannelStrip {
     pub volume_db: f32,
     pub pan: f32,
     pub send: Send,
+    pub inserts: Vec<PluginSlot>,
 }
 
 impl Default for ChannelStrip {
@@ -196,6 +217,7 @@ impl Default for ChannelStrip {
                 level_db: SILENT_DB,
                 pre_fader: false,
             },
+            inserts: Vec::new(),
         }
     }
 }
@@ -216,6 +238,7 @@ pub struct Bus {
     pub volume_db: f32,
     pub pan: f32,
     pub mute: bool,
+    pub inserts: Vec<PluginSlot>,
 }
 
 impl Default for Bus {
@@ -225,6 +248,7 @@ impl Default for Bus {
             volume_db: 0.0,
             pan: 0.0,
             mute: false,
+            inserts: Vec::new(),
         }
     }
 }
@@ -341,9 +365,18 @@ pub struct Track {
 }
 
 impl Track {
+    pub fn plugin_slots(&self) -> impl Iterator<Item = &PluginSlot> {
+        let instrument = match &self.instrument {
+            Some(Instrument::Vst3(slot)) => Some(slot),
+            _ => None,
+        };
+        instrument.into_iter().chain(self.strip.inserts.iter())
+    }
+
     pub fn synth(&self) -> Option<SynthParams> {
         match (&self.kind, &self.instrument) {
             (TrackKind::Instrument, Some(Instrument::BasicSynth(params))) => Some(*params),
+            (TrackKind::Instrument, Some(Instrument::Vst3(_))) => None,
             (TrackKind::Instrument, None) => Some(SynthParams::default()),
             (TrackKind::Audio, _) => None,
         }

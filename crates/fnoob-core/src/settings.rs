@@ -12,6 +12,7 @@ pub struct Settings {
     pub buffer_frames: Option<u32>,
     pub record_format: RecordFormat,
     pub midi_input: MidiInputChoice,
+    pub plugin_folders: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +132,7 @@ mod tests {
             buffer_frames: Some(256),
             record_format: RecordFormat::Int24,
             midi_input: MidiInputChoice::Port("Keyboard 1".into()),
+            plugin_folders: vec!["D:/Plugins".into()],
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);
