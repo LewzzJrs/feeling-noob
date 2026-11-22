@@ -11,7 +11,6 @@ Each entry: file, what was skipped, when it needs fixing.
 | S1 | `crates/fnoob-engine/src/device.rs` | Only the `f32` sample format is supported. Devices with other formats are rejected with an error. WASAPI shared mode is almost always `f32`. | When a device gets rejected. |
 | S2 | `crates/fnoob-engine/src/device.rs` (`stream_config`) | The chosen buffer size is used only when the device reports a size range that contains it. In WASAPI shared mode Windows often fixes the size, so the setting may have no effect. | When WASAPI exclusive mode is added (roadmap). |
 | S3 | `crates/fnoob-engine/src/device.rs` | Stream errors only keep the `ErrorKind`; the detailed message is lost. No automatic reconnect; the user clicks "Reopen device" in the settings window. | Phase 8, or earlier if it happens often. |
-| S6 | `crates/fnoob-app/src/main.rs` | The window icon is still the default `eframe` icon. | Phase 8 (original icon). |
 | S7 | `crates/fnoob-core/src/fsutil.rs`, `settings.rs`, `io.rs` (tests) | Tests use folders in `%TEMP%` named by PID instead of the `tempfile` crate. | If tests start colliding when run in parallel. |
 | S9 | `crates/fnoob-app/src/app.rs` (`sync_plan`) | The whole render plan is rebuilt and sent on every edit, including every frame of a drag. | When large projects feel slow (Phase 7 check). |
 | S12 | `crates/fnoob-app/src/app.rs` (`open`) | Open uses a folder picker for the `.fnoob` folder instead of picking `project.json`. | Phase 8 polish. |
@@ -38,9 +37,12 @@ Each entry: file, what was skipped, when it needs fixing.
 | S40 | `crates/fnoob-platform/src/plugin/editor.rs` | Editor windows cannot be resized by the user and ignore display scaling requests. | Phase 8 polish. |
 | S41 | `crates/fnoob-engine/src/processor.rs` (`run_plugin`) | Plugins may allocate inside their own processing; the no-allocation check is switched off around plugin calls. | Cannot be fixed for third-party code. |
 | S42 | `crates/fnoob-app/src/plugins.rs` (`start_scan`) | Rescan always scans every plugin again. There is no way to rescan or block a single plugin. Error dialogs from broken plugins are moved to a hidden desktop on the scanner's main thread only; a dialog from another thread could still show. | When the plugin list grows. |
-| S43 | `crates/fnoob-app/src/plugins.rs` (`scanner_path`) | `fnoob-scan.exe` must sit next to the app; during development it is built with `cargo build --workspace`. | Phase 8 (installer). |
 | S44 | `crates/fnoob-app/src/bounce.rs` | Bounce uses fresh plugin copies in real-time mode, not the VST3 offline mode. The whole-song tail is a fixed 2 seconds, so longer reverb tails are cut. | If plugins sound different in bounces. |
 | S45 | `crates/fnoob-app/src/files.rs` (`tick_autosave`) | Autosave writes on the UI thread every 60 seconds; the interval cannot be changed. Untitled projects share one recovery slot in `%APPDATA%`. | If autosave stutters large projects. |
+| S46 | `crates/fnoob-engine/src/record.rs` | A WAV file being recorded only gets its final header when recording stops; if the app crashes mid-take, that file cannot be opened. | When crash-safe recording is needed. |
+| S47 | `crates/fnoob-platform/src/plugin/com.rs` (`ComponentHandler`) | Parameter edits sent by a plugin go through a mutex; a plugin that sends them from the audio thread would lock there. | If a plugin is seen doing this. |
+| S48 | `installer/` | The installer is a ZIP with PowerShell scripts, not a signed setup program. Windows SmartScreen may warn on first start because the exe is not code-signed. | When a code-signing certificate is available. |
+| S49 | `Cargo.lock` | No automated dependency vulnerability check (`cargo audit`) has been run; the tool is not installed. | Before the first public release. |
 
 ## Fixed
 
@@ -58,3 +60,5 @@ Each entry: file, what was skipped, when it needs fixing.
 | S28 | Phase 7 | File > Move Unused Audio Files moves files no snapshot uses into `audio/unused/`. |
 | S31 | Phase 7 | Recording or importing audio in an untitled project asks for Save As first. |
 | S39 | Phase 7 | Plugin states are written into the project before an insert or instrument changes, so undo restores them. |
+| S6 | Phase 8 | Original app icon in the window and the exe, plus version info. |
+| S43 | Phase 8 | The release package puts `fnoob-scan.exe` next to the app. |

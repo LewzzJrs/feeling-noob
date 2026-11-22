@@ -47,10 +47,20 @@ cargo run -p fnoob-app -- "C:\path\to\MySong.fnoob"
 Release build:
 
 ```powershell
-cargo build --release -p fnoob-app
+cargo build --release --workspace
 ```
 
-The executable is written to `target\release\fnoob-app.exe`.
+The executables are written to `target\release\`. The C runtime is linked statically, so no Visual C++ redistributable is needed.
+
+## Install
+
+Build the release package:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\make-package.ps1
+```
+
+This writes `dist\feeling-noob-<version>-windows-x64.zip`. Unzip it and run `Install.cmd`. The app is installed for the current user in `%LOCALAPPDATA%\Programs\feeling-noob`, gets a Start menu entry, and shows up in Windows "Installed apps". `Uninstall.cmd` (or Installed apps) removes it and keeps your projects and settings.
 
 ## Tests
 
