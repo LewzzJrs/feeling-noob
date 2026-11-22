@@ -2,8 +2,8 @@ use crate::audio_data::{AudioData, AudioPool};
 use crate::session::Session;
 use crate::synth::Synth;
 use fnoob_core::model::{
-    AudioInput, Automation, ChannelStrip, Id, Instrument, MAX_INSERTS, PluginSlot, Project,
-    RegionContent, TrackKind, db_to_gain, pan_gains,
+    AudioInput, Automation, ChannelStrip, Id, Instrument, MAX_INSERTS, MAX_RETURNS, Output,
+    PluginSlot, Project, RegionContent, TrackKind, db_to_gain, pan_gains,
 };
 use fnoob_core::time::{Timeline, ticks_per_beat};
 use std::collections::HashMap;
@@ -127,15 +127,24 @@ pub struct RenderPlan {
     pub tracks: Vec<TrackPlan>,
     pub audio_tracks: Vec<AudioTrackPlan>,
     pub records_audio: bool,
-    pub bus: (f32, f32),
-    pub bus_inserts: Inserts,
+    pub returns: Vec<ReturnPlan>,
     pub master: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReturnPlan {
+    pub gain: (f32, f32),
+    pub inserts: Inserts,
+    pub meter: usize,
+}
+
 pub const TRACK_METERS: usize = 256;
-pub const BUS_METER: usize = TRACK_METERS;
-pub const MASTER_METER: usize = TRACK_METERS + 1;
-pub const METER_SLOTS: usize = TRACK_METERS + 2;
+pub const MASTER_METER: usize = TRACK_METERS + MAX_RETURNS;
+pub const METER_SLOTS: usize = MASTER_METER + 1;
+
+pub const fn return_meter(index: usize) -> usize {
+    TRACK_METERS + index
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StripPlan {
@@ -143,8 +152,9 @@ pub struct StripPlan {
     pub pan: f32,
     pub left: f32,
     pub right: f32,
-    pub send: f32,
-    pub pre_fader: bool,
+    pub sends: [f32; MAX_RETURNS],
+    pub pre_fader: [bool; MAX_RETURNS],
+    pub to_main: bool,
     pub meter: usize,
     pub inserts: Inserts,
 }
@@ -158,7 +168,7 @@ fn inserts(slots: &[PluginSlot], plugins: &PluginMap) -> Inserts {
 }
 
 impl StripPlan {
-    pub fn new(strip: &ChannelStrip, meter: usize, plugins: &PluginMap) -> Self {
+    pub fn new(strip: &ChannelStrip, meter: usize, plugins: &PluginMap, to_main: bool) -> Self {
         let gain = db_to_gain(strip.volume_db);
         let (left, right) = pan_gains(strip.pan);
         Self {
@@ -166,8 +176,9 @@ impl StripPlan {
             pan: strip.pan,
             left: gain * left,
             right: gain * right,
-            send: db_to_gain(strip.send.level_db),
-            pre_fader: strip.send.pre_fader,
+            sends: std::array::from_fn(|i| db_to_gain(strip.send_at(i).level_db)),
+            pre_fader: std::array::from_fn(|i| strip.send_at(i).pre_fader),
+            to_main,
             meter: if meter < TRACK_METERS {
                 meter
             } else {
@@ -241,13 +252,13 @@ fn audio_track_plans(
             AudioTrackPlan {
                 id: track.id,
                 audible,
-                strip: StripPlan::new(&track.strip, index, plugins),
+                strip: StripPlan::new(&track.strip, index, plugins, track.output == Output::Main),
                 envelopes: Envelopes::new(&track.automation, timeline),
                 clips,
                 session: Session::build(track, timeline, pool),
                 cursor: 0,
                 input: track.audio_input.unwrap_or_default(),
-                monitor: track.input_monitoring && audible,
+                monitor: project.monitors(track) && audible,
                 record: track.record_enabled,
                 left: vec![0.0; MAX_BLOCK],
                 right: vec![0.0; MAX_BLOCK],
@@ -303,7 +314,7 @@ fn track_plans(
             TrackPlan {
                 id: track.id,
                 audible,
-                strip: StripPlan::new(&track.strip, index, plugins),
+                strip: StripPlan::new(&track.strip, index, plugins, track.output == Output::Main),
                 envelopes: Envelopes::new(&track.automation, timeline),
                 notes,
                 session: Session::build(track, timeline, pool),
@@ -380,16 +391,25 @@ impl RenderPlan {
             ),
             tracks: track_plans(project, timeline, pool, plugins),
             audio_tracks: audio_track_plans(project, timeline, pool, plugins),
-            bus: {
-                let gain = if project.bus.mute {
-                    0.0
-                } else {
-                    db_to_gain(project.bus.volume_db)
-                };
-                let (left, right) = pan_gains(project.bus.pan);
-                (gain * left, gain * right)
-            },
-            bus_inserts: inserts(&project.bus.inserts, plugins),
+            returns: project
+                .returns
+                .iter()
+                .take(MAX_RETURNS)
+                .enumerate()
+                .map(|(index, ret)| {
+                    let gain = if ret.mute {
+                        0.0
+                    } else {
+                        db_to_gain(ret.volume_db)
+                    };
+                    let (left, right) = pan_gains(ret.pan);
+                    ReturnPlan {
+                        gain: (gain * left, gain * right),
+                        inserts: inserts(&ret.inserts, plugins),
+                        meter: return_meter(index),
+                    }
+                })
+                .collect(),
             master: db_to_gain(project.master.volume_db),
             records_audio: project
                 .tracks

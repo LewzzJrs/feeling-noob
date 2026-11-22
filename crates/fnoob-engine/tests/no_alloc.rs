@@ -33,7 +33,11 @@ fn process_does_not_allocate() {
     for bar in 0..4 {
         add_audio_region(&mut project, audio, bar * 1920, file, bar * 100);
     }
-    project.tracks[1].input_monitoring = true;
+    project.tracks[1].monitor = fnoob_core::model::Monitor::In;
+    fnoob_core::edit::add_return(&mut project, "One", None);
+    fnoob_core::edit::add_return(&mut project, "Two", None);
+    project.tracks[1].strip.send_mut(1).level_db = -6.0;
+    project.tracks[0].output = fnoob_core::model::Output::None;
     let mut drums = fnoob_core::model::DrumParams::default();
     for pad in &mut drums.pads {
         pad.file = Some(file);
@@ -73,8 +77,7 @@ fn process_does_not_allocate() {
             .push(fnoob_core::model::PluginSlot::builtin(*id, *effect));
     }
     for (id, effect) in &builtin_slots[4..] {
-        project
-            .bus
+        project.returns[1]
             .inserts
             .push(fnoob_core::model::PluginSlot::builtin(*id, *effect));
     }

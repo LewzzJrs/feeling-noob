@@ -2,13 +2,13 @@ use crate::audio_data::AudioData;
 use crate::effects::BuiltinProcessor;
 use crate::metronome::Metronome;
 use crate::plan::{
-    AudioTrackPlan, BUS_METER, Inserts, MASTER_METER, MAX_BLOCK, MAX_PLUGINS, METER_SLOTS, NO_OFF,
-    RenderPlan, StripPlan, TRACK_METERS, TrackPlan,
+    AudioTrackPlan, Inserts, MASTER_METER, MAX_BLOCK, MAX_PLUGINS, METER_SLOTS, NO_OFF, RenderPlan,
+    StripPlan, TRACK_METERS, TrackPlan,
 };
 use crate::session::{Session, SessionStatus};
 use fnoob_core::capture::Played;
 use fnoob_core::effects::BuiltinEffect;
-use fnoob_core::model::Id;
+use fnoob_core::model::{Id, MAX_RETURNS};
 use fnoob_core::time::{beat_start_sample, first_beat_at_or_after};
 use fnoob_platform::plugin::{PluginProcessor, Transport};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
@@ -295,8 +295,8 @@ pub struct Processor {
     plugins: Vec<Option<EngineSlot>>,
     main_left: Vec<f32>,
     main_right: Vec<f32>,
-    bus_left: Vec<f32>,
-    bus_right: Vec<f32>,
+    return_left: Vec<Vec<f32>>,
+    return_right: Vec<Vec<f32>>,
     click: Vec<f32>,
     positions: Vec<u64>,
     preview: Option<Arc<AudioData>>,
@@ -348,8 +348,8 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         plugins: (0..MAX_PLUGINS).map(|_| None).collect(),
         main_left: vec![0.0; MAX_BLOCK],
         main_right: vec![0.0; MAX_BLOCK],
-        bus_left: vec![0.0; MAX_BLOCK],
-        bus_right: vec![0.0; MAX_BLOCK],
+        return_left: (0..MAX_RETURNS).map(|_| vec![0.0; MAX_BLOCK]).collect(),
+        return_right: (0..MAX_RETURNS).map(|_| vec![0.0; MAX_BLOCK]).collect(),
         click: vec![0.0; MAX_BLOCK],
         positions: vec![0; MAX_BLOCK],
         preview: None,
@@ -1073,25 +1073,34 @@ impl Processor {
             }
             self.main_left[f] = mix.main.0;
             self.main_right[f] = mix.main.1;
-            self.bus_left[f] = mix.bus.0;
-            self.bus_right[f] = mix.bus.1;
+            for (index, (left, right)) in mix.returns.iter().enumerate() {
+                self.return_left[index][f] = *left;
+                self.return_right[index][f] = *right;
+            }
         }
-        run_inserts(
-            &mut self.plugins,
-            &self.plan.bus_inserts,
-            &mut self.bus_left[..frames],
-            &mut self.bus_right[..frames],
-            &transport,
-        );
-        for (f, frame) in out.chunks_exact_mut(self.channels).enumerate() {
-            let (bus_l, bus_r) = (
-                self.bus_left[f] * self.plan.bus.0,
-                self.bus_right[f] * self.plan.bus.1,
+        let count = self.plan.returns.len().min(MAX_RETURNS);
+        for index in 0..count {
+            run_inserts(
+                &mut self.plugins,
+                &self.plan.returns[index].inserts,
+                &mut self.return_left[index][..frames],
+                &mut self.return_right[index][..frames],
+                &transport,
             );
-            peak(&mut self.peaks, BUS_METER, bus_l, bus_r);
+        }
+        for (f, frame) in out.chunks_exact_mut(self.channels).enumerate() {
+            let (mut sum_l, mut sum_r) = (self.main_left[f], self.main_right[f]);
+            for index in 0..count {
+                let plan = self.plan.returns[index];
+                let l = self.return_left[index][f] * plan.gain.0;
+                let r = self.return_right[index][f] * plan.gain.1;
+                peak(&mut self.peaks, plan.meter, l, r);
+                sum_l += l;
+                sum_r += r;
+            }
             let master = self.plan.master;
-            let left = (self.main_left[f] + bus_l) * master;
-            let right = (self.main_right[f] + bus_r) * master;
+            let left = sum_l * master;
+            let right = sum_r * master;
             peak(&mut self.peaks, MASTER_METER, left, right);
             let click = self.click[f];
             let (pl, pr) = match &self.preview {
@@ -1192,17 +1201,28 @@ fn run_inserts(
 #[derive(Default)]
 struct Mix {
     main: (f32, f32),
-    bus: (f32, f32),
+    returns: [(f32, f32); MAX_RETURNS],
 }
 
 impl Mix {
     fn add(&mut self, strip: &StripPlan, left: f32, right: f32, peaks: &mut [f32]) {
         let post = (left * strip.left, right * strip.right);
-        self.main.0 += post.0;
-        self.main.1 += post.1;
-        let source = if strip.pre_fader { (left, right) } else { post };
-        self.bus.0 += source.0 * strip.send;
-        self.bus.1 += source.1 * strip.send;
+        if strip.to_main {
+            self.main.0 += post.0;
+            self.main.1 += post.1;
+        }
+        for (index, target) in self.returns.iter_mut().enumerate() {
+            let send = strip.sends[index];
+            if send > 0.0 {
+                let source = if strip.pre_fader[index] {
+                    (left, right)
+                } else {
+                    post
+                };
+                target.0 += source.0 * send;
+                target.1 += source.1 * send;
+            }
+        }
         peak(peaks, strip.meter, post.0, post.1);
     }
 }
@@ -1304,6 +1324,7 @@ fn write_frame(frame: &mut [f32], left: f32, right: f32) {
 mod tests {
     use super::*;
     use crate::audio_data::{AudioData, AudioPool};
+    use crate::plan::return_meter;
     use fnoob_core::edit::{
         add_audio_file, add_audio_region, add_midi_region, add_note, add_track,
     };
@@ -1852,36 +1873,56 @@ mod tests {
     }
 
     #[test]
-    fn send_feeds_bus_pre_or_post_fader() {
+    fn sends_feed_returns_pre_or_post_fader() {
         let (mut project, track, _) = mixer_project();
+        fnoob_core::edit::add_return(&mut project, "One", None);
+        fnoob_core::edit::add_return(&mut project, "Two", None);
         let c = std::f32::consts::FRAC_1_SQRT_2;
         {
             let strip = &mut project.track_mut(track).unwrap().strip;
             strip.volume_db = SILENT_DB;
-            strip.send.level_db = 0.0;
+            strip.send_mut(1).level_db = 0.0;
         }
         assert_eq!(first_frame(&project).0, [0.0, 0.0]);
-        project.track_mut(track).unwrap().strip.send.pre_fader = true;
+        project
+            .track_mut(track)
+            .unwrap()
+            .strip
+            .send_mut(1)
+            .pre_fader = true;
         let (frame, h) = first_frame(&project);
         assert_close(&frame, &[0.5 * c, 0.5 * c]);
-        assert!((h.take_peak(BUS_METER) - 0.5 * c).abs() < 1e-6);
-        assert_eq!(h.take_peak(BUS_METER), 0.0);
-        project.bus.mute = true;
+        assert!((h.take_peak(return_meter(1)) - 0.5 * c).abs() < 1e-6);
+        assert_eq!(h.take_peak(return_meter(0)), 0.0);
+        project.returns[1].mute = true;
         assert_eq!(first_frame(&project).0, [0.0, 0.0]);
     }
 
     #[test]
-    fn solo_never_silences_the_bus() {
+    fn solo_never_silences_returns_and_no_output_skips_main() {
         let (mut project, track, _) = mixer_project();
+        fnoob_core::edit::add_return(&mut project, "One", None);
         let other = add_track(&mut project, TrackKind::Audio);
         project.track_mut(other).unwrap().solo = true;
-        project.track_mut(track).unwrap().strip.send.level_db = 0.0;
+        project.track_mut(track).unwrap().strip.send_mut(0).level_db = 0.0;
         assert_eq!(first_frame(&project).0, [0.0, 0.0]);
         project.track_mut(track).unwrap().solo = true;
         project.track_mut(track).unwrap().strip.volume_db = SILENT_DB;
-        project.track_mut(track).unwrap().strip.send.pre_fader = true;
+        project
+            .track_mut(track)
+            .unwrap()
+            .strip
+            .send_mut(0)
+            .pre_fader = true;
         let (frame, _) = first_frame(&project);
         assert!(frame[0] > 0.0);
+        let strip = &mut project.track_mut(track).unwrap().strip;
+        strip.volume_db = 0.0;
+        strip.send_mut(0).level_db = SILENT_DB;
+        let (frame, _) = first_frame(&project);
+        assert!(frame[0] > 0.0);
+        project.track_mut(track).unwrap().output = fnoob_core::model::Output::None;
+        assert_eq!(first_frame(&project).0, [0.0, 0.0]);
     }
 
     #[test]
@@ -1968,7 +2009,7 @@ mod tests {
     fn monitoring_passes_selected_input_channel() {
         let data = AudioData::from_samples(1, vec![0.0]);
         let (mut project, track, pool) = audio_project(&data, 0);
-        project.track_mut(track).unwrap().input_monitoring = true;
+        project.track_mut(track).unwrap().monitor = fnoob_core::model::Monitor::In;
         project.track_mut(track).unwrap().audio_input = Some(AudioInput {
             first_channel: 1,
             channels: 1,
