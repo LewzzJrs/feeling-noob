@@ -1,7 +1,11 @@
 use crate::metronome::Metronome;
-use crate::plan::{AudioTrackPlan, BUS_METER, MASTER_METER, METER_SLOTS, RenderPlan, StripPlan};
+use crate::plan::{
+    AudioTrackPlan, BUS_METER, Inserts, MASTER_METER, MAX_BLOCK, MAX_PLUGINS, METER_SLOTS, NO_OFF,
+    RenderPlan, StripPlan,
+};
 use fnoob_core::model::Id;
 use fnoob_core::time::{beat_start_sample, first_beat_at_or_after};
+use fnoob_platform::plugin::{PluginProcessor, Transport};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::fmt;
 use std::sync::Arc;
@@ -46,6 +50,11 @@ pub enum Command {
         channels: u16,
     },
     SetRecordSink(Producer<f32>),
+    InstallPlugin {
+        slot: usize,
+        plugin: Box<PluginProcessor>,
+    },
+    RemovePlugin(usize),
 }
 
 impl fmt::Debug for Command {
@@ -65,6 +74,8 @@ impl fmt::Debug for Command {
             } => write!(f, "Preview({track}, {pitch}, {velocity})"),
             Self::SetAudioInput { channels, .. } => write!(f, "SetAudioInput({channels})"),
             Self::SetRecordSink(_) => write!(f, "SetRecordSink"),
+            Self::InstallPlugin { slot, .. } => write!(f, "InstallPlugin({slot})"),
+            Self::RemovePlugin(slot) => write!(f, "RemovePlugin({slot})"),
         }
     }
 }
@@ -74,6 +85,7 @@ pub enum Garbage {
     Midi(Consumer<MidiEvent>),
     Input(Consumer<f32>),
     Sink(Producer<f32>),
+    Plugin(Box<PluginProcessor>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +234,13 @@ pub struct Processor {
     garbage: Producer<Garbage>,
     midi: Option<Consumer<MidiEvent>>,
     input: Option<Consumer<f32>>,
+    plugins: Vec<Option<Box<PluginProcessor>>>,
+    main_left: Vec<f32>,
+    main_right: Vec<f32>,
+    bus_left: Vec<f32>,
+    bus_right: Vec<f32>,
+    click: Vec<f32>,
+    frame: usize,
     peaks: [f32; METER_SLOTS],
     input_channels: usize,
     input_frame: [f32; MAX_INPUT_CHANNELS],
@@ -258,6 +277,13 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         garbage: garbage_tx,
         midi: None,
         input: None,
+        plugins: (0..MAX_PLUGINS).map(|_| None).collect(),
+        main_left: vec![0.0; MAX_BLOCK],
+        main_right: vec![0.0; MAX_BLOCK],
+        bus_left: vec![0.0; MAX_BLOCK],
+        bus_right: vec![0.0; MAX_BLOCK],
+        click: vec![0.0; MAX_BLOCK],
+        frame: 0,
         peaks: [0.0; METER_SLOTS],
         input_channels: 0,
         input_frame: [0.0; MAX_INPUT_CHANNELS],
@@ -309,8 +335,41 @@ impl Processor {
     }
 
     fn release_scheduled(&mut self) {
+        let frame = self.frame;
         for track in &mut self.plan.tracks {
             track.synth.release_scheduled();
+            if let Some(plugin) = plugin_of(&self.plugins, track.instrument) {
+                for pitch in 0..128u8 {
+                    if track.pending_offs[usize::from(pitch)] != NO_OFF {
+                        plugin.note(frame, pitch, 0);
+                    }
+                }
+            }
+            track.pending_offs = [NO_OFF; 128];
+            track.next_off = NO_OFF;
+        }
+    }
+
+    fn send_due_offs(&mut self) {
+        let (frame, position) = (self.frame, self.position);
+        for track in &mut self.plan.tracks {
+            if position < track.next_off {
+                continue;
+            }
+            let plugin = plugin_of(&self.plugins, track.instrument);
+            let mut next = NO_OFF;
+            for pitch in 0..128u8 {
+                let off = &mut track.pending_offs[usize::from(pitch)];
+                if *off <= position {
+                    if let Some(plugin) = plugin {
+                        plugin.note(frame, pitch, 0);
+                    }
+                    *off = NO_OFF;
+                } else {
+                    next = next.min(*off);
+                }
+            }
+            track.next_off = next;
         }
     }
 
@@ -357,6 +416,10 @@ impl Processor {
                 && let Some(old) = self.plan.tracks.iter().find(|t| t.id == track.id)
             {
                 track.synth.take_voices(&old.synth);
+                if old.instrument == track.instrument {
+                    track.pending_offs = old.pending_offs;
+                    track.next_off = old.next_off;
+                }
             }
         }
         let old = std::mem::replace(&mut self.plan, plan);
@@ -370,13 +433,20 @@ impl Processor {
         }
         for plan in &mut self.plan.tracks {
             plan.synth.release_live();
+            if let Some(plugin) = plugin_of(&self.plugins, plan.instrument) {
+                for pitch in 0..128u8 {
+                    plugin.note(0, pitch, 0);
+                }
+            }
         }
         self.live_track = track;
     }
 
     fn play_live(&mut self, track: Id, event: MidiEvent) {
-        if let Some(plan) = self.plan.track_mut(track) {
-            if event.velocity > 0 {
+        if let Some(plan) = self.plan.tracks.iter_mut().find(|t| t.id == track) {
+            if let Some(plugin) = plugin_of(&self.plugins, plan.instrument) {
+                plugin.note(self.frame, event.pitch, event.velocity);
+            } else if event.velocity > 0 {
                 plan.synth
                     .note_on(event.pitch, event.velocity, u64::MAX, true);
             } else {
@@ -415,6 +485,20 @@ impl Processor {
                 self.input_channels = usize::from(channels).min(MAX_INPUT_CHANNELS);
                 if let Some(old) = self.input.replace(samples) {
                     let _ = self.garbage.push(Garbage::Input(old));
+                }
+            }
+            Command::InstallPlugin { slot, plugin } => {
+                if let Some(target) = self.plugins.get_mut(slot) {
+                    if let Some(old) = target.replace(plugin) {
+                        let _ = self.garbage.push(Garbage::Plugin(old));
+                    }
+                } else {
+                    let _ = self.garbage.push(Garbage::Plugin(plugin));
+                }
+            }
+            Command::RemovePlugin(slot) => {
+                if let Some(old) = self.plugins.get_mut(slot).and_then(Option::take) {
+                    let _ = self.garbage.push(Garbage::Plugin(old));
                 }
             }
             Command::SetRecordSink(sink) => {
@@ -506,6 +590,8 @@ impl Processor {
                     | Command::SetMidiInput(_)
                     | Command::SetAudioInput { .. }
                     | Command::SetRecordSink(_)
+                    | Command::InstallPlugin { .. }
+                    | Command::RemovePlugin(_)
             );
             if returns_garbage && self.garbage.is_full() {
                 break;
@@ -564,15 +650,28 @@ impl Processor {
             self.next_beat += 1;
             self.next_beat_sample = beat_start_sample(self.next_beat, self.plan.samples_per_beat);
         }
-        let position = self.position;
+        self.send_due_offs();
+        let (position, frame) = (self.position, self.frame);
         for track in &mut self.plan.tracks {
+            let plugin = plugin_of(&self.plugins, track.instrument);
             while let Some(note) = track.notes.get(track.cursor)
                 && note.start <= position
             {
                 if note.end > position {
-                    track
-                        .synth
-                        .note_on(note.pitch, note.velocity, note.end, false);
+                    match plugin {
+                        Some(plugin) => {
+                            let slot = &mut track.pending_offs[usize::from(note.pitch.min(127))];
+                            if *slot != NO_OFF {
+                                plugin.note(frame, note.pitch, 0);
+                            }
+                            plugin.note(frame, note.pitch, note.velocity);
+                            *slot = note.end;
+                            track.next_off = track.next_off.min(note.end);
+                        }
+                        None => track
+                            .synth
+                            .note_on(note.pitch, note.velocity, note.end, false),
+                    }
                 }
                 track.cursor += 1;
             }
@@ -581,13 +680,46 @@ impl Processor {
 
     pub fn process(&mut self, out: &mut [f32]) {
         self.drain_commands();
+        self.frame = 0;
         self.drain_midi();
         self.trim_input_backlog();
         if self.channels == 0 {
             out.fill(0.0);
             return;
         }
-        for frame in out.chunks_exact_mut(self.channels) {
+        let width = MAX_BLOCK * self.channels;
+        for chunk in out.chunks_mut(width) {
+            self.render(chunk);
+        }
+        self.publish_meters();
+        self.shared.position.store(self.position, Ordering::Relaxed);
+        self.shared
+            .state
+            .store(self.state.to_u8(), Ordering::Relaxed);
+        self.shared
+            .recording
+            .store(self.recording, Ordering::Release);
+    }
+}
+
+impl Processor {
+    fn transport(&self, playing: bool, position: u64) -> Transport {
+        Transport {
+            playing,
+            position,
+            tempo: self.plan.tempo,
+            numerator: self.plan.numerator,
+            denominator: self.plan.denominator,
+            quarter_notes: position as f64 / self.plan.samples_per_tick / 960.0,
+        }
+    }
+
+    fn render(&mut self, out: &mut [f32]) {
+        let frames = out.len() / self.channels;
+        let start = self.position;
+        let started_playing = self.state == TransportState::Playing;
+        for f in 0..frames {
+            self.frame = f;
             self.read_input_frame();
             let playing = match self.state {
                 TransportState::Stopped => false,
@@ -601,11 +733,16 @@ impl Processor {
                 }
             };
             let position = self.position;
-            let mut mix = Mix::default();
+            self.click[f] = self.metronome.next_sample();
             for track in &mut self.plan.tracks {
                 if track.audible {
-                    let mono = track.synth.next_sample(position);
-                    mix.add(&track.strip, mono, mono, &mut self.peaks);
+                    let mono = if track.instrument.is_some() {
+                        0.0
+                    } else {
+                        track.synth.next_sample(position)
+                    };
+                    track.left[f] = mono;
+                    track.right[f] = mono;
                 }
             }
             for index in 0..self.plan.audio_tracks.len() {
@@ -623,31 +760,132 @@ impl Processor {
                     left += l;
                     right += r;
                 }
-                let strip = self.plan.audio_tracks[index].strip;
-                mix.add(&strip, left, right, &mut self.peaks);
+                let track = &mut self.plan.audio_tracks[index];
+                track.left[f] = left;
+                track.right[f] = right;
             }
             if playing && self.recording && self.plan.records_audio {
                 self.record_input_frame();
             }
-            let (bus_l, bus_r) = (mix.bus.0 * self.plan.bus.0, mix.bus.1 * self.plan.bus.1);
-            peak(&mut self.peaks, BUS_METER, bus_l, bus_r);
-            let master = self.plan.master;
-            let (left, right) = ((mix.main.0 + bus_l) * master, (mix.main.1 + bus_r) * master);
-            peak(&mut self.peaks, MASTER_METER, left, right);
-            let click = self.metronome.next_sample();
-            write_frame(frame, left + click, right + click);
             if playing {
                 self.position += 1;
             }
         }
-        self.publish_meters();
-        self.shared.position.store(self.position, Ordering::Relaxed);
-        self.shared
-            .state
-            .store(self.state.to_u8(), Ordering::Relaxed);
-        self.shared
-            .recording
-            .store(self.recording, Ordering::Release);
+        let transport = self.transport(started_playing, start);
+        for track in &mut self.plan.tracks {
+            if !track.audible {
+                continue;
+            }
+            if let Some(plugin) = plugin_of_mut(&mut self.plugins, track.instrument) {
+                run_plugin(
+                    plugin,
+                    &mut track.left[..frames],
+                    &mut track.right[..frames],
+                    &transport,
+                );
+            }
+            run_inserts(
+                &mut self.plugins,
+                &track.strip.inserts,
+                &mut track.left[..frames],
+                &mut track.right[..frames],
+                &transport,
+            );
+        }
+        for track in &mut self.plan.audio_tracks {
+            if track.audible {
+                run_inserts(
+                    &mut self.plugins,
+                    &track.strip.inserts,
+                    &mut track.left[..frames],
+                    &mut track.right[..frames],
+                    &transport,
+                );
+            }
+        }
+        for f in 0..frames {
+            let mut mix = Mix::default();
+            for track in &self.plan.tracks {
+                if track.audible {
+                    mix.add(&track.strip, track.left[f], track.right[f], &mut self.peaks);
+                }
+            }
+            for track in &self.plan.audio_tracks {
+                if track.audible {
+                    mix.add(&track.strip, track.left[f], track.right[f], &mut self.peaks);
+                }
+            }
+            self.main_left[f] = mix.main.0;
+            self.main_right[f] = mix.main.1;
+            self.bus_left[f] = mix.bus.0;
+            self.bus_right[f] = mix.bus.1;
+        }
+        run_inserts(
+            &mut self.plugins,
+            &self.plan.bus_inserts,
+            &mut self.bus_left[..frames],
+            &mut self.bus_right[..frames],
+            &transport,
+        );
+        for (f, frame) in out.chunks_exact_mut(self.channels).enumerate() {
+            let (bus_l, bus_r) = (
+                self.bus_left[f] * self.plan.bus.0,
+                self.bus_right[f] * self.plan.bus.1,
+            );
+            peak(&mut self.peaks, BUS_METER, bus_l, bus_r);
+            let master = self.plan.master;
+            let left = (self.main_left[f] + bus_l) * master;
+            let right = (self.main_right[f] + bus_r) * master;
+            peak(&mut self.peaks, MASTER_METER, left, right);
+            let click = self.click[f];
+            write_frame(frame, left + click, right + click);
+        }
+        self.frame = 0;
+    }
+}
+
+fn plugin_of(
+    plugins: &[Option<Box<PluginProcessor>>],
+    slot: Option<usize>,
+) -> Option<&PluginProcessor> {
+    plugins.get(slot?)?.as_deref()
+}
+
+fn plugin_of_mut(
+    plugins: &mut [Option<Box<PluginProcessor>>],
+    slot: Option<usize>,
+) -> Option<&mut PluginProcessor> {
+    plugins.get_mut(slot?)?.as_deref_mut()
+}
+
+fn run_plugin(
+    plugin: &mut PluginProcessor,
+    left: &mut [f32],
+    right: &mut [f32],
+    transport: &Transport,
+) {
+    assert_no_alloc::permit_alloc(|| plugin.process(left, right, transport));
+    for sample in left.iter_mut().chain(right.iter_mut()) {
+        if !sample.is_finite() {
+            *sample = 0.0;
+        }
+    }
+}
+
+fn run_inserts(
+    plugins: &mut [Option<Box<PluginProcessor>>],
+    inserts: &Inserts,
+    left: &mut [f32],
+    right: &mut [f32],
+    transport: &Transport,
+) {
+    for (slot, bypass) in inserts.iter().flatten() {
+        if *bypass {
+            continue;
+        }
+        if let Some(plugin) = plugin_of_mut(plugins, Some(*slot)) {
+            run_plugin(plugin, left, right, transport);
+        }
     }
 }
 

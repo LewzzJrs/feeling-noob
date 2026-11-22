@@ -1,10 +1,19 @@
 use crate::audio_data::{AudioData, AudioPool};
 use crate::synth::Synth;
 use fnoob_core::model::{
-    AudioInput, ChannelStrip, Id, Project, RegionContent, TrackKind, db_to_gain, pan_gains,
+    AudioInput, ChannelStrip, Id, Instrument, MAX_INSERTS, PluginSlot, Project, RegionContent,
+    TrackKind, db_to_gain, pan_gains,
 };
 use fnoob_core::time::{Timeline, ticks_per_beat};
+use std::collections::HashMap;
 use std::sync::Arc;
+
+pub const MAX_BLOCK: usize = 2048;
+pub const MAX_PLUGINS: usize = 256;
+pub const NO_OFF: u64 = u64::MAX;
+
+pub type PluginMap = HashMap<Id, usize>;
+pub type Inserts = [Option<(usize, bool)>; MAX_INSERTS];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlannedNote {
@@ -21,7 +30,12 @@ pub struct TrackPlan {
     pub strip: StripPlan,
     pub notes: Vec<PlannedNote>,
     pub synth: Synth,
+    pub instrument: Option<usize>,
+    pub pending_offs: [u64; 128],
+    pub next_off: u64,
     pub cursor: usize,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +57,8 @@ pub struct AudioTrackPlan {
     pub input: AudioInput,
     pub monitor: bool,
     pub record: bool,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +66,9 @@ pub struct RenderPlan {
     pub samples_per_tick: f64,
     pub samples_per_beat: f64,
     pub beats_per_bar: u64,
+    pub tempo: f64,
+    pub numerator: i32,
+    pub denominator: i32,
     pub metronome: bool,
     pub count_in_beats: u64,
     pub loop_range: Option<(u64, u64)>,
@@ -57,6 +76,7 @@ pub struct RenderPlan {
     pub audio_tracks: Vec<AudioTrackPlan>,
     pub records_audio: bool,
     pub bus: (f32, f32),
+    pub bus_inserts: Inserts,
     pub master: f32,
 }
 
@@ -72,10 +92,19 @@ pub struct StripPlan {
     pub send: f32,
     pub pre_fader: bool,
     pub meter: usize,
+    pub inserts: Inserts,
+}
+
+fn inserts(slots: &[PluginSlot], plugins: &PluginMap) -> Inserts {
+    let mut result = [None; MAX_INSERTS];
+    for (target, slot) in result.iter_mut().zip(slots) {
+        *target = plugins.get(&slot.id).map(|&index| (index, slot.bypass));
+    }
+    result
 }
 
 impl StripPlan {
-    pub fn new(strip: &ChannelStrip, meter: usize) -> Self {
+    pub fn new(strip: &ChannelStrip, meter: usize, plugins: &PluginMap) -> Self {
         let gain = db_to_gain(strip.volume_db);
         let (left, right) = pan_gains(strip.pan);
         Self {
@@ -88,6 +117,7 @@ impl StripPlan {
             } else {
                 METER_SLOTS
             },
+            inserts: inserts(&strip.inserts, plugins),
         }
     }
 }
@@ -96,6 +126,7 @@ fn audio_track_plans(
     project: &Project,
     timeline: Timeline,
     pool: &AudioPool,
+    plugins: &PluginMap,
 ) -> Vec<AudioTrackPlan> {
     project
         .tracks
@@ -133,24 +164,31 @@ fn audio_track_plans(
             AudioTrackPlan {
                 id: track.id,
                 audible,
-                strip: StripPlan::new(&track.strip, index),
+                strip: StripPlan::new(&track.strip, index, plugins),
                 clips,
                 cursor: 0,
                 input: track.audio_input.unwrap_or_default(),
                 monitor: track.input_monitoring && audible,
                 record: track.record_enabled,
+                left: vec![0.0; MAX_BLOCK],
+                right: vec![0.0; MAX_BLOCK],
             }
         })
         .collect()
 }
 
-fn track_plans(project: &Project, timeline: Timeline) -> Vec<TrackPlan> {
+fn track_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Vec<TrackPlan> {
     project
         .tracks
         .iter()
         .enumerate()
-        .filter_map(|(index, track)| {
-            let params = track.synth()?;
+        .filter(|(_, t)| t.kind == TrackKind::Instrument)
+        .map(|(index, track)| {
+            let instrument = match &track.instrument {
+                Some(Instrument::Vst3(slot)) => plugins.get(&slot.id).copied(),
+                _ => None,
+            };
+            let params = track.synth().unwrap_or_default();
             let audible = project.is_track_audible(track);
             let mut notes: Vec<PlannedNote> = if audible {
                 track
@@ -179,24 +217,38 @@ fn track_plans(project: &Project, timeline: Timeline) -> Vec<TrackPlan> {
                 Vec::new()
             };
             notes.sort_unstable_by_key(|n| (n.start, n.pitch));
-            Some(TrackPlan {
+            TrackPlan {
                 id: track.id,
                 audible,
-                strip: StripPlan::new(&track.strip, index),
+                strip: StripPlan::new(&track.strip, index, plugins),
                 notes,
                 synth: Synth::new(&params, timeline.sample_rate),
+                instrument,
+                pending_offs: [NO_OFF; 128],
+                next_off: NO_OFF,
                 cursor: 0,
-            })
+                left: vec![0.0; MAX_BLOCK],
+                right: vec![0.0; MAX_BLOCK],
+            }
         })
         .collect()
 }
 
 impl RenderPlan {
     pub fn from_project(project: &Project, sample_rate: u32) -> Self {
-        Self::with_audio(project, sample_rate, &AudioPool::new())
+        Self::build(project, sample_rate, &AudioPool::new(), &PluginMap::new())
     }
 
     pub fn with_audio(project: &Project, sample_rate: u32, pool: &AudioPool) -> Self {
+        Self::build(project, sample_rate, pool, &PluginMap::new())
+    }
+
+    pub fn build(
+        project: &Project,
+        sample_rate: u32,
+        pool: &AudioPool,
+        plugins: &PluginMap,
+    ) -> Self {
         let timeline = Timeline {
             sample_rate,
             bpm: project.tempo_bpm,
@@ -209,6 +261,9 @@ impl RenderPlan {
             samples_per_tick,
             samples_per_beat: ticks_per_beat(ts) as f64 * samples_per_tick,
             beats_per_bar,
+            tempo: project.tempo_bpm,
+            numerator: ts.numerator as i32,
+            denominator: ts.denominator as i32,
             metronome: project.metronome.enabled,
             count_in_beats: if project.metronome.count_in_enabled {
                 u64::from(project.metronome.count_in_bars) * beats_per_bar
@@ -224,8 +279,8 @@ impl RenderPlan {
                     )
                 })
                 .filter(|(start, end)| end > start),
-            tracks: track_plans(project, timeline),
-            audio_tracks: audio_track_plans(project, timeline, pool),
+            tracks: track_plans(project, timeline, plugins),
+            audio_tracks: audio_track_plans(project, timeline, pool, plugins),
             bus: {
                 let gain = if project.bus.mute {
                     0.0
@@ -235,6 +290,7 @@ impl RenderPlan {
                 let (left, right) = pan_gains(project.bus.pan);
                 (gain * left, gain * right)
             },
+            bus_inserts: inserts(&project.bus.inserts, plugins),
             master: db_to_gain(project.master.volume_db),
             records_audio: project
                 .tracks

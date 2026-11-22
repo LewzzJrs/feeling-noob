@@ -8,6 +8,7 @@ license.workspace = true
 assert_no_alloc = "1.1.2"
 cpal = "0.18.2"
 fnoob-core = { version = "0.1.0", path = "../fnoob-core" }
+fnoob-platform = { version = "0.1.0", path = "../fnoob-platform" }
 hound = "3.5.1"
 midir = "0.11.1"
 rtrb = "0.4.1"
