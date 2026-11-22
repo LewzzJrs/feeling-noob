@@ -544,6 +544,17 @@ pub fn set_region_fades(project: &mut Project, id: Id, fade_in: u64, fade_out: u
     changed
 }
 
+pub fn rename_region(project: &mut Project, id: Id, name: &str) -> bool {
+    let name = name.trim();
+    match region_mut(project, id) {
+        Some(region) if !name.is_empty() && region.name != name => {
+            region.name = name.to_owned();
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn set_region_gain(project: &mut Project, id: Id, gain: f32) -> bool {
     let Some(region) = region_mut(project, id) else {
         return false;

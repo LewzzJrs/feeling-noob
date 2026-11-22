@@ -14,6 +14,7 @@ pub struct Settings {
     pub midi_input: MidiInputChoice,
     pub plugin_folders: Vec<String>,
     pub recent_projects: Vec<String>,
+    pub sample_folders: Vec<String>,
 }
 
 pub const MAX_RECENT: usize = 10;
@@ -147,6 +148,7 @@ mod tests {
             midi_input: MidiInputChoice::Port("Keyboard 1".into()),
             plugin_folders: vec!["D:/Plugins".into()],
             recent_projects: vec!["D:/Songs/A.fnoob".into()],
+            sample_folders: vec!["D:/Samples".into()],
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);

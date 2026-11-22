@@ -1,3 +1,4 @@
+use crate::audio_data::AudioData;
 use crate::metronome::Metronome;
 use crate::plan::{
     AudioTrackPlan, BUS_METER, Inserts, MASTER_METER, MAX_BLOCK, MAX_PLUGINS, METER_SLOTS, NO_OFF,
@@ -56,6 +57,7 @@ pub enum Command {
     },
     RemovePlugin(usize),
     LiveNote(MidiEvent),
+    PreviewAudio(Option<Arc<AudioData>>),
 }
 
 impl fmt::Debug for Command {
@@ -78,6 +80,7 @@ impl fmt::Debug for Command {
             Self::InstallPlugin { slot, .. } => write!(f, "InstallPlugin({slot})"),
             Self::RemovePlugin(slot) => write!(f, "RemovePlugin({slot})"),
             Self::LiveNote(event) => write!(f, "LiveNote({}, {})", event.pitch, event.velocity),
+            Self::PreviewAudio(data) => write!(f, "PreviewAudio({})", data.is_some()),
         }
     }
 }
@@ -88,6 +91,7 @@ pub enum Garbage {
     Input(Consumer<f32>),
     Sink(Producer<f32>),
     Plugin(Box<PluginProcessor>),
+    Audio(Arc<AudioData>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,6 +247,8 @@ pub struct Processor {
     bus_right: Vec<f32>,
     click: Vec<f32>,
     positions: Vec<u64>,
+    preview: Option<Arc<AudioData>>,
+    preview_at: u64,
     frame: usize,
     peaks: [f32; METER_SLOTS],
     input_channels: usize,
@@ -287,6 +293,8 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         bus_right: vec![0.0; MAX_BLOCK],
         click: vec![0.0; MAX_BLOCK],
         positions: vec![0; MAX_BLOCK],
+        preview: None,
+        preview_at: 0,
         frame: 0,
         peaks: [0.0; METER_SLOTS],
         input_channels: 0,
@@ -501,6 +509,13 @@ impl Processor {
                 }
             }
             Command::LiveNote(event) => self.live_event(event),
+            Command::PreviewAudio(data) => {
+                self.preview_at = 0;
+                let old = std::mem::replace(&mut self.preview, data);
+                if let Some(old) = old {
+                    let _ = self.garbage.push(Garbage::Audio(old));
+                }
+            }
             Command::RemovePlugin(slot) => {
                 if let Some(old) = self.plugins.get_mut(slot).and_then(Option::take) {
                     let _ = self.garbage.push(Garbage::Plugin(old));
@@ -597,6 +612,7 @@ impl Processor {
                     | Command::SetRecordSink(_)
                     | Command::InstallPlugin { .. }
                     | Command::RemovePlugin(_)
+                    | Command::PreviewAudio(_)
             );
             if returns_garbage && self.garbage.is_full() {
                 break;
@@ -850,7 +866,15 @@ impl Processor {
             let right = (self.main_right[f] + bus_r) * master;
             peak(&mut self.peaks, MASTER_METER, left, right);
             let click = self.click[f];
-            write_frame(frame, left + click, right + click);
+            let (pl, pr) = match &self.preview {
+                Some(data) if self.preview_at < data.frames => {
+                    let sample = data.frame(self.preview_at);
+                    self.preview_at += 1;
+                    sample
+                }
+                _ => (0.0, 0.0),
+            };
+            write_frame(frame, left + click + pl * 0.7, right + click + pr * 0.7);
         }
         self.frame = 0;
     }
@@ -1657,5 +1681,20 @@ mod tests {
         let events = recorded(&mut h);
         assert_eq!(events.len(), 1);
         assert_eq!((events[0].sample, events[0].pitch), (100, 67));
+    }
+
+    #[test]
+    fn audio_preview_plays_without_transport_and_stops() {
+        let (mut p, mut h) = create(SR, 1, plan(&metronome_only()));
+        let data = Arc::new(AudioData::from_samples(1, vec![0.5; 100]));
+        h.send(Command::PreviewAudio(Some(Arc::clone(&data))))
+            .unwrap();
+        let out = render(&mut p, 200);
+        assert!((out[10] - 0.35).abs() < 1e-6);
+        assert_eq!(out[150], 0.0);
+        h.send(Command::PreviewAudio(None)).unwrap();
+        render(&mut p, 1);
+        h.collect_garbage();
+        assert_eq!(Arc::strong_count(&data), 1);
     }
 }
