@@ -146,6 +146,7 @@ pub struct App {
     pub(crate) browser: crate::browser::Browser,
     pub(crate) inspector: crate::inspector::Inspector,
     pub(crate) automation_view: bool,
+    pub(crate) session: crate::session::SessionUi,
     pub(crate) automation_params: std::collections::HashMap<Id, AutomationParam>,
     pub(crate) marker_rename: Option<(Id, String)>,
     pub(crate) musical: crate::musical::MusicalTyping,
@@ -233,6 +234,7 @@ impl App {
             editor_rect: None,
             synth_window: None,
             device_window: None,
+            session: crate::session::SessionUi::default(),
             live_origin: None,
             stopped_tick: 0,
             show_settings: false,
@@ -611,6 +613,7 @@ impl App {
                 None => self.message = Some("Paste needs a track of the same kind.".into()),
             },
             Command::SelectAll => self.selection.regions = edit::all_region_ids(&self.project),
+            Command::Delete if self.session.open && self.delete_selected_clip() => {}
             Command::Delete => {
                 self.edit(|p| {
                     edit::delete_regions(p, &regions);
@@ -646,6 +649,8 @@ impl App {
             }
             Command::ToggleAutomation => self.automation_view = !self.automation_view,
             Command::ToggleMusicalTyping => self.toggle_musical_typing(),
+            Command::ToggleClipGrid => self.session.open = !self.session.open,
+            Command::DuplicateTrack if self.session.open && self.duplicate_selected_clip() => {}
             Command::DuplicateTrack => {
                 if let Some(track) = self.selection.track {
                     let mut created = None;
@@ -948,6 +953,7 @@ impl App {
                 self.menu_item(ui, "Musical Typing", Command::ToggleMusicalTyping);
             });
             ui.menu_button("View", |ui| {
+                self.menu_item(ui, "Clip Grid", Command::ToggleClipGrid);
                 self.menu_item(ui, "Mixer", Command::ToggleMixer);
                 self.menu_item(ui, "Piano Roll", Command::TogglePianoRoll);
                 self.menu_item(ui, "Automation", Command::ToggleAutomation);
@@ -1011,6 +1017,22 @@ impl App {
             }
             let (editor, mixer, automation) =
                 (self.editor.open, self.mixer_open, self.automation_view);
+            let grid = self.session.open;
+            self.tool_button(
+                ui,
+                !grid,
+                "Timeline",
+                "Show the timeline (Tab switches views)",
+                Command::ToggleClipGrid,
+            );
+            self.tool_button(
+                ui,
+                grid,
+                "Clip Grid",
+                "Show the clip-launch grid (Tab switches views)",
+                Command::ToggleClipGrid,
+            );
+            ui.separator();
             self.tool_button(
                 ui,
                 editor,
@@ -1677,8 +1699,14 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                self.follow_playhead(ui.available_width() - crate::timeline::HEADER_WIDTH);
-                self.tracks_area(ui);
+                if self.session.open {
+                    egui::Frame::NONE
+                        .inner_margin(6.0)
+                        .show(ui, |ui| self.session_view(ui));
+                } else {
+                    self.follow_playhead(ui.available_width() - crate::timeline::HEADER_WIDTH);
+                    self.tracks_area(ui);
+                }
             });
         self.settings_window(&ctx);
         self.synth_settings_window(&ctx);

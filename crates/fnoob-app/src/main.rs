@@ -14,6 +14,7 @@ mod mixer;
 mod musical;
 mod piano_roll;
 mod plugins;
+mod session;
 mod timeline;
 
 #[cfg(debug_assertions)]

@@ -42,6 +42,18 @@ impl App {
             }
         });
         egui::ScrollArea::vertical().show(ui, |ui| {
+            let clip = self
+                .session
+                .selected
+                .filter(|_| self.session.open)
+                .and_then(|id| fnoob_core::session::clip_position(&self.project, id))
+                .and_then(|(t, s)| fnoob_core::session::clip(&self.project, t, s))
+                .cloned();
+            if let Some(clip) = clip {
+                egui::CollapsingHeader::new("Clip")
+                    .default_open(true)
+                    .show(ui, |ui| self.clip_section(ui, &clip));
+            }
             let region = self
                 .selection
                 .regions

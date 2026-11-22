@@ -4,6 +4,7 @@ use fnoob_core::keymap::{Command, Key, KeyCombo, lookup};
 fn map_key(key: egui::Key) -> Option<Key> {
     match key {
         egui::Key::Space => Some(Key::Space),
+        egui::Key::Tab => Some(Key::Tab),
         egui::Key::Enter => Some(Key::Enter),
         egui::Key::Comma => Some(Key::Comma),
         egui::Key::Period => Some(Key::Period),

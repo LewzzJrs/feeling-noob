@@ -61,6 +61,7 @@ pub enum UiAction {
         pointer: Pos2,
     },
     OpenEditor(Id),
+    SendToGrid(Id),
     DragLoopStart {
         tick: u64,
     },
@@ -868,6 +869,10 @@ impl App {
                 actions.push(UiAction::SplitRegion(region.id));
                 ui.close();
             }
+            if ui.button("Copy to Clip Grid").clicked() {
+                actions.push(UiAction::SendToGrid(region.id));
+                ui.close();
+            }
             if ui.button("Delete").clicked() {
                 actions.push(UiAction::DeleteRegion(region.id));
                 ui.close();
@@ -1234,6 +1239,7 @@ impl App {
                 Some(Drag::RegionTrim { .. }) => self.update_region_trim(pointer),
                 _ => self.update_region_drag(pointer),
             },
+            UiAction::SendToGrid(region) => self.send_region_to_grid(region),
             UiAction::OpenEditor(region) => {
                 if self
                     .project
