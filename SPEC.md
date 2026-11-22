@@ -38,12 +38,12 @@ Every feature has a "done when" criterion that can be checked by hand.
 - Done when: added or moved notes play back correctly right away, and Q tightens timing.
 
 ### F4. Mixer
-- One channel strip per track, one **return track (A Return)**, one **Master (Main)**. A bus, in this project, means a group track; groups are on the roadmap.
-- Track strip: volume (−∞ to +6 dB), pan, mute, solo, up to 4 VST3 insert slots, 1 send to the return track (level + pre/post fader), peak meter.
+- One channel strip per track, up to 8 **return tracks** (A to H), one **Master (Main)**. New projects start with 2 MIDI tracks, 2 audio tracks, and the returns A Reverb and B Delay. A bus, in this project, means a group track; groups are on the roadmap.
+- Track strip: volume (−∞ to +6 dB), pan, mute, solo, up to 4 VST3 insert slots, one send per return track (level + pre/post fader), monitor In/Auto/Off for audio tracks (Auto plays the input while armed), output Main or No Output, peak meter.
 - Return track: volume, pan, mute, 4 insert slots, meter.
 - Master: volume, meter.
 - Pan law: −3 dB constant power.
-- Solo: when any track is soloed, the other tracks are silenced. The return track is never silenced by solo, so send effects on a soloed track stay audible.
+- Solo: when any track is soloed, the other tracks are silenced. Return tracks are never silenced by solo, so send effects on a soloed track stay audible.
 - Done when: fader, pan, mute, solo, and send sound right and meters move.
 
 ### F5. VST3 plugins
@@ -236,7 +236,7 @@ MyTrack.fnoob\
       ]
     }
   ],
-  "bus": { "name": "A Return", "volume_db": 0.0, "pan": 0.0, "mute": false, "inserts": [] },
+  "returns": [{ "name": "A Reverb", "volume_db": 0.0, "pan": 0.0, "mute": false, "inserts": [] }],
   "master": { "volume_db": 0.0 }
 }
 ```
@@ -306,7 +306,7 @@ Autosave uses the same steps into `autosave\project.json`, without backups.
 1. Take pending `Command`s.
 2. Compute the block's sample range. If looping is on and the range crosses the loop end, split the block: up to the loop end, then from the loop start. On the jump, send note-off to every instrument.
 3. Per track: the instrument (Basic Synth / VST3) receives the MIDI events in range, or the audio clip is copied from its in-memory buffer.
-4. Inserts → volume → pan → meter → add to Master, and send to the return track.
+4. Inserts → volume → pan → meter → add to Master unless the output is No Output, and send to each return track.
 5. Return track: inserts → volume/pan → Master.
 6. The metronome is added directly to the output (not through the Master fader).
 7. Output: zero NaN/denormals and clamp to ±1.0 as a safety net.
@@ -351,7 +351,7 @@ Phase 15 replaced the first set of single-letter shortcuts with this set.
 | Show/Hide Detail Area | `Ctrl+Alt+L` |
 | Show/Hide Browser | `Ctrl+Alt+B` |
 | Show/Hide Mixer Section (clip grid) | `Ctrl+Alt+M` |
-| Insert Audio Track / MIDI Track | `Ctrl+T` / `Ctrl+Shift+T` |
+| Insert Audio Track / MIDI Track / Return Track | `Ctrl+T` / `Ctrl+Shift+T` / `Ctrl+Alt+T` |
 | Insert Scene | `Ctrl+I` |
 | Rename | `Ctrl+R` |
 | Duplicate (regions, clip, or track) | `Ctrl+D` |
@@ -403,7 +403,7 @@ Layout:
 ```
 
 - Menus: File, Edit, Create, Track, Transport, View (egui widgets, not native menus).
-- In the clip grid the mixer section sits under every column, with the return track and Main columns next to the tracks.
+- In the clip grid the mixer section sits under every column, with an empty drop area, then the return track columns, then Main, which holds the scene launch buttons. Each column has an I/O section (input, monitor, output) and a mixer strip (send knobs, fader with meter, pan knob, activator, solo, arm).
 - Dark theme by default.
 - VST3 plugin editors in separate windows.
 

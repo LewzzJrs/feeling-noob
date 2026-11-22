@@ -26,7 +26,7 @@ Features that are **not** in the MVP. Order within each group is a rough priorit
 | Whole audio files loaded into memory | Disk streaming | SPEC 5.5 |
 | Single-threaded graph | Parallel track processing | SPEC 5.3 |
 | Snapshot undo of the whole project | Change-based undo (less memory) | SPEC 4.6 |
-| One return track, one send per track | More return tracks and sends, group tracks (buses) | SPEC F4 |
+| Up to 8 return tracks, one send per return, output Main or none | Group tracks (buses), routing to other tracks, returns sending to returns | SPEC F4 |
 | At most 4 inserts per strip | Unlimited slots | SPEC F4 |
 | VST3 processed in-process | Out-of-process plugin processing (full crash isolation) | SPEC 5.6 |
 | No plugin delay compensation (PDC) | Automatic PDC | SPEC 5.3 |
@@ -53,6 +53,8 @@ Done in Phase 14: punch in and punch out (they use the loop area, shown as red l
 
 Done in Phase 15: a new layout and way of working. Track headers with name, input and mixer controls sit right of the timeline, with the return track and Main rows below. The clip grid has a mixer section under each column. A detail area at the bottom shows Clip (properties plus piano roll or waveform) or Devices. The browser has categories and places. The status bar explains the control under the mouse. The control bar adds tap tempo, loop start and length, draw mode and an overall CPU meter, and all keyboard shortcuts were replaced (see `SPEC.md` section 6).
 
+Done in Phase 16: several return tracks (new projects start with A Reverb and B Delay and 2 MIDI plus 2 audio tracks), a send per return on every track, monitor In/Auto/Off, output Main or No Output, and a clip grid laid out as tracks, an empty drop area, return columns, and a Main column with the scene buttons, each with an I/O section and a fader strip with knobs.
+
 Not started, in rough priority order:
 
 - Take lanes and comping for audio
@@ -64,7 +66,7 @@ Not started, in rough priority order:
 - Crossfades between overlapping regions, fade handles on region corners
 - Quantize strength and swing, groove templates
 - Rubber-band selection, draw mode and chance lane in the piano roll
-- More return tracks and sends, group tracks (buses) and nested groups, sidechain inputs
+- Group tracks (buses) and nested groups, routing between tracks, sidechain inputs
 - Crossfader and cue output
 - Freeze / bounce in place, consolidate
 - CPU meter per track

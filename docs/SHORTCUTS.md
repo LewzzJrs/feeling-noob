@@ -52,7 +52,7 @@ Each entry: file, what was skipped, when it needs fixing.
 | S59 | `crates/fnoob-app/src/chain.rs` | The device chain holds at most 4 effects per track (`MAX_INSERTS`). Devices move with buttons, not by dragging. Compressor and limiter show no gain-reduction meter. There are no device presets or racks. | When chains need more devices or presets. |
 | S60 | `crates/fnoob-app/src/midi.rs` (`capture_midi`) | Capture MIDI keeps the last 8192 played events and splits phrases at a fixed 4-second pause. Notes played while stopped keep the project tempo; the tempo is not guessed from the playing. Punch uses the loop area only, with no separate punch range and no pre-roll. | If players need these options. |
 | S61 | `crates/fnoob-app/src/ui_kit.rs` (`hint`) | The status bar explains only controls that call `hint`; menus and some editor controls show nothing there. | When more controls get descriptions. |
-| S62 | `crates/fnoob-app/src/timeline.rs` (`draw_headers`) | Track headers have a fixed width and height; they cannot be resized or folded, and there is no output routing choice (every track goes to Main). | With track groups and routing. |
+| S62 | `crates/fnoob-app/src/timeline.rs` (`draw_headers`) | Track headers have a fixed width and height; they cannot be resized or folded, and the output can only be Main or No Output. Return tracks cannot send to other returns. MIDI tracks have no monitor switch; live MIDI always plays on the armed or selected track. | With track groups and routing. |
 
 ## Fixed
 
