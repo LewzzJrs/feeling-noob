@@ -157,6 +157,7 @@ struct Shared {
     recording: AtomicBool,
     take_start: AtomicU64,
     overruns: AtomicU64,
+    cpu: AtomicU32,
     meters: Box<[AtomicU32]>,
     session: Box<[AtomicU64]>,
 }
@@ -221,6 +222,10 @@ impl EngineHandle {
             .map_or_else(SessionStatus::default, |cell| {
                 SessionStatus::decode(cell.load(Ordering::Relaxed))
             })
+    }
+
+    pub fn cpu_load(&self) -> f32 {
+        f32::from_bits(self.shared.cpu.load(Ordering::Relaxed))
     }
 
     pub fn record_overruns(&self) -> u64 {
@@ -317,6 +322,7 @@ pub struct Processor {
     rng: u64,
     played: Producer<Played>,
     clock: u64,
+    sample_rate: u32,
 }
 
 pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Processor, EngineHandle) {
@@ -330,6 +336,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         recording: AtomicBool::new(false),
         take_start: AtomicU64::new(NO_TAKE),
         overruns: AtomicU64::new(0),
+        cpu: AtomicU32::new(0),
         meters: (0..METER_SLOTS).map(|_| AtomicU32::new(0)).collect(),
         session: (0..TRACK_METERS).map(|_| AtomicU64::new(0)).collect(),
     });
@@ -374,6 +381,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         next_beat: 0,
         next_beat_sample: 0,
         rng: 0x9E37_79B9_7F4A_7C15,
+        sample_rate,
         played: played_tx,
         clock: 0,
     };
@@ -904,6 +912,7 @@ impl Processor {
     }
 
     pub fn process(&mut self, out: &mut [f32]) {
+        let begin = std::time::Instant::now();
         self.drain_commands();
         self.frame = 0;
         self.drain_midi();
@@ -925,6 +934,12 @@ impl Processor {
         self.shared
             .recording
             .store(self.recording, Ordering::Release);
+        let frames = out.len() / self.channels.max(1);
+        let budget = frames as f64 / f64::from(self.sample_rate.max(1));
+        if budget > 0.0 {
+            let load = (begin.elapsed().as_secs_f64() / budget) as f32;
+            self.shared.cpu.store(load.to_bits(), Ordering::Relaxed);
+        }
     }
 }
 
