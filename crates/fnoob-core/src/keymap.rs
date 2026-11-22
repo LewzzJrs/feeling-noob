@@ -9,12 +9,15 @@ pub enum Command {
     ToggleMetronome,
     ToggleCountIn,
     ToggleMixer,
-    TogglePianoRoll,
-    ToggleEditor,
+    ToggleDetail,
+    SwitchDetail,
+    ToggleBrowser,
     ToggleTrackMute,
     ToggleTrackSolo,
     ToggleTrackRecord,
     NewTracks,
+    NewAudioTrack,
+    NewMidiTrack,
     SplitAtPlayhead,
     RepeatRegions,
     Quantize,
@@ -43,9 +46,12 @@ pub enum Command {
     NextMarker,
     ToggleAutomation,
     ToggleMusicalTyping,
-    DuplicateTrack,
+    Duplicate,
+    Rename,
+    InsertScene,
+    ToggleDrawMode,
+    ToggleFollow,
     ToggleClipGrid,
-    ToggleDevices,
     CaptureMidi,
 }
 
@@ -53,6 +59,12 @@ pub enum Command {
 pub enum Key {
     Space,
     Tab,
+    Home,
+    Plus,
+    Minus,
+    Equals,
+    Function(u8),
+    Digit(u8),
     Enter,
     Comma,
     Period,
@@ -132,54 +144,55 @@ const fn letter(c: char) -> Key {
 }
 
 pub const BINDINGS: &[(KeyCombo, Command)] = &[
-    (alt(letter('M')), Command::AddMarker),
-    (alt(Key::Comma), Command::PreviousMarker),
-    (alt(Key::Period), Command::NextMarker),
-    (plain(letter('A')), Command::ToggleAutomation),
-    (ctrl(letter('K')), Command::ToggleMusicalTyping),
-    (ctrl(letter('D')), Command::DuplicateTrack),
-    (plain(Key::Tab), Command::ToggleClipGrid),
-    (shift(Key::Tab), Command::ToggleDevices),
-    (ctrl_shift(letter('C')), Command::CaptureMidi),
     (plain(Key::Space), Command::PlayStop),
-    (plain(letter('R')), Command::Record),
-    (plain(Key::Enter), Command::GoToBeginning),
-    (plain(Key::Comma), Command::Rewind),
-    (plain(Key::Period), Command::Forward),
-    (plain(letter('C')), Command::ToggleLoop),
-    (plain(letter('K')), Command::ToggleMetronome),
-    (shift(letter('K')), Command::ToggleCountIn),
-    (plain(letter('X')), Command::ToggleMixer),
-    (plain(letter('P')), Command::TogglePianoRoll),
-    (plain(letter('E')), Command::ToggleEditor),
-    (plain(letter('M')), Command::ToggleTrackMute),
-    (plain(letter('S')), Command::ToggleTrackSolo),
-    (ctrl_alt(letter('R')), Command::ToggleTrackRecord),
-    (ctrl_alt(letter('N')), Command::NewTracks),
-    (ctrl(letter('T')), Command::SplitAtPlayhead),
-    (ctrl(letter('R')), Command::RepeatRegions),
-    (plain(letter('Q')), Command::Quantize),
-    (ctrl(letter('G')), Command::ToggleSnap),
-    (ctrl_alt(letter('M')), Command::MuteRegions),
+    (plain(Key::Function(9)), Command::Record),
+    (plain(Key::Home), Command::GoToBeginning),
+    (plain(Key::Left), Command::Rewind),
+    (plain(Key::Right), Command::Forward),
+    (ctrl(letter('L')), Command::ToggleLoop),
+    (plain(letter('O')), Command::ToggleMetronome),
+    (ctrl_alt(letter('M')), Command::ToggleMixer),
+    (ctrl_alt(letter('L')), Command::ToggleDetail),
+    (shift(Key::Tab), Command::SwitchDetail),
+    (plain(Key::Tab), Command::ToggleClipGrid),
+    (ctrl_alt(letter('B')), Command::ToggleBrowser),
+    (plain(Key::Digit(0)), Command::MuteRegions),
+    (ctrl(letter('T')), Command::NewAudioTrack),
+    (ctrl_shift(letter('T')), Command::NewMidiTrack),
+    (ctrl(letter('E')), Command::SplitAtPlayhead),
+    (ctrl(letter('D')), Command::Duplicate),
+    (ctrl(letter('U')), Command::Quantize),
+    (ctrl(Key::Digit(4)), Command::ToggleSnap),
     (alt(Key::Left), Command::NudgeLeft),
     (alt(Key::Right), Command::NudgeRight),
-    (ctrl(letter('B')), Command::Bounce),
+    (ctrl_shift(letter('R')), Command::Bounce),
     (ctrl(letter('Z')), Command::Undo),
-    (ctrl_shift(letter('Z')), Command::Redo),
+    (ctrl(letter('Y')), Command::Redo),
     (ctrl(letter('X')), Command::Cut),
     (ctrl(letter('C')), Command::Copy),
     (ctrl(letter('V')), Command::Paste),
     (ctrl(letter('A')), Command::SelectAll),
     (plain(Key::Delete), Command::Delete),
     (plain(Key::Backspace), Command::Delete),
-    (ctrl(Key::Left), Command::ZoomOut),
-    (ctrl(Key::Right), Command::ZoomIn),
+    (plain(Key::Plus), Command::ZoomIn),
+    (plain(Key::Equals), Command::ZoomIn),
+    (plain(Key::Minus), Command::ZoomOut),
     (plain(Key::Up), Command::SelectPreviousTrack),
     (plain(Key::Down), Command::SelectNextTrack),
-    (ctrl_shift(letter('N')), Command::NewProject),
+    (ctrl(letter('N')), Command::NewProject),
     (ctrl(letter('O')), Command::Open),
     (ctrl(letter('S')), Command::Save),
     (ctrl_shift(letter('S')), Command::SaveAs),
+    (ctrl(letter('R')), Command::Rename),
+    (ctrl(letter('I')), Command::InsertScene),
+    (plain(letter('B')), Command::ToggleDrawMode),
+    (plain(letter('A')), Command::ToggleAutomation),
+    (plain(letter('M')), Command::ToggleMusicalTyping),
+    (ctrl_shift(letter('F')), Command::ToggleFollow),
+    (ctrl_shift(letter('C')), Command::CaptureMidi),
+    (alt(letter('M')), Command::AddMarker),
+    (alt(Key::Comma), Command::PreviousMarker),
+    (alt(Key::Period), Command::NextMarker),
 ];
 
 pub fn lookup(combo: KeyCombo) -> Option<Command> {
@@ -193,6 +206,12 @@ fn key_label(key: Key) -> String {
     match key {
         Key::Space => "Space".into(),
         Key::Tab => "Tab".into(),
+        Key::Home => "Home".into(),
+        Key::Plus => "+".into(),
+        Key::Minus => "-".into(),
+        Key::Equals => "=".into(),
+        Key::Function(n) => format!("F{n}"),
+        Key::Digit(n) => n.to_string(),
         Key::Enter => "Enter".into(),
         Key::Comma => ",".into(),
         Key::Period => ".".into(),
@@ -246,25 +265,23 @@ mod tests {
 
     #[test]
     fn lookup_respects_modifiers() {
-        assert_eq!(lookup(plain(letter('R'))), Some(Command::Record));
-        assert_eq!(lookup(ctrl(letter('R'))), Some(Command::RepeatRegions));
-        assert_eq!(
-            lookup(ctrl_alt(letter('R'))),
-            Some(Command::ToggleTrackRecord)
-        );
-        assert_eq!(lookup(shift(letter('R'))), None);
+        assert_eq!(lookup(plain(Key::Function(9))), Some(Command::Record));
+        assert_eq!(lookup(ctrl(letter('T'))), Some(Command::NewAudioTrack));
+        assert_eq!(lookup(ctrl_shift(letter('T'))), Some(Command::NewMidiTrack));
+        assert_eq!(lookup(plain(letter('R'))), None);
     }
 
     #[test]
     fn labels() {
+        assert_eq!(shortcut_label(Command::Redo).as_deref(), Some("Ctrl+Y"));
         assert_eq!(
-            shortcut_label(Command::Redo).as_deref(),
-            Some("Ctrl+Shift+Z")
+            shortcut_label(Command::ToggleDetail).as_deref(),
+            Some("Ctrl+Alt+L")
         );
+        assert_eq!(shortcut_label(Command::Record).as_deref(), Some("F9"));
         assert_eq!(
-            shortcut_label(Command::ToggleTrackRecord).as_deref(),
-            Some("Ctrl+Alt+R")
+            shortcut_label(Command::ToggleSnap).as_deref(),
+            Some("Ctrl+4")
         );
-        assert_eq!(shortcut_label(Command::PlayStop).as_deref(), Some("Space"));
     }
 }
