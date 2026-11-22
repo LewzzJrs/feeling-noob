@@ -157,6 +157,89 @@ impl Note {
 
 pub const MIN_GAIN_DB: f32 = -60.0;
 pub const MAX_GAIN_DB: f32 = 24.0;
+pub const SILENT_DB: f32 = -144.0;
+pub const MAX_FADER_DB: f32 = 6.0;
+
+pub fn db_to_gain(db: f32) -> f32 {
+    if db <= SILENT_DB {
+        0.0
+    } else {
+        10f32.powf(db / 20.0)
+    }
+}
+
+pub fn pan_gains(pan: f32) -> (f32, f32) {
+    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+    (angle.cos(), angle.sin())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Send {
+    pub level_db: f32,
+    pub pre_fader: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelStrip {
+    pub volume_db: f32,
+    pub pan: f32,
+    pub send: Send,
+}
+
+impl Default for ChannelStrip {
+    fn default() -> Self {
+        Self {
+            volume_db: 0.0,
+            pan: 0.0,
+            send: Send {
+                level_db: SILENT_DB,
+                pre_fader: false,
+            },
+        }
+    }
+}
+
+impl ChannelStrip {
+    pub fn is_valid(&self) -> bool {
+        let level = SILENT_DB..=MAX_FADER_DB;
+        level.contains(&self.volume_db)
+            && level.contains(&self.send.level_db)
+            && (-1.0..=1.0).contains(&self.pan)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Bus {
+    pub name: String,
+    pub volume_db: f32,
+    pub pan: f32,
+    pub mute: bool,
+}
+
+impl Default for Bus {
+    fn default() -> Self {
+        Self {
+            name: "Bus 1".into(),
+            volume_db: 0.0,
+            pan: 0.0,
+            mute: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Master {
+    pub volume_db: f32,
+}
+
+impl Default for Master {
+    fn default() -> Self {
+        Self { volume_db: 0.0 }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RegionContent {
@@ -252,6 +335,8 @@ pub struct Track {
     pub audio_input: Option<AudioInput>,
     #[serde(default)]
     pub instrument: Option<Instrument>,
+    #[serde(default)]
+    pub strip: ChannelStrip,
     pub regions: Vec<Region>,
 }
 
@@ -280,6 +365,10 @@ pub struct Project {
     pub next_id: Id,
     #[serde(default)]
     pub audio_files: Vec<AudioFile>,
+    #[serde(default)]
+    pub bus: Bus,
+    #[serde(default)]
+    pub master: Master,
     pub tracks: Vec<Track>,
 }
 
@@ -311,6 +400,8 @@ impl Project {
             },
             next_id: 1,
             audio_files: Vec::new(),
+            bus: Bus::default(),
+            master: Master::default(),
             tracks: Vec::new(),
         }
     }
@@ -353,5 +444,38 @@ impl Project {
             .flat_map(|t| t.regions.iter().map(Region::end_tick))
             .max()
             .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pan_law_is_minus_3_db_in_the_middle() {
+        let (l, r) = pan_gains(0.0);
+        assert!((l - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((l - r).abs() < 1e-6);
+        let (l, r) = pan_gains(-1.0);
+        assert!((l - 1.0).abs() < 1e-6 && r.abs() < 1e-6);
+        let (l, r) = pan_gains(0.4);
+        assert!((l * l + r * r - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn silent_db_is_zero_gain() {
+        assert_eq!(db_to_gain(SILENT_DB), 0.0);
+        assert_eq!(db_to_gain(0.0), 1.0);
+        assert!((db_to_gain(6.0) - 1.995).abs() < 0.01);
+    }
+
+    #[test]
+    fn old_projects_get_default_mixer() {
+        let mut value = serde_json::to_value(Project::new("t", 48_000)).unwrap();
+        value.as_object_mut().unwrap().remove("bus");
+        value.as_object_mut().unwrap().remove("master");
+        let project: Project = serde_json::from_value(value).unwrap();
+        assert_eq!(project.bus, Bus::default());
+        assert_eq!(project.master, Master::default());
     }
 }

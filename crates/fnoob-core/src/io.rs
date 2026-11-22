@@ -1,6 +1,7 @@
 use crate::fsutil::write_atomic;
 use crate::model::{
-    FORMAT_VERSION, Instrument, MAX_GAIN_DB, MIN_GAIN_DB, Project, RegionContent, Track,
+    FORMAT_VERSION, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MIN_GAIN_DB, Project, RegionContent,
+    SILENT_DB, Track,
 };
 use crate::time::{MAX_BPM, MIN_BPM};
 use serde::Deserialize;
@@ -92,6 +93,13 @@ pub fn validate(project: &Project) -> Result<(), String> {
     if project.loop_range.end_tick <= project.loop_range.start_tick {
         return Err("loop end must be after loop start".into());
     }
+    let fader = SILENT_DB..=MAX_FADER_DB;
+    if !fader.contains(&project.bus.volume_db)
+        || !(-1.0..=1.0).contains(&project.bus.pan)
+        || !fader.contains(&project.master.volume_db)
+    {
+        return Err("bus or master settings are invalid".into());
+    }
     if !(1..=8).contains(&project.metronome.count_in_bars) {
         return Err("count-in must be 1 to 8 bars".into());
     }
@@ -136,6 +144,9 @@ pub fn is_safe_relative_path(path: &str) -> bool {
 }
 
 fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
+    if !track.strip.is_valid() {
+        return Err(format!("track {} has invalid mixer settings", track.id));
+    }
     if let Some(Instrument::BasicSynth(params)) = &track.instrument
         && !params.is_valid()
     {
@@ -316,6 +327,11 @@ mod tests {
                     channels: 3,
                 })
             },
+            |p| p.tracks[0].strip.volume_db = 12.0,
+            |p| p.tracks[0].strip.pan = 1.5,
+            |p| p.tracks[0].strip.send.level_db = f32::NAN,
+            |p| p.bus.volume_db = -200.0,
+            |p| p.master.volume_db = 7.0,
         ];
         for (i, break_it) in cases.into_iter().enumerate() {
             let mut p = sample_project();

@@ -1,6 +1,6 @@
 use crate::model::{
-    AudioFile, AudioInput, Id, Instrument, Note, Project, Region, RegionContent, TRACK_COLORS,
-    Track, TrackKind,
+    AudioFile, AudioInput, ChannelStrip, Id, Instrument, Note, Project, Region, RegionContent,
+    TRACK_COLORS, Track, TrackKind,
 };
 use crate::time::{Timeline, snap_floor, snap_round};
 
@@ -19,6 +19,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         input_monitoring: false,
         audio_input: (kind == TrackKind::Audio).then(AudioInput::default),
         instrument: (kind == TrackKind::Instrument).then(Instrument::default),
+        strip: ChannelStrip::default(),
         regions: Vec::new(),
     });
     id
