@@ -122,8 +122,13 @@ impl App {
         if armed.is_empty() {
             return Ok(false);
         }
+        if self.project_dir.is_none() && !self.save_as() {
+            return Err(
+                "Audio is recorded into the project folder, so save the project first.".into(),
+            );
+        }
         let Some(dir) = self.project_dir.clone() else {
-            return Err("Save the project before recording audio.".into());
+            return Err("The project has no folder.".into());
         };
         let Some(input) = &self.input else {
             return Err("No audio input is open. Choose one in Audio and MIDI Settings.".into());
@@ -239,8 +244,12 @@ impl App {
     }
 
     pub(crate) fn import_audio(&mut self) {
+        if self.project_dir.is_none() && !self.save_as() {
+            self.message =
+                Some("Audio is copied into the project folder, so save the project first.".into());
+            return;
+        }
         let Some(dir) = self.project_dir.clone() else {
-            self.message = Some("Save the project before importing audio.".into());
             return;
         };
         let Some(source) = rfd::FileDialog::new()

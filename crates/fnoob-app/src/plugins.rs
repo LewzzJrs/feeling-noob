@@ -22,6 +22,12 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 const SCAN_WORKERS: usize = 4;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+pub type BouncePlugins = (
+    PluginMap,
+    Vec<(usize, Box<fnoob_platform::plugin::PluginProcessor>)>,
+    Vec<Plugin>,
+);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Owner {
     Track(Id),
@@ -369,6 +375,30 @@ impl App {
         }
     }
 
+    pub(crate) fn bounce_plugins(&mut self) -> BouncePlugins {
+        self.capture_plugin_states();
+        let slots: Vec<PluginSlot> = project_slots(&self.project)
+            .into_iter()
+            .filter(|s| self.plugins.loaded.contains_key(&s.id))
+            .cloned()
+            .collect();
+        let mut map = PluginMap::new();
+        let mut processors = Vec::new();
+        let mut plugins = Vec::new();
+        for slot in slots {
+            match self.load_slot(&slot) {
+                Ok((plugin, processor)) => {
+                    let index = processors.len();
+                    map.insert(slot.id, index);
+                    processors.push((index, processor));
+                    plugins.push(plugin);
+                }
+                Err(e) => self.message = Some(format!("{}: {e}", slot.name)),
+            }
+        }
+        (map, processors, plugins)
+    }
+
     pub(crate) fn capture_plugin_states(&mut self) {
         let loaded = &self.plugins.loaded;
         let mut problems = Vec::new();
@@ -446,6 +476,7 @@ impl App {
     }
 
     pub(crate) fn set_insert(&mut self, owner: Owner, index: usize, entry: Option<&CatalogEntry>) {
+        self.capture_plugin_states();
         self.edit(|p| {
             let slot = entry.map(|e| Self::new_slot(p, e));
             let inserts = match owner {
@@ -480,6 +511,7 @@ impl App {
     }
 
     pub(crate) fn set_instrument(&mut self, track: Id, entry: Option<&CatalogEntry>) {
+        self.capture_plugin_states();
         self.edit(|p| {
             let instrument = match entry {
                 Some(e) => Instrument::Vst3(Self::new_slot(p, e)),

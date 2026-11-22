@@ -14,12 +14,10 @@ Each entry: file, what was skipped, when it needs fixing.
 | S6 | `crates/fnoob-app/src/main.rs` | The window icon is still the default `eframe` icon. | Phase 8 (original icon). |
 | S7 | `crates/fnoob-core/src/fsutil.rs`, `settings.rs`, `io.rs` (tests) | Tests use folders in `%TEMP%` named by PID instead of the `tempfile` crate. | If tests start colliding when run in parallel. |
 | S9 | `crates/fnoob-app/src/app.rs` (`sync_plan`) | The whole render plan is rebuilt and sent on every edit, including every frame of a drag. | When large projects feel slow (Phase 7 check). |
-| S11 | `crates/fnoob-app/src/app.rs` | Count-in length is fixed at the project value (default 1 bar); there is no UI to change it. | Phase 7 (Project Settings dialog). |
-| S12 | `crates/fnoob-app/src/app.rs` (`open`) | Open uses a folder picker for the `.fnoob` folder. No recent projects list. | Phase 7. |
+| S12 | `crates/fnoob-app/src/app.rs` (`open`) | Open uses a folder picker for the `.fnoob` folder instead of picking `project.json`. | Phase 8 polish. |
 | S14 | `crates/fnoob-app/src/timeline.rs` (`update_region_drag`) | Dragging regions to another track only works for a single region; multi-region drags move horizontally only. | When multi-track moves are needed. |
 | S15 | `crates/fnoob-app/src/timeline.rs` (`update_region_resize`) | Only the right edge of a region can be dragged. The left edge (trim the start) is not supported. | When trimming starts is needed. |
 | S16 | `crates/fnoob-core/src/history.rs` | Undo stores a full copy of the project per step (planned in `SPEC.md` 4.6). | If memory use becomes a problem. |
-| S17 | `crates/fnoob-app/src/app.rs` (`run`) | The Bounce command only shows "not available yet". | Phase 7. |
 | S18 | `crates/fnoob-app/src/app.rs` (`control_bar`) | The control bar does not wrap; on narrow windows its right side is cut off. | When window layout is polished (Phase 8). |
 | S19 | `crates/fnoob-engine/src/processor.rs` (`drain_midi`), `midi_in.rs` | MIDI input is applied at the start of each audio block; the `midir` timestamp is ignored. Timing can be off by up to one buffer (about 10 ms). | Phase 5, together with latency measurement. |
 | S20 | `crates/fnoob-engine/src/midi_in.rs` (`parse_message`) | Only note on/off is read. Sustain pedal, pitch bend, and other controllers are ignored. | After the MVP. |
@@ -29,21 +27,20 @@ Each entry: file, what was skipped, when it needs fixing.
 | S25 | `crates/fnoob-engine/src/processor.rs` (`Recorder`) | While loop recording, a key held across the loop end is cut at the loop end and not restarted at the loop start. | If players need held notes across the loop. |
 | S26 | `crates/fnoob-engine/src/processor.rs` (`read_input_frame`, `trim_input_backlog`) | Input and output streams are not clock-synced. Missing input samples become silence and an input backlog over 8192 frames is dropped. Slow or separate devices can leave gaps in recordings. | If recordings with two different devices are needed. |
 | S27 | `crates/fnoob-engine/src/processor.rs` (`clip_frame`) | Overlapping audio regions on one track are mixed together instead of the later one covering the earlier one. | If overlapping regions confuse users. |
-| S28 | `crates/fnoob-app/src/audio.rs` | Recorded and imported WAV files stay in `audio/` when their regions are deleted or undone. | Phase 7 (clean up unused files on save, with a prompt). |
 | S29 | `crates/fnoob-engine/src/audio_data.rs` | Whole audio files are loaded into memory (planned in `SPEC.md` 5.5). Long projects use a lot of RAM. | Roadmap (disk streaming). |
 | S30 | `crates/fnoob-app/src/audio.rs` (`finish_audio_take`) | Latency compensation uses the latency reported by the audio driver. It has not been checked with a loopback cable. | When a loopback measurement is possible. |
-| S31 | `crates/fnoob-app/src/audio.rs` (`prepare_audio_take`, `import_audio`) | Recording and importing audio need a saved project folder; there is no temporary folder for untitled projects. | Phase 7. |
 | S32 | `crates/fnoob-app/src/timeline.rs` | Audio regions have no fades, and their gain can only be changed in `project.json`. | Phase 6 (mixer) or later. |
 | S33 | `crates/fnoob-app/src/timeline.rs` (`input_options`) | The input channel list follows the currently open input device; with no input open it shows 2 channels. | When devices with many inputs are tested. |
 | S35 | `crates/fnoob-app/src/mixer.rs` | Meters show a decaying peak only: no peak hold, no clip indicator, no dB scale. | Phase 8 polish. |
 | S36 | `crates/fnoob-core/src/model.rs` (`Track`) | Track mute and solo stay on `Track`, not inside `strip` as the `SPEC.md` 4.3 example shows. | When the project format is next changed. |
 | S37 | `crates/fnoob-engine/src/processor.rs` | Plugin latency is ignored: there is no delay compensation between tracks. | When latency-heavy plugins are used. |
 | S38 | `crates/fnoob-platform/src/plugin/instance.rs` | Only the main stereo bus of a plugin is used. Side-chain and extra output buses get silence. Parameter changes and events sent back by plugins are ignored. | After the MVP. |
-| S39 | `crates/fnoob-app/src/plugins.rs` | Removing an insert and undoing it reloads the plugin from the state of the last save; tweaks made since then are lost. | Phase 7, with autosave. |
 | S40 | `crates/fnoob-platform/src/plugin/editor.rs` | Editor windows cannot be resized by the user and ignore display scaling requests. | Phase 8 polish. |
 | S41 | `crates/fnoob-engine/src/processor.rs` (`run_plugin`) | Plugins may allocate inside their own processing; the no-allocation check is switched off around plugin calls. | Cannot be fixed for third-party code. |
 | S42 | `crates/fnoob-app/src/plugins.rs` (`start_scan`) | Rescan always scans every plugin again. There is no way to rescan or block a single plugin. Error dialogs from broken plugins are moved to a hidden desktop on the scanner's main thread only; a dialog from another thread could still show. | When the plugin list grows. |
 | S43 | `crates/fnoob-app/src/plugins.rs` (`scanner_path`) | `fnoob-scan.exe` must sit next to the app; during development it is built with `cargo build --workspace`. | Phase 8 (installer). |
+| S44 | `crates/fnoob-app/src/bounce.rs` | Bounce uses fresh plugin copies in real-time mode, not the VST3 offline mode. The whole-song tail is a fixed 2 seconds, so longer reverb tails are cut. | If plugins sound different in bounces. |
+| S45 | `crates/fnoob-app/src/files.rs` (`tick_autosave`) | Autosave writes on the UI thread every 60 seconds; the interval cannot be changed. Untitled projects share one recovery slot in `%APPDATA%`. | If autosave stutters large projects. |
 
 ## Fixed
 
@@ -56,3 +53,8 @@ Each entry: file, what was skipped, when it needs fixing.
 | S13 | Phase 5 | Playback and recording are blocked when the project and device sample rates differ. |
 | S21 | Phase 6 | Tracks go through the mixer (volume, pan, send, Bus 1, Master) before the output safety clamp. |
 | S34 | Phase 6 | Insert slots load VST3 effects; instrument tracks can use a VST3 instrument. |
+| S11 | Phase 7 | Count-in length is set in File > Project Settings. |
+| S17 | Phase 7 | Bounce to WAV works (Ctrl+B). |
+| S28 | Phase 7 | File > Move Unused Audio Files moves files no snapshot uses into `audio/unused/`. |
+| S31 | Phase 7 | Recording or importing audio in an untitled project asks for Save As first. |
+| S39 | Phase 7 | Plugin states are written into the project before an insert or instrument changes, so undo restores them. |

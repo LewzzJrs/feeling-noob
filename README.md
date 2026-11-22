@@ -2,7 +2,7 @@
 
 A digital audio workstation for Windows, written in Rust.
 
-> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, resize, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, a built-in synth, a piano roll with quantize, MIDI keyboard input and MIDI recording, audio recording and WAV import with waveforms and input monitoring, a mixer with volume, pan, send to Bus 1, Master, and meters, VST3 effects and instruments with their editors, undo/redo, keyboard shortcuts, and project save/load. Autosave and export are not there yet.
+> **Status: pre-alpha.** The app has a timeline with audio and instrument tracks, regions you can move, resize, split, repeat, copy, and delete, a transport with loop, metronome, and count-in, a built-in synth, a piano roll with quantize, MIDI keyboard input and MIDI recording, audio recording and WAV import with waveforms and input monitoring, a mixer with volume, pan, send to Bus 1, Master, and meters, VST3 effects and instruments with their editors, undo/redo, keyboard shortcuts, project save/load with backups, autosave and recovery, and bounce to WAV.
 
 ## Goals
 

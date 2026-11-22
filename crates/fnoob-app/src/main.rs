@@ -2,6 +2,8 @@
 
 mod app;
 mod audio;
+mod bounce;
+mod files;
 mod instrument;
 mod keys;
 mod midi;

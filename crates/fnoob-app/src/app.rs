@@ -85,10 +85,11 @@ pub struct View {
     pub scroll_y: f32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Pending {
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum Pending {
     New,
     Open,
+    OpenPath(PathBuf),
     Quit,
 }
 
@@ -112,8 +113,14 @@ pub struct App {
     pub(crate) missing: HashSet<Id>,
     pub(crate) audio_take: Option<crate::audio::AudioTake>,
     pub(crate) project: Project,
-    saved: Project,
+    pub(crate) saved: Project,
     pub(crate) project_dir: Option<PathBuf>,
+    pub(crate) autosave: crate::files::Autosave,
+    pub(crate) recovery: Option<crate::files::Recovery>,
+    pub(crate) show_project_settings: bool,
+    pub(crate) cleanup: Option<Vec<String>>,
+    pub(crate) bounce_dialog: Option<crate::bounce::BounceDialog>,
+    pub(crate) bounce: Option<crate::bounce::ActiveBounce>,
     pub(crate) history: History,
     pub(crate) selection: Selection,
     clipboard: Vec<Region>,
@@ -174,6 +181,12 @@ impl App {
             saved: project.clone(),
             project,
             project_dir: None,
+            autosave: crate::files::Autosave::default(),
+            recovery: None,
+            show_project_settings: false,
+            cleanup: None,
+            bounce_dialog: None,
+            bounce: None,
             history: History::default(),
             selection: Selection::default(),
             clipboard: Vec::new(),
@@ -208,6 +221,7 @@ impl App {
             app.project.sample_rate = output.sample_rate;
             app.saved = app.project.clone();
         }
+        app.check_startup_recovery();
         if let Some(dir) = open {
             app.open_dir(dir);
         }
@@ -230,7 +244,7 @@ impl App {
         }
     }
 
-    fn is_dirty(&self) -> bool {
+    pub(crate) fn is_dirty(&self) -> bool {
         self.project != self.saved || self.plugins.edited
     }
 
@@ -444,10 +458,6 @@ impl App {
         }
     }
 
-    fn not_yet(&mut self, what: &str) {
-        self.message = Some(format!("{what} is not available yet."));
-    }
-
     pub(crate) fn run(&mut self, command: Command) {
         if self.focus == Focus::Editor && self.editor_command(command) {
             return;
@@ -498,7 +508,7 @@ impl App {
                     });
                 }
             }
-            Command::Bounce => self.not_yet("Bounce"),
+            Command::Bounce => self.open_bounce_dialog(),
             Command::ToggleTrackMute => {
                 if let Some(id) = self.selection.track {
                     self.edit_track(id, |t| t.mute = !t.mute);
@@ -608,11 +618,15 @@ impl App {
                 self.replace_project(project, None);
             }
             Pending::Open => self.open(),
-            Pending::Quit => self.allow_close = true,
+            Pending::OpenPath(dir) => self.open_dir(dir),
+            Pending::Quit => {
+                self.discard_autosave();
+                self.allow_close = true;
+            }
         }
     }
 
-    fn replace_project(&mut self, project: Project, dir: Option<PathBuf>) {
+    pub(crate) fn replace_project(&mut self, project: Project, dir: Option<PathBuf>) {
         self.send(EngineCommand::Stop);
         self.saved = project.clone();
         self.project = project;
@@ -648,6 +662,9 @@ impl App {
     }
 
     fn open_dir(&mut self, dir: PathBuf) {
+        if self.offer_autosave(&dir) {
+            return;
+        }
         if !dir.join(PROJECT_FILE).is_file() {
             self.message = Some(format!("{} has no {PROJECT_FILE}.", dir.display()));
             return;
@@ -655,6 +672,8 @@ impl App {
         match io::load(&dir) {
             Ok(project) => {
                 self.message = None;
+                self.settings.add_recent(&dir);
+                self.save_settings();
                 self.replace_project(project, Some(dir));
             }
             Err(e) => self.message = Some(e.to_string()),
@@ -668,7 +687,7 @@ impl App {
         }
     }
 
-    fn save_as(&mut self) -> bool {
+    pub(crate) fn save_as(&mut self) -> bool {
         let Some(path) = rfd::FileDialog::new()
             .set_title("Save project as")
             .set_file_name(format!("{}.{PROJECT_EXTENSION}", self.project.name))
@@ -706,10 +725,13 @@ impl App {
 
     fn save_to(&mut self, dir: &Path) -> bool {
         self.capture_plugin_states();
+        let was_untitled = self.project_dir.is_none();
         match io::save(dir, &self.project) {
             Ok(()) => {
                 self.saved = self.project.clone();
                 self.plugins.edited = false;
+                self.project_dir = Some(dir.to_path_buf());
+                self.after_manual_save(was_untitled);
                 self.message = Some(format!("Saved {}", dir.display()));
                 true
             }
@@ -736,8 +758,31 @@ impl App {
             ui.menu_button("File", |ui| {
                 self.menu_item(ui, "New Project", Command::NewProject);
                 self.menu_item(ui, "Open...", Command::Open);
+                let recent = self.settings.recent_projects.clone();
+                ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                    ui.menu_button("Open Recent", |ui| {
+                        for path in recent {
+                            let exists = Path::new(&path).join(PROJECT_FILE).is_file();
+                            if ui.add_enabled(exists, egui::Button::new(&path)).clicked() {
+                                self.request(Pending::OpenPath(PathBuf::from(&path)));
+                                ui.close();
+                            }
+                        }
+                    });
+                });
                 self.menu_item(ui, "Save", Command::Save);
                 self.menu_item(ui, "Save As...", Command::SaveAs);
+                ui.separator();
+                if ui.button("Project Settings...").clicked() {
+                    self.show_project_settings = true;
+                    ui.close();
+                }
+                if ui.button("Move Unused Audio Files...").clicked() {
+                    self.find_unused_audio();
+                    ui.close();
+                }
+                ui.separator();
+                self.menu_item(ui, "Bounce to WAV...", Command::Bounce);
                 ui.separator();
                 if ui.button("Import Audio File...").clicked() {
                     self.import_audio();
@@ -1226,7 +1271,7 @@ impl App {
     }
 
     fn confirm_window(&mut self, ctx: &egui::Context) {
-        let Some(pending) = self.pending else {
+        let Some(pending) = self.pending.clone() else {
             return;
         };
         let mut choice = None;
@@ -1254,6 +1299,7 @@ impl App {
             }
             Some(1) => {
                 self.pending = None;
+                self.discard_autosave();
                 self.proceed(pending);
             }
             Some(_) => self.pending = None,
@@ -1266,9 +1312,13 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        if ctx.input(|i| i.viewport().close_requested()) && self.is_dirty() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.pending = Some(Pending::Quit);
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.is_dirty() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.pending = Some(Pending::Quit);
+            } else {
+                self.discard_autosave();
+            }
         }
     }
 
@@ -1348,7 +1398,12 @@ impl eframe::App for App {
         self.poll_engine();
         self.handle_close(&ctx);
         self.update_focus(&ctx);
-        if self.pending.is_none() && self.new_tracks.is_none() {
+        if self.pending.is_none()
+            && self.new_tracks.is_none()
+            && self.recovery.is_none()
+            && self.bounce.is_none()
+            && self.bounce_dialog.is_none()
+        {
             for command in take_commands(&ctx) {
                 self.run(command);
             }
@@ -1380,6 +1435,10 @@ impl eframe::App for App {
             });
         self.settings_window(&ctx);
         self.synth_settings_window(&ctx);
+        self.project_settings_window(&ctx);
+        self.cleanup_window(&ctx);
+        self.recovery_window(&ctx);
+        self.bounce_windows(&ctx);
         self.plugin_manager(&ctx);
         self.new_tracks_window(&ctx);
         self.confirm_window(&ctx);
@@ -1389,6 +1448,7 @@ impl eframe::App for App {
         );
         self.sync_live_track();
         self.update_preview();
+        self.tick_autosave(&ctx);
         if self.transport_state() != TransportState::Stopped || self.editor.preview.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else if self.mixer_open {
