@@ -42,7 +42,7 @@ Each entry: file, what was skipped, when it needs fixing.
 | S39 | `crates/fnoob-app/src/plugins.rs` | Removing an insert and undoing it reloads the plugin from the state of the last save; tweaks made since then are lost. | Phase 7, with autosave. |
 | S40 | `crates/fnoob-platform/src/plugin/editor.rs` | Editor windows cannot be resized by the user and ignore display scaling requests. | Phase 8 polish. |
 | S41 | `crates/fnoob-engine/src/processor.rs` (`run_plugin`) | Plugins may allocate inside their own processing; the no-allocation check is switched off around plugin calls. | Cannot be fixed for third-party code. |
-| S42 | `crates/fnoob-app/src/plugins.rs` (`start_scan`) | Rescan always scans every plugin again. There is no way to rescan or block a single plugin. Some broken plugins show their own error dialogs during a scan. | When the plugin list grows. |
+| S42 | `crates/fnoob-app/src/plugins.rs` (`start_scan`) | Rescan always scans every plugin again. There is no way to rescan or block a single plugin. Error dialogs from broken plugins are moved to a hidden desktop on the scanner's main thread only; a dialog from another thread could still show. | When the plugin list grows. |
 | S43 | `crates/fnoob-app/src/plugins.rs` (`scanner_path`) | `fnoob-scan.exe` must sit next to the app; during development it is built with `cargo build --workspace`. | Phase 8 (installer). |
 
 ## Fixed

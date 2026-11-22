@@ -10,6 +10,7 @@ fn main() -> ExitCode {
         eprintln!("usage: fnoob-scan <plugin.vst3>");
         return ExitCode::from(2);
     };
+    fnoob_platform::win::move_thread_to_hidden_desktop();
     let result = scan(&path);
     let ok = result.is_ok();
     let (classes, error) = match result {
