@@ -112,6 +112,8 @@ fn process_does_not_allocate() {
         Arc::new(AudioData::from_samples(2, vec![0.1; 96_000])),
     );
     project.loop_range.enabled = true;
+    project.punch.punch_in = true;
+    project.punch.punch_out = true;
     project.metronome.count_in_enabled = true;
     let (mut processor, mut handle) = create(
         48_000,

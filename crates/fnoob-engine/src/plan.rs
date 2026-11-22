@@ -123,6 +123,7 @@ pub struct RenderPlan {
     pub count_in_beats: u64,
     pub loop_range: Option<(u64, u64)>,
     pub launch_quantum: u64,
+    pub record_window: (u64, u64),
     pub tracks: Vec<TrackPlan>,
     pub audio_tracks: Vec<AudioTrackPlan>,
     pub records_audio: bool,
@@ -365,6 +366,18 @@ impl RenderPlan {
                 .filter(|(start, end)| end > start),
             launch_quantum: (project.launch_quantize.ticks(ts) as f64 * samples_per_tick).round()
                 as u64,
+            record_window: (
+                if project.punch.punch_in {
+                    timeline.tick_to_sample(loop_range.start_tick)
+                } else {
+                    0
+                },
+                if project.punch.punch_out {
+                    timeline.tick_to_sample(loop_range.end_tick)
+                } else {
+                    u64::MAX
+                },
+            ),
             tracks: track_plans(project, timeline, pool, plugins),
             audio_tracks: audio_track_plans(project, timeline, pool, plugins),
             bus: {

@@ -6,6 +6,7 @@ use crate::plan::{
     RenderPlan, StripPlan, TRACK_METERS, TrackPlan,
 };
 use crate::session::{Session, SessionStatus};
+use fnoob_core::capture::Played;
 use fnoob_core::effects::BuiltinEffect;
 use fnoob_core::model::Id;
 use fnoob_core::time::{beat_start_sample, first_beat_at_or_after};
@@ -18,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 const COMMAND_CAPACITY: usize = 256;
 const GARBAGE_CAPACITY: usize = 64;
 const RECORDED_CAPACITY: usize = 4096;
+const PLAYED_CAPACITY: usize = 4096;
 pub const MIDI_CAPACITY: usize = 1024;
 pub const MAX_INPUT_CHANNELS: usize = 32;
 const INPUT_BACKLOG_FRAMES: usize = 8192;
@@ -163,6 +165,7 @@ pub struct EngineHandle {
     commands: Producer<Command>,
     garbage: Consumer<Garbage>,
     recorded: Consumer<RecordedEvent>,
+    played: Consumer<Played>,
     shared: Arc<Shared>,
 }
 
@@ -173,6 +176,10 @@ impl EngineHandle {
 
     pub fn collect_garbage(&mut self) {
         while self.garbage.pop().is_ok() {}
+    }
+
+    pub fn pop_played(&mut self) -> Option<Played> {
+        self.played.pop().ok()
     }
 
     pub fn pop_recorded(&mut self) -> Option<RecordedEvent> {
@@ -308,12 +315,15 @@ pub struct Processor {
     next_beat: u64,
     next_beat_sample: u64,
     rng: u64,
+    played: Producer<Played>,
+    clock: u64,
 }
 
 pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Processor, EngineHandle) {
     let (command_tx, command_rx) = RingBuffer::new(COMMAND_CAPACITY);
     let (garbage_tx, garbage_rx) = RingBuffer::new(GARBAGE_CAPACITY);
     let (recorded_tx, recorded_rx) = RingBuffer::new(RECORDED_CAPACITY);
+    let (played_tx, played_rx) = RingBuffer::new(PLAYED_CAPACITY);
     let shared = Arc::new(Shared {
         position: AtomicU64::new(0),
         state: AtomicU8::new(0),
@@ -364,12 +374,15 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         next_beat: 0,
         next_beat_sample: 0,
         rng: 0x9E37_79B9_7F4A_7C15,
+        played: played_tx,
+        clock: 0,
     };
     processor.resync();
     let handle = EngineHandle {
         commands: command_tx,
         garbage: garbage_rx,
         recorded: recorded_rx,
+        played: played_rx,
         shared,
     };
     (processor, handle)
@@ -752,11 +765,23 @@ impl Processor {
         }
     }
 
+    fn in_record_window(&self) -> bool {
+        let (start, end) = self.plan.record_window;
+        (start..end).contains(&self.position)
+    }
+
     fn live_event(&mut self, event: MidiEvent) {
         if let Some(track) = self.live_track {
             self.play_live(track, event);
         }
-        if self.recording && self.state == TransportState::Playing {
+        let playing = self.state == TransportState::Playing;
+        let _ = self.played.push(Played {
+            clock: self.clock + self.frame as u64,
+            position: playing.then_some(self.position),
+            pitch: event.pitch,
+            velocity: event.velocity,
+        });
+        if self.recording && playing && self.in_record_window() {
             self.recorder.event(self.position, event);
         }
     }
@@ -973,13 +998,17 @@ impl Processor {
                 track.left[f] = left;
                 track.right[f] = right;
             }
-            if playing && self.recording && self.plan.records_audio {
+            if playing && self.recording && self.position == self.plan.record_window.1 {
+                self.recorder.end_held(self.position);
+            }
+            if playing && self.recording && self.plan.records_audio && self.in_record_window() {
                 self.record_input_frame();
             }
             if playing {
                 self.position += 1;
             }
         }
+        self.clock += frames as u64;
         let transport = self.transport(started_playing, start);
         for track in &mut self.plan.tracks {
             if !track.audible {
@@ -1472,6 +1501,60 @@ mod tests {
         render(&mut p, 10);
         assert!(render(&mut p, 500).iter().all(|&s| s == 0.0));
         assert_eq!(h.position(), 0);
+    }
+
+    #[test]
+    fn punch_records_only_inside_the_loop_brace() {
+        let (mut project, track, _) = synth_project();
+        project.loop_range.start_tick = 3840;
+        project.loop_range.end_tick = 7680;
+        project.punch.punch_in = true;
+        project.punch.punch_out = true;
+        let (mut p, mut h) = create(SR, 1, plan(&project));
+        let (mut tx, rx) = midi_channel();
+        h.send(Command::SetMidiInput(rx)).unwrap();
+        h.send(Command::SetLiveTrack(Some(track))).unwrap();
+        h.send(Command::Record).unwrap();
+        render(&mut p, 1000);
+        for (pitch, frames) in [(60, 99_000), (62, 100_000), (64, 100)] {
+            tx.push(MidiEvent {
+                pitch,
+                velocity: 100,
+            })
+            .unwrap();
+            render(&mut p, frames);
+        }
+        let events: Vec<(u64, u8, u8)> = recorded(&mut h)
+            .iter()
+            .map(|e| (e.sample, e.pitch, e.velocity))
+            .collect();
+        assert_eq!(events, vec![(100_000, 62, 100), (192_000, 62, 0)]);
+    }
+
+    #[test]
+    fn played_notes_are_reported_while_stopped() {
+        let (project, track, _) = synth_project();
+        let (mut p, mut h) = create(SR, 1, plan(&project));
+        let (mut tx, rx) = midi_channel();
+        h.send(Command::SetMidiInput(rx)).unwrap();
+        h.send(Command::SetLiveTrack(Some(track))).unwrap();
+        render(&mut p, 512);
+        tx.push(MidiEvent {
+            pitch: 60,
+            velocity: 100,
+        })
+        .unwrap();
+        render(&mut p, 512);
+        tx.push(MidiEvent {
+            pitch: 60,
+            velocity: 0,
+        })
+        .unwrap();
+        render(&mut p, 512);
+        let played: Vec<Played> = std::iter::from_fn(|| h.pop_played()).collect();
+        assert_eq!(played.len(), 2);
+        assert_eq!((played[0].clock, played[0].position), (512, None));
+        assert_eq!((played[1].clock, played[1].velocity), (1024, 0));
     }
 
     #[test]
