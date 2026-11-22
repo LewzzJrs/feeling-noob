@@ -1,0 +1,13 @@
+[package]
+name = "fnoob-scan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fnoob-core = { version = "0.1.0", path = "../fnoob-core" }
+fnoob-platform = { version = "0.1.0", path = "../fnoob-platform" }
+serde_json = "1.0.154"
+
+[lints]
+workspace = true
