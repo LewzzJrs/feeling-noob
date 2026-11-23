@@ -403,6 +403,8 @@ Layout:
 ```
 
 - Menus: File, Edit, Create, Track, Transport, View (egui widgets, not native menus).
+- Snap and grid size sit at the right end of the status bar. The control bar has Key and Scale; with Key on, the piano roll highlights scale notes and the root.
+- The Main column of the clip grid chooses the Main Out and Cue Out output pairs and the cue volume for browser previews.
 - In the clip grid the mixer section sits under every column, with an empty drop area, then the return track columns, then Main, which holds the scene launch buttons. Each column has an I/O section (input, monitor, output) and a mixer strip (send knobs, fader with meter, pan knob, activator, solo, arm).
 - Dark theme by default.
 - VST3 plugin editors in separate windows.

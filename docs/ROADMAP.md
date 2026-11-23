@@ -55,13 +55,15 @@ Done in Phase 15: a new layout and way of working. Track headers with name, inpu
 
 Done in Phase 16: several return tracks (new projects start with A Reverb and B Delay and 2 MIDI plus 2 audio tracks), a send per return on every track, monitor In/Auto/Off, output Main or No Output, and a clip grid laid out as tracks, an empty drop area, return columns, and a Main column with the scene buttons, each with an I/O section and a fader strip with knobs.
 
+Done in Phase 17: Main Out and Cue Out output pairs with a cue volume (browser previews play on the cue pair), a Key and Scale choice in the control bar that highlights scale notes in the piano roll, and browser category icons and tag filters for samples.
+
 Not started, in rough priority order:
 
 - Take lanes and comping for audio
 - Tempo and time signature changes (tempo map), tap tempo
 - Audio warping and time stretch, clip tempo
 - MIDI tools: transpose, humanize, legato, chop, strum, arpeggiate, rhythm and chord generators
-- Scale mode (root and scale, fold and highlight in the piano roll)
+- Scale mode: fold the piano roll to scale notes, scale-aware MIDI tools
 - Automation of plugin parameters, automation recording, clip envelopes
 - Crossfades between overlapping regions, fade handles on region corners
 - Quantize strength and swing, groove templates

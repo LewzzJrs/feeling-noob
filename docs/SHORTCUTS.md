@@ -53,6 +53,7 @@ Each entry: file, what was skipped, when it needs fixing.
 | S60 | `crates/fnoob-app/src/midi.rs` (`capture_midi`) | Capture MIDI keeps the last 8192 played events and splits phrases at a fixed 4-second pause. Notes played while stopped keep the project tempo; the tempo is not guessed from the playing. Punch uses the loop area only, with no separate punch range and no pre-roll. | If players need these options. |
 | S61 | `crates/fnoob-app/src/ui_kit.rs` (`hint`) | The status bar explains only controls that call `hint`; menus and some editor controls show nothing there. | When more controls get descriptions. |
 | S62 | `crates/fnoob-app/src/timeline.rs` (`draw_headers`) | Track headers have a fixed width and height; they cannot be resized or folded, and the output can only be Main or No Output. Return tracks cannot send to other returns. MIDI tracks have no monitor switch; live MIDI always plays on the armed or selected track. | With track groups and routing. |
+| S63 | `crates/fnoob-engine/src/processor.rs` (`write_outputs`) | Cue Out carries only browser previews; the metronome and solo cueing still go to Main. Scale mode only highlights rows; the piano roll cannot fold to scale notes. Sample tags match words in file names, not real metadata. | With cue solo and MIDI tools. |
 
 ## Fixed
 
