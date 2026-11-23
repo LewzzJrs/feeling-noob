@@ -11,4 +11,4 @@ pub mod session;
 pub mod synth;
 
 pub use plan::RenderPlan;
-pub use processor::{Command, EngineHandle, Processor, TransportState, create};
+pub use processor::{Command, EngineHandle, Outputs, Processor, TransportState, create};

@@ -82,6 +82,24 @@ pub enum Command {
     StopClips(Option<Id>),
     LaunchScene(usize),
     BackToArrangement,
+    SetOutputs(Outputs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Outputs {
+    pub main: usize,
+    pub cue: usize,
+    pub cue_gain: f32,
+}
+
+impl Default for Outputs {
+    fn default() -> Self {
+        Self {
+            main: 0,
+            cue: 0,
+            cue_gain: 0.7,
+        }
+    }
 }
 
 impl fmt::Debug for Command {
@@ -112,6 +130,7 @@ impl fmt::Debug for Command {
             Self::StopClips(track) => write!(f, "StopClips({track:?})"),
             Self::LaunchScene(scene) => write!(f, "LaunchScene({scene})"),
             Self::BackToArrangement => write!(f, "BackToArrangement"),
+            Self::SetOutputs(o) => write!(f, "SetOutputs({}, {})", o.main, o.cue),
         }
     }
 }
@@ -323,6 +342,7 @@ pub struct Processor {
     played: Producer<Played>,
     clock: u64,
     sample_rate: u32,
+    outputs: Outputs,
 }
 
 pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Processor, EngineHandle) {
@@ -382,6 +402,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         next_beat_sample: 0,
         rng: 0x9E37_79B9_7F4A_7C15,
         sample_rate,
+        outputs: Outputs::default(),
         played: played_tx,
         clock: 0,
     };
@@ -652,6 +673,7 @@ impl Processor {
                 }
             }
             Command::LiveNote(event) => self.live_event(event),
+            Command::SetOutputs(outputs) => self.outputs = outputs,
             Command::LaunchClip { .. }
             | Command::ReleaseClip { .. }
             | Command::StopClips(_)
@@ -1111,7 +1133,13 @@ impl Processor {
                 }
                 _ => (0.0, 0.0),
             };
-            write_frame(frame, left + click + pl * 0.7, right + click + pr * 0.7);
+            let gain = self.outputs.cue_gain;
+            write_outputs(
+                frame,
+                (left + click, right + click),
+                (pl * gain, pr * gain),
+                self.outputs,
+            );
         }
         self.frame = 0;
     }
@@ -1308,15 +1336,32 @@ fn safe(sample: f32) -> f32 {
     }
 }
 
-fn write_frame(frame: &mut [f32], left: f32, right: f32) {
-    match frame {
-        [only] => *only = safe((left + right) * 0.5),
-        [l, r, rest @ ..] => {
-            *l = safe(left);
-            *r = safe(right);
-            rest.fill(0.0);
-        }
-        [] => {}
+fn write_outputs(frame: &mut [f32], main: (f32, f32), cue: (f32, f32), outputs: Outputs) {
+    if let [only] = frame {
+        *only = safe((main.0 + main.1 + cue.0 + cue.1) * 0.5);
+        return;
+    }
+    frame.fill(0.0);
+    let pairs = frame.len() / 2;
+    if pairs == 0 {
+        return;
+    }
+    let main_pair = if outputs.main < pairs {
+        outputs.main
+    } else {
+        0
+    };
+    let cue_pair = if outputs.cue < pairs {
+        outputs.cue
+    } else {
+        main_pair
+    };
+    for (pair, (left, right)) in [(main_pair, main), (cue_pair, cue)] {
+        frame[pair * 2] += left;
+        frame[pair * 2 + 1] += right;
+    }
+    for sample in frame.iter_mut() {
+        *sample = safe(*sample);
     }
 }
 
@@ -1730,6 +1775,31 @@ mod tests {
         for index in 0..3 {
             assert_eq!(h.session_status(index).playing, Some(0), "track {index}");
         }
+    }
+
+    #[test]
+    fn main_and_cue_go_to_their_output_pairs() {
+        let mut frame = [9.0f32; 4];
+        let outputs = Outputs {
+            main: 1,
+            cue: 0,
+            cue_gain: 1.0,
+        };
+        write_outputs(&mut frame, (0.25, 0.5), (0.1, 0.2), outputs);
+        assert_eq!(frame, [0.1, 0.2, 0.25, 0.5]);
+        write_outputs(&mut frame, (0.25, 0.5), (0.1, 0.2), Outputs::default());
+        assert_eq!(frame, [0.35, 0.7, 0.0, 0.0]);
+        let mut stereo = [0.0f32; 2];
+        let far = Outputs {
+            main: 3,
+            cue: 5,
+            cue_gain: 1.0,
+        };
+        write_outputs(&mut stereo, (0.25, 0.5), (0.0, 0.0), far);
+        assert_eq!(stereo, [0.25, 0.5]);
+        let mut mono = [0.0f32; 1];
+        write_outputs(&mut mono, (0.5, 0.5), (0.0, 0.0), far);
+        assert_eq!(mono, [0.5]);
     }
 
     #[test]
