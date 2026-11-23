@@ -4,7 +4,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub output_device: Option<String>,
@@ -15,6 +15,9 @@ pub struct Settings {
     pub plugin_folders: Vec<String>,
     pub recent_projects: Vec<String>,
     pub sample_folders: Vec<String>,
+    pub main_out: usize,
+    pub cue_out: usize,
+    pub cue_volume_db: f32,
 }
 
 pub const MAX_RECENT: usize = 10;
@@ -149,6 +152,9 @@ mod tests {
             plugin_folders: vec!["D:/Plugins".into()],
             recent_projects: vec!["D:/Songs/A.fnoob".into()],
             sample_folders: vec!["D:/Samples".into()],
+            main_out: 1,
+            cue_out: 0,
+            cue_volume_db: -3.0,
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);

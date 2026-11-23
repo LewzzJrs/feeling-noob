@@ -699,6 +699,8 @@ pub struct Project {
     pub loop_range: LoopRange,
     #[serde(default)]
     pub punch: Punch,
+    #[serde(default)]
+    pub scale: crate::scale::Scale,
     pub metronome: MetronomeSettings,
     pub snap: Snap,
     pub next_id: Id,
@@ -766,6 +768,7 @@ impl Project {
                 end_tick: 4 * 3840,
             },
             punch: Punch::default(),
+            scale: crate::scale::Scale::default(),
             metronome: MetronomeSettings {
                 enabled: true,
                 count_in_enabled: false,

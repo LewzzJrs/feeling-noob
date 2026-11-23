@@ -180,6 +180,9 @@ pub fn validate(project: &Project) -> Result<(), String> {
         return Err("loop end must be after loop start".into());
     }
     let fader = SILENT_DB..=MAX_FADER_DB;
+    if !project.scale.is_valid() {
+        return Err("the scale root must be 0 to 11".into());
+    }
     if !fader.contains(&project.master.volume_db) {
         return Err("main settings are invalid".into());
     }
