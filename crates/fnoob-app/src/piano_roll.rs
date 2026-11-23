@@ -437,8 +437,21 @@ impl App {
         let last_pitch = g.pitch(g.notes.top());
         for pitch in first_pitch..=last_pitch {
             let y = g.y(pitch);
-            if is_black(pitch) {
-                let row = Rect::from_x_y_ranges(g.notes.x_range(), y..=y + ROW);
+            let row = Rect::from_x_y_ranges(g.notes.x_range(), y..=y + ROW);
+            let scale = self.project.scale;
+            if scale.enabled {
+                if scale.is_root(pitch) {
+                    painter.rect_filled(
+                        row,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(235, 170, 60, 34),
+                    );
+                } else if scale.contains(pitch) {
+                    painter.rect_filled(row, 0.0, Color32::from_white_alpha(10));
+                } else {
+                    painter.rect_filled(row, 0.0, Color32::from_black_alpha(70));
+                }
+            } else if is_black(pitch) {
                 painter.rect_filled(row, 0.0, Color32::from_black_alpha(40));
             }
             if pitch % 12 == 0 {

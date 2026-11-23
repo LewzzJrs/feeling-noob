@@ -488,6 +488,75 @@ impl App {
         }
     }
 
+    pub(crate) fn send_outputs(&mut self) {
+        let outputs = fnoob_engine::Outputs {
+            main: self.settings.main_out,
+            cue: self.settings.cue_out,
+            cue_gain: fnoob_core::model::db_to_gain(self.settings.cue_volume_db),
+        };
+        self.send(fnoob_engine::Command::SetOutputs(outputs));
+    }
+
+    pub(crate) fn main_io(&mut self, ui: &mut Ui) {
+        let pairs = self
+            .audio
+            .as_ref()
+            .map_or(1, |(output, _)| usize::from(output.channels / 2).max(1));
+        let label = |pair: usize| format!("{}/{}", pair * 2 + 1, pair * 2 + 2);
+        let (mut cue, mut main) = (self.settings.cue_out, self.settings.main_out);
+        for (title, value, salt, info) in [
+            (
+                "Cue",
+                &mut cue,
+                "cue_out",
+                "Cue Out: the output pair for previews from the browser.",
+            ),
+            (
+                "Main",
+                &mut main,
+                "main_out",
+                "Main Out: the output pair for the mix.",
+            ),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).small().weak());
+                let combo = egui::ComboBox::from_id_salt(salt)
+                    .width(52.0)
+                    .selected_text(label(*value))
+                    .show_ui(ui, |ui| {
+                        for pair in 0..pairs {
+                            ui.selectable_value(value, pair, label(pair));
+                        }
+                    });
+                hint(combo.response, info);
+            });
+        }
+        let mut cue_db = fader_value(self.settings.cue_volume_db);
+        let response = ui.add(
+            egui::DragValue::new(&mut cue_db)
+                .range(FADER_FLOOR_DB..=MAX_FADER_DB)
+                .speed(0.2)
+                .custom_formatter(|v, _| db_text(v))
+                .prefix("Cue ")
+                .suffix(" dB"),
+        );
+        let response = hint(response, "Cue volume: how loud browser previews play.");
+        let changed =
+            cue != self.settings.cue_out || main != self.settings.main_out || response.changed();
+        if changed {
+            self.settings.cue_out = cue;
+            self.settings.main_out = main;
+            self.settings.cue_volume_db = from_fader(cue_db);
+            self.send_outputs();
+        }
+        if changed && !response.dragged() {
+            self.save_settings();
+        }
+        if response.drag_stopped() {
+            self.save_settings();
+        }
+    }
+
     pub(crate) fn plugin_choices(&self, ui: &mut Ui, instruments: bool) -> Option<CatalogEntry> {
         let mut chosen = None;
         let entries: Vec<&CatalogEntry> = self

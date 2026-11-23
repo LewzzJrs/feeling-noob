@@ -22,7 +22,7 @@ const HEADER_H: f32 = 26.0;
 const SCENE_W: f32 = 150.0;
 const IO_H: f32 = 62.0;
 const STRIP_H: f32 = 196.0;
-const FADER_H: f32 = 110.0;
+const FADER_H: f32 = 90.0;
 const SPACER_MIN: f32 = 60.0;
 const PLAYING: Color32 = Color32::from_rgb(90, 200, 110);
 
@@ -541,10 +541,7 @@ impl App {
                     ui.label(RichText::new("Audio To").small().weak());
                     ui.label("Main");
                 }
-                MixTarget::Master => {
-                    ui.label(RichText::new("Main Out").small().weak());
-                    ui.label("Speakers");
-                }
+                MixTarget::Master => self.main_io(ui),
             }
         });
         let strip = Rect::from_min_size(Pos2::new(x, top + IO_H), vec2(width - 2.0, STRIP_H - 4.0));

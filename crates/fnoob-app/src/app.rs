@@ -327,6 +327,7 @@ impl App {
         }
         self.live_sent = None;
         self.take = None;
+        self.send_outputs();
         self.connect_midi();
         self.open_input_device();
         self.sync_plan();
@@ -1453,8 +1454,8 @@ impl eframe::App for App {
         if self.browser.open {
             egui::Panel::left("browser")
                 .resizable(true)
-                .default_size(260.0)
-                .size_range(200.0..=520.0)
+                .default_size(320.0)
+                .size_range(240.0..=560.0)
                 .show(ui, |ui| self.browser_panel(ui));
         }
         if self.detail_visible() {

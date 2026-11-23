@@ -3,6 +3,7 @@ use crate::ui_kit::{Icon, hint, icon_button};
 use eframe::egui::{self, Color32, Layout, RichText, Ui};
 use fnoob_core::keymap::{Command, shortcut_label};
 use fnoob_core::model::Grid;
+use fnoob_core::scale::{NOTE_NAMES, ScaleKind};
 use fnoob_core::session::LaunchQuantize;
 use fnoob_core::time::{MAX_BPM, MIN_BPM, Position, ticks_per_bar};
 use fnoob_engine::{Command as EngineCommand, TransportState};
@@ -146,6 +147,7 @@ impl App {
             if quantize != self.project.launch_quantize {
                 self.edit(|p| p.launch_quantize = quantize);
             }
+            self.scale_controls(ui);
             ui.separator();
             self.switch(
                 ui,
@@ -210,21 +212,6 @@ impl App {
             ui.separator();
             self.loop_controls(ui);
             ui.separator();
-            let snap = self.project.snap.enabled;
-            self.switch(ui, snap, "Snap", "Snap to grid.", Command::ToggleSnap);
-            let mut grid_size = self.project.snap.grid;
-            let combo = egui::ComboBox::from_id_salt("grid")
-                .width(48.0)
-                .selected_text(grid_size.label())
-                .show_ui(ui, |ui| {
-                    for g in Grid::ALL {
-                        ui.selectable_value(&mut grid_size, g, g.label());
-                    }
-                });
-            hint(combo.response, "Grid size for snapping and editing.");
-            if grid_size != self.project.snap.grid {
-                self.edit(|p| p.snap.grid = grid_size);
-            }
             self.switch(
                 ui,
                 self.draw_mode,
@@ -267,6 +254,61 @@ impl App {
                 Command::ToggleClipGrid,
             );
         });
+    }
+
+    fn snap_controls(&mut self, ui: &mut Ui) {
+        let mut grid_size = self.project.snap.grid;
+        let combo = egui::ComboBox::from_id_salt("grid")
+            .width(48.0)
+            .selected_text(grid_size.label())
+            .show_ui(ui, |ui| {
+                for g in Grid::ALL {
+                    ui.selectable_value(&mut grid_size, g, g.label());
+                }
+            });
+        hint(combo.response, "Grid size for snapping and editing.");
+        if grid_size != self.project.snap.grid {
+            self.edit(|p| p.snap.grid = grid_size);
+        }
+        let snap = self.project.snap.enabled;
+        self.switch(ui, snap, "Snap", "Snap to grid.", Command::ToggleSnap);
+    }
+
+    fn scale_controls(&mut self, ui: &mut Ui) {
+        let scale = self.project.scale;
+        if hint(
+            ui.selectable_label(scale.enabled, "Key"),
+            "Scale mode: highlight the notes of the chosen key in the piano roll.",
+        )
+        .clicked()
+        {
+            self.edit(|p| p.scale.enabled = !p.scale.enabled);
+        }
+        let mut next = scale;
+        let root = egui::ComboBox::from_id_salt("scale_root")
+            .width(36.0)
+            .selected_text(NOTE_NAMES[usize::from(scale.root % 12)])
+            .show_ui(ui, |ui| {
+                for (index, name) in NOTE_NAMES.iter().enumerate() {
+                    ui.selectable_value(&mut next.root, index as u8, *name);
+                }
+            });
+        hint(root.response, "Root note of the scale.");
+        let kind = egui::ComboBox::from_id_salt("scale_kind")
+            .width(96.0)
+            .selected_text(scale.kind.label())
+            .show_ui(ui, |ui| {
+                for kind in ScaleKind::ALL {
+                    ui.selectable_value(&mut next.kind, kind, kind.label());
+                }
+            });
+        hint(kind.response, "Scale name.");
+        if next != scale {
+            self.edit(|p| {
+                p.scale = next;
+                p.scale.enabled = true;
+            });
+        }
     }
 
     fn loop_controls(&mut self, ui: &mut Ui) {
@@ -333,6 +375,8 @@ impl App {
                 None => ui.label(RichText::new("Point at a control to learn what it does.").weak()),
             };
             ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                self.snap_controls(ui);
+                ui.separator();
                 if let Some(track) = self.selection.track.and_then(|id| self.project.track(id)) {
                     ui.label(RichText::new(&track.name).strong());
                 }

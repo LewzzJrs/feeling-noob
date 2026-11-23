@@ -45,6 +45,7 @@ pub enum Category {
 pub struct Browser {
     pub open: bool,
     category: Category,
+    tag: Option<&'static str>,
     search: String,
     samples: Vec<PathBuf>,
     scanned: bool,
@@ -84,6 +85,32 @@ fn find_wavs(folders: &[PathBuf]) -> Vec<PathBuf> {
     }
     found.sort();
     found
+}
+
+const SAMPLE_TAGS: [&str; 11] = [
+    "Kick",
+    "Snare",
+    "Clap",
+    "Hihat",
+    "Cymbal",
+    "Tom",
+    "Percussion",
+    "Loop",
+    "Bass",
+    "Vocal",
+    "FX",
+];
+
+fn has_tag(name: &str, tag: &str) -> bool {
+    let name = name.to_lowercase();
+    let words: &[&str] = match tag {
+        "Hihat" => &["hihat", "hi-hat", "hat", "hh"],
+        "Percussion" => &["perc", "shaker", "conga", "bongo", "tamb"],
+        "Cymbal" => &["cymbal", "crash", "ride", "splash"],
+        "Vocal" => &["vocal", "vox", "voice"],
+        other => return name.contains(&other.to_lowercase()),
+    };
+    words.iter().any(|w| name.contains(w))
 }
 
 fn matches(search: &str, text: &str) -> bool {
@@ -262,10 +289,10 @@ impl App {
         let search = self.browser.search.clone();
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
-                egui::vec2(104.0, ui.available_height()),
+                egui::vec2(132.0, ui.available_height()),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.set_width(104.0);
+                    ui.set_width(132.0);
                     self.category_list(ui);
                 },
             );
@@ -294,10 +321,10 @@ impl App {
     fn category_list(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Categories").small().weak());
         for (category, name) in [
-            (Category::Instruments, "Instruments"),
-            (Category::AudioEffects, "Audio Effects"),
-            (Category::Plugins, "Plug-ins"),
-            (Category::Samples, "Samples"),
+            (Category::Instruments, "🎹 Instruments"),
+            (Category::AudioEffects, "🎚 Audio Effects"),
+            (Category::Plugins, "🔌 Plug-ins"),
+            (Category::Samples, "🎵 Samples"),
         ] {
             ui.selectable_value(&mut self.browser.category, category, name);
         }
@@ -310,7 +337,11 @@ impl App {
                 .file_name()
                 .map_or_else(|| folder.clone(), |n| n.to_string_lossy().into_owned());
             let response = ui
-                .selectable_value(&mut self.browser.category, Category::Folder(index), name)
+                .selectable_value(
+                    &mut self.browser.category,
+                    Category::Folder(index),
+                    format!("📁 {name}"),
+                )
                 .on_hover_text(folder);
             response.context_menu(|ui| {
                 if ui.button("Remove from Places").clicked() {
@@ -387,6 +418,25 @@ impl App {
             }
         }
         items.retain(|(item, _)| matches(search, &item.label()));
+        if matches!(category, Category::Samples | Category::Folder(_)) {
+            if !titled {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+                    for tag in SAMPLE_TAGS {
+                        let on = self.browser.tag == Some(tag);
+                        if ui
+                            .selectable_label(on, RichText::new(tag).small())
+                            .clicked()
+                        {
+                            self.browser.tag = if on { None } else { Some(tag) };
+                        }
+                    }
+                });
+            }
+            if let Some(tag) = self.browser.tag {
+                items.retain(|(item, _)| has_tag(&item.label(), tag));
+            }
+        }
         if titled && !items.is_empty() {
             let title = match category {
                 Category::Instruments => "Instruments",
@@ -415,6 +465,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sample_tags_match_common_names() {
+        assert!(has_tag("Kick 01.wav", "Kick"));
+        assert!(has_tag("OpenHat_120.wav", "Hihat"));
+        assert!(has_tag("big crash.wav", "Cymbal"));
+        assert!(!has_tag("snare.wav", "Kick"));
+    }
 
     #[test]
     fn search_needs_every_word() {
