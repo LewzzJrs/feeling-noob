@@ -224,6 +224,11 @@ pub fn validate(project: &Project) -> Result<(), String> {
         }
         validate_track(project, track)?;
         validate_slots(track.plugin_slots(), &mut ids)?;
+        for lane in &track.takes {
+            if !ids.insert(lane.id) {
+                return Err(format!("duplicate id {}", lane.id));
+            }
+        }
         for region in track.all_regions() {
             if !ids.insert(region.id) {
                 return Err(format!("duplicate id {}", region.id));

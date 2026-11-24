@@ -657,6 +657,8 @@ pub struct Track {
     pub regions: Vec<Region>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session: Vec<Option<crate::session::SessionClip>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<crate::takes::TakeLane>,
 }
 
 impl Track {
@@ -664,6 +666,7 @@ impl Track {
         self.regions
             .iter()
             .chain(self.session.iter().flatten().map(|c| &c.region))
+            .chain(self.takes.iter().flat_map(|l| l.regions.iter()))
     }
 
     pub fn plugin_slots(&self) -> impl Iterator<Item = &PluginSlot> {

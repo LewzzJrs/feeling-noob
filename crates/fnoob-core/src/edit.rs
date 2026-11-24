@@ -26,6 +26,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         automation: Default::default(),
         regions: Vec::new(),
         session: Vec::new(),
+        takes: Vec::new(),
     });
     id
 }
@@ -355,6 +356,7 @@ pub fn region_mut(project: &mut Project, id: Id) -> Option<&mut Region> {
             t.regions
                 .iter_mut()
                 .chain(t.session.iter_mut().flatten().map(|c| &mut c.region))
+                .chain(t.takes.iter_mut().flat_map(|l| l.regions.iter_mut()))
         })
         .find(|r| r.id == id)
 }
@@ -790,6 +792,12 @@ pub fn duplicate_track(project: &mut Project, id: Id) -> Option<Id> {
     }
     for clip in copy.session.iter_mut().flatten() {
         clip.region.id = project.alloc_id();
+    }
+    for lane in &mut copy.takes {
+        lane.id = project.alloc_id();
+        for region in &mut lane.regions {
+            region.id = project.alloc_id();
+        }
     }
     if let Some(Instrument::Vst3(slot)) = &mut copy.instrument {
         slot.id = project.alloc_id();

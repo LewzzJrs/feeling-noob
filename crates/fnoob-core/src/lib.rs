@@ -10,4 +10,5 @@ pub mod model;
 pub mod scale;
 pub mod session;
 pub mod settings;
+pub mod takes;
 pub mod time;
