@@ -837,10 +837,8 @@ impl Processor {
     }
 
     fn tick_playing(&mut self) {
-        let straight = self.recording && self.plan.records_audio;
         if let Some((start, end)) = self.plan.loop_range
             && self.position == end
-            && !straight
         {
             if self.recording {
                 self.recorder.end_held(end);
@@ -2126,6 +2124,31 @@ mod tests {
         render(&mut p, 100);
         assert!(recorded.pop().is_err());
         assert_eq!(h.record_overruns(), 0);
+    }
+
+    #[test]
+    fn audio_recording_keeps_looping_and_keeps_every_frame() {
+        let data = AudioData::from_samples(1, vec![0.0]);
+        let (mut project, track, pool) = audio_project(&data, 100_000);
+        project.track_mut(track).unwrap().record_enabled = true;
+        project.loop_range.enabled = true;
+        project.loop_range.start_tick = 0;
+        project.loop_range.end_tick = 40;
+        let (mut p, mut h) = create(SR, 1, audio_plan(&project, &pool));
+        let mut tx = input_channel(&mut h, 1);
+        let (sink, mut recorded) = audio_channel(1 << 16);
+        h.send(Command::SetRecordSink(sink)).unwrap();
+        h.send(Command::Locate(500)).unwrap();
+        h.send(Command::Record).unwrap();
+        for i in 0..1600 {
+            tx.push(i as f32).unwrap();
+        }
+        render(&mut p, 1600);
+        assert_eq!(h.audio_take_start(), Some(500));
+        assert_eq!(h.position(), 100);
+        let got: Vec<f32> = std::iter::from_fn(|| recorded.pop().ok()).collect();
+        assert_eq!(got.len(), 1600);
+        assert_eq!(got[1599], 1599.0);
     }
 
     #[test]
