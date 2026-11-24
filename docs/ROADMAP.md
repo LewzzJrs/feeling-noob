@@ -57,9 +57,10 @@ Done in Phase 16: several return tracks (new projects start with A Reverb and B 
 
 Done in Phase 17: Main Out and Cue Out output pairs with a cue volume (browser previews play on the cue pair), a Key and Scale choice in the control bar that highlights scale notes in the piano roll, and browser category icons and tag filters for samples.
 
+Done in Phase 18: loop recording for audio. Every loop pass becomes a take lane under the track, the last pass goes into the track, and dragging over a take lane (or clicking a take) copies that part into the track (comping). Take lanes open and close from the track title and can be deleted.
+
 Not started, in rough priority order:
 
-- Take lanes and comping for audio
 - Tempo and time signature changes (tempo map), tap tempo
 - Audio warping and time stretch, clip tempo
 - MIDI tools: transpose, humanize, legato, chop, strum, arpeggiate, rhythm and chord generators
