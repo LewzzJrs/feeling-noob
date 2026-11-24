@@ -104,8 +104,7 @@ impl App {
             }
         };
         let range = self.project.loop_range;
-        let loop_range =
-            (range.enabled && !records_audio).then_some((range.start_tick, range.end_tick));
+        let loop_range = range.enabled.then_some((range.start_tick, range.end_tick));
         if let Some((start, end)) = loop_range {
             let tick = self.playhead_tick();
             if tick < start || tick >= end {

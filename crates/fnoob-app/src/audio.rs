@@ -206,18 +206,27 @@ impl App {
             self.message = Some("No audio was recorded.".into());
             return;
         };
-        let (start_sample, mut offset) = if start >= latency {
-            (start - latency, 0)
-        } else {
-            (0, latency - start)
-        };
         let timeline = self.timeline();
-        let mut tick = timeline.sample_to_tick(start_sample);
-        if timeline.tick_to_sample(tick) < start_sample {
-            tick += 1;
-        }
-        offset += timeline.tick_to_sample(tick) - start_sample;
-        if offset >= frames {
+        let range = self.project.loop_range;
+        let loop_samples = range.enabled.then(|| {
+            (
+                timeline.tick_to_sample(range.start_tick),
+                timeline.tick_to_sample(range.end_tick),
+            )
+        });
+        let placed: Vec<(u64, u64, u64)> =
+            fnoob_core::takes::take_passes(start, latency, frames, loop_samples)
+                .into_iter()
+                .filter_map(|pass| {
+                    let mut tick = timeline.sample_to_tick(pass.at);
+                    if timeline.tick_to_sample(tick) < pass.at {
+                        tick += 1;
+                    }
+                    let shift = timeline.tick_to_sample(tick) - pass.at;
+                    (pass.frames > shift).then(|| (tick, pass.offset + shift, pass.frames - shift))
+                })
+                .collect();
+        if placed.is_empty() {
             self.message = Some("The recording was shorter than the latency.".into());
             return;
         }
@@ -225,11 +234,39 @@ impl App {
         self.edit(|p| {
             for ((track, rel), file) in take.tracks.iter().zip(&files) {
                 let file_id = edit::add_audio_file(p, rel.clone(), file.channels, file.frames);
-                if let Some(region) = edit::add_audio_region(p, *track, tick, file_id, offset) {
-                    created.push(region);
+                let mut lanes = Vec::new();
+                for &(tick, offset, length) in &placed {
+                    let Some(region) = edit::add_audio_region(p, *track, tick, file_id, offset)
+                    else {
+                        continue;
+                    };
+                    let ticks = edit::frames_to_ticks(p, length);
+                    if let Some(r) = edit::region_mut(p, region) {
+                        r.length_tick = r.length_tick.min(ticks);
+                    }
+                    if placed.len() == 1 {
+                        created.push(region);
+                    } else if let Some(t) = p.track_mut(*track)
+                        && let Some(index) = t.regions.iter().position(|r| r.id == region)
+                    {
+                        let moved = t.regions.remove(index);
+                        if let Some(lane) =
+                            fnoob_core::takes::add_take_lane(p, *track, vec![moved.clone()])
+                        {
+                            lanes.push((lane, moved.start_tick, moved.end_tick()));
+                        }
+                    }
+                }
+                if let Some(&(lane, from, to)) = lanes.last() {
+                    created.extend(fnoob_core::takes::comp(p, *track, lane, from, to));
                 }
             }
         });
+        if placed.len() > 1 {
+            for (track, _) in &take.tracks {
+                self.takes_open.insert(*track);
+            }
+        }
         self.load_audio_files();
         self.sync_plan();
         self.selection.regions = created;

@@ -13,6 +13,10 @@ use std::path::PathBuf;
 
 pub const HEADER_WIDTH: f32 = 330.0;
 const PINNED_ROW: f32 = 30.0;
+const TAKE_H: f32 = 30.0;
+
+type TakeRegion = (Id, u64, u64, String);
+type TakeRows = (usize, Id, u8, Vec<(String, Vec<TakeRegion>)>);
 const NAME_WIDTH: f32 = 116.0;
 const IO_WIDTH: f32 = 96.0;
 pub const LOOP_ROW: f32 = 12.0;
@@ -45,6 +49,17 @@ pub fn track_color(index: u8) -> Color32 {
 pub enum UiAction {
     SelectTrack(Id),
     ShowDevices,
+    ToggleTakes(Id),
+    Comp {
+        track: Id,
+        lane: usize,
+        start: u64,
+        end: u64,
+    },
+    DeleteTake {
+        track: Id,
+        lane: usize,
+    },
     SelectRegion {
         id: Id,
         toggle: bool,
@@ -180,9 +195,15 @@ struct Geometry {
     pixels_per_tick: f32,
     scroll_tick: f32,
     scroll_y: f32,
+    offsets: Vec<f32>,
 }
 
 impl Geometry {
+    fn track_at(&self, y: f32) -> Option<usize> {
+        let y = y - self.lanes.top() + self.scroll_y;
+        self.offsets.windows(2).position(|w| y >= w[0] && y < w[1])
+    }
+
     fn x(&self, tick: u64) -> f32 {
         self.lanes.left() + (tick as f32 - self.scroll_tick) * self.pixels_per_tick
     }
@@ -192,7 +213,13 @@ impl Geometry {
     }
 
     fn lane_top(&self, index: usize) -> f32 {
-        self.lanes.top() + index as f32 * LANE_HEIGHT - self.scroll_y
+        let offset = self
+            .offsets
+            .get(index)
+            .or(self.offsets.last())
+            .copied()
+            .unwrap_or(0.0);
+        self.lanes.top() + offset - self.scroll_y
     }
 }
 
@@ -225,6 +252,7 @@ impl App {
             pixels_per_tick: self.view.pixels_per_tick,
             scroll_tick: self.view.scroll_tick,
             scroll_y: self.view.scroll_y,
+            offsets: self.track_offsets(),
         };
         let mut actions = Vec::new();
         if area_response.hovered() {
@@ -241,6 +269,7 @@ impl App {
         let painter = ui.painter_at(area);
         painter.rect_filled(area, 0.0, ui.visuals().extreme_bg_color);
         self.draw_lanes(ui, &geometry, &mut actions);
+        self.draw_take_lanes(ui, &geometry, &mut actions);
         self.draw_ruler(ui, &geometry, &mut actions);
         self.draw_headers(ui, &geometry, &mut actions);
         self.draw_pinned_rows(ui, area, pinned_top, split);
@@ -305,6 +334,144 @@ impl App {
         actions.push(UiAction::DropFiles { paths, track, tick });
     }
 
+    fn track_offsets(&self) -> Vec<f32> {
+        let mut offsets = vec![0.0];
+        let mut total = 0.0;
+        for track in &self.project.tracks {
+            total += LANE_HEIGHT;
+            if self.takes_open.contains(&track.id) {
+                total += track.takes.len() as f32 * TAKE_H;
+            }
+            offsets.push(total);
+        }
+        offsets
+    }
+
+    fn draw_take_lanes(&mut self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
+        let pointer = ui.input(|i| i.pointer.latest_pos());
+        let lanes: Vec<TakeRows> = self
+            .project
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| self.takes_open.contains(&t.id) && !t.takes.is_empty())
+            .map(|(i, t)| {
+                let takes = t
+                    .takes
+                    .iter()
+                    .map(|l| {
+                        let regions = l
+                            .regions
+                            .iter()
+                            .map(|r| (r.id, r.start_tick, r.end_tick(), r.name.clone()))
+                            .collect();
+                        (l.name.clone(), regions)
+                    })
+                    .collect();
+                (i, t.id, t.color, takes)
+            })
+            .collect();
+        let painter = ui.painter_at(g.lanes);
+        let header_painter = ui.painter_at(g.headers);
+        for (index, track, color, takes) in lanes {
+            for (lane, (name, regions)) in takes.into_iter().enumerate() {
+                let top = g.lane_top(index) + LANE_HEIGHT + lane as f32 * TAKE_H;
+                let row = Rect::from_x_y_ranges(g.lanes.x_range(), top..=top + TAKE_H - 1.0);
+                if row.bottom() < g.lanes.top() || row.top() > g.lanes.bottom() {
+                    continue;
+                }
+                painter.rect_filled(row, 0.0, ui.visuals().faint_bg_color.gamma_multiply(0.6));
+                for (_, start, end, region_name) in &regions {
+                    let rect = Rect::from_x_y_ranges(
+                        g.x(*start)..=g.x(*end).max(g.x(*start) + 3.0),
+                        row.top() + 3.0..=row.bottom() - 3.0,
+                    );
+                    painter.rect_filled(
+                        rect,
+                        CornerRadius::same(2),
+                        track_color(color).gamma_multiply(0.55),
+                    );
+                    painter.text(
+                        rect.left_center() + Vec2::new(4.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        region_name,
+                        FontId::proportional(11.0),
+                        Color32::WHITE,
+                    );
+                }
+                let response = crate::ui_kit::hint(
+                    ui.interact(
+                        row.intersect(g.lanes),
+                        ui.scope_id().with(("take_lane", track, lane)),
+                        Sense::click_and_drag(),
+                    ),
+                    "Take lane: drag over a part to use it in the track, or click a take to use all of it.",
+                );
+                if response.drag_started()
+                    && let Some(p) = response.interact_pointer_pos()
+                {
+                    self.comp_drag = Some((track, lane, self.snapped(g.tick(p.x))));
+                }
+                if let (Some((t, l, start)), Some(p)) = (self.comp_drag, pointer)
+                    && t == track
+                    && l == lane
+                {
+                    let now = self.snapped(g.tick(p.x));
+                    let range = Rect::from_x_y_ranges(
+                        g.x(start.min(now))..=g.x(start.max(now)),
+                        row.y_range(),
+                    );
+                    painter.rect_filled(range, 0.0, Color32::from_white_alpha(40));
+                    if response.drag_stopped() {
+                        self.comp_drag = None;
+                        if now != start {
+                            actions.push(UiAction::Comp {
+                                track,
+                                lane,
+                                start: start.min(now),
+                                end: start.max(now),
+                            });
+                        }
+                    }
+                } else if response.clicked()
+                    && let Some(p) = response.interact_pointer_pos()
+                {
+                    let tick = g.tick(p.x);
+                    if let Some((_, start, end, _)) =
+                        regions.iter().find(|(_, s, e, _)| *s <= tick && tick < *e)
+                    {
+                        actions.push(UiAction::Comp {
+                            track,
+                            lane,
+                            start: *start,
+                            end: *end,
+                        });
+                    }
+                }
+                let header = Rect::from_x_y_ranges(g.headers.x_range(), row.y_range());
+                header_painter.rect_filled(header, 0.0, ui.visuals().faint_bg_color);
+                header_painter.text(
+                    header.left_center() + Vec2::new(12.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    &name,
+                    FontId::proportional(12.0),
+                    ui.visuals().text_color(),
+                );
+                let delete = Rect::from_center_size(
+                    Pos2::new(header.right() - 20.0, header.center().y),
+                    Vec2::new(22.0, 18.0),
+                );
+                if ui
+                    .put(delete.intersect(g.headers), egui::Button::new("x").small())
+                    .on_hover_text("Delete this take lane")
+                    .clicked()
+                {
+                    actions.push(UiAction::DeleteTake { track, lane });
+                }
+            }
+        }
+    }
+
     fn drop_point(&self, g: &Geometry, pointer: Option<Pos2>) -> (Option<Id>, u64) {
         let Some(p) = pointer.filter(|p| {
             (g.lanes.top()..=g.lanes.bottom()).contains(&p.y)
@@ -312,10 +479,9 @@ impl App {
         }) else {
             return (None, self.playhead_tick());
         };
-        let index = ((p.y - g.lanes.top() + g.scroll_y) / LANE_HEIGHT).floor();
-        let track = (index >= 0.0)
-            .then(|| self.project.tracks.get(index as usize))
-            .flatten()
+        let track = g
+            .track_at(p.y)
+            .and_then(|index| self.project.tracks.get(index))
             .map(|t| t.id);
         let tick = if p.x >= g.lanes.left() {
             self.snapped(g.tick(p.x))
@@ -980,6 +1146,25 @@ impl App {
                     );
                 }
             }
+            let takes = self.project.track(id).map_or(0, |t| t.takes.len());
+            if takes > 0 {
+                let open = self.takes_open.contains(&id);
+                let toggle = Rect::from_min_size(
+                    Pos2::new(name_rect.left() + 4.0, name_rect.bottom() - 18.0),
+                    Vec2::new(NAME_WIDTH - 8.0, 16.0),
+                );
+                let label = format!("{} {takes} takes", if open { "▾" } else { "▸" });
+                if ui
+                    .put(
+                        toggle.intersect(g.headers),
+                        egui::Button::new(egui::RichText::new(label).small()),
+                    )
+                    .on_hover_text("Show or hide the take lanes of this track")
+                    .clicked()
+                {
+                    actions.push(UiAction::ToggleTakes(id));
+                }
+            }
             if name_response.double_clicked() {
                 actions.push(UiAction::StartRename(id));
             } else if name_response.clicked() {
@@ -1184,6 +1369,29 @@ impl App {
     pub fn apply_ui_action(&mut self, action: UiAction) {
         match action {
             UiAction::SelectTrack(id) => self.selection.track = Some(id),
+            UiAction::ToggleTakes(track) => {
+                if !self.takes_open.remove(&track) {
+                    self.takes_open.insert(track);
+                }
+            }
+            UiAction::Comp {
+                track,
+                lane,
+                start,
+                end,
+            } => {
+                let mut created = Vec::new();
+                self.edit(|p| created = fnoob_core::takes::comp(p, track, lane, start, end));
+                if !created.is_empty() {
+                    self.selection.track = Some(track);
+                    self.selection.regions = created;
+                }
+            }
+            UiAction::DeleteTake { track, lane } => {
+                self.edit(|p| {
+                    fnoob_core::takes::delete_take_lane(p, track, lane);
+                });
+            }
             UiAction::ShowDevices => {
                 if self.detail_visible() {
                     self.chain_target = crate::chain::ChainTarget::SelectedTrack;
@@ -1388,7 +1596,7 @@ impl App {
             UiAction::CancelRename => {}
             UiAction::Scroll { ticks, pixels } => {
                 self.view.scroll_tick = (self.view.scroll_tick + ticks).max(0.0);
-                let content = self.project.tracks.len() as f32 * LANE_HEIGHT;
+                let content = self.track_offsets().last().copied().unwrap_or(0.0);
                 self.view.scroll_y =
                     (self.view.scroll_y + pixels).clamp(0.0, (content - LANE_HEIGHT).max(0.0));
             }
