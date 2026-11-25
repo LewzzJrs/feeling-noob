@@ -83,6 +83,11 @@ pub enum Command {
     LoopDouble,
     MoveLeft,
     MoveRight,
+    PlayFromInsert,
+    InsertToPlayhead,
+    ZoomToSelection,
+    ZoomBack,
+    FitSong,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -185,6 +190,11 @@ const fn letter(c: char) -> Key {
 pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (plain(Key::Space), Command::PlayStop),
     (shift(Key::Space), Command::ContinuePlay),
+    (ctrl(Key::Space), Command::PlayFromInsert),
+    (ctrl_shift(Key::Space), Command::InsertToPlayhead),
+    (plain(letter('Z')), Command::ZoomToSelection),
+    (plain(letter('X')), Command::ZoomBack),
+    (plain(letter('W')), Command::FitSong),
     (plain(Key::Function(9)), Command::Record),
     (plain(Key::Function(10)), Command::BackToArrangement),
     (plain(Key::Home), Command::GoToBeginning),

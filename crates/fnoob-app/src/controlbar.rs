@@ -367,12 +367,40 @@ impl App {
         });
     }
 
+    fn position_status(&self) -> Option<String> {
+        use crate::arrange::{clock_text, length_text, position_text, seconds_at};
+        if self.session.open {
+            return None;
+        }
+        let meter = self.project.meter();
+        let timeline = self.timeline();
+        let rate = self.sample_rate();
+        let seconds = |tick| seconds_at(timeline, tick, rate);
+        Some(match &self.time_selection {
+            Some(selection) => format!(
+                "Time Selection   Start: {}   End: {}   Length: {} (Duration: {})",
+                position_text(&meter, selection.start),
+                position_text(&meter, selection.end),
+                length_text(selection.length(), self.project.time_signature),
+                clock_text(seconds(selection.end) - seconds(selection.start)),
+            ),
+            None => format!(
+                "Insert Mark {} (Time: {})",
+                position_text(&meter, self.insert_tick),
+                clock_text(seconds(self.insert_tick)),
+            ),
+        })
+    }
+
     pub(crate) fn status_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let text = self.info.clone().or_else(|| self.message.clone());
-            match text {
-                Some(text) => ui.label(text),
-                None => ui.label(RichText::new("Point at a control to learn what it does.").weak()),
+            match (text, self.position_status()) {
+                (Some(text), _) => ui.label(text),
+                (None, Some(status)) => ui.label(status),
+                (None, None) => {
+                    ui.label(RichText::new("Point at a control to learn what it does.").weak())
+                }
             };
             ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                 self.snap_controls(ui);

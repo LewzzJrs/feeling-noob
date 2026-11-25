@@ -155,6 +155,10 @@ pub struct App {
     pub(crate) io_open: bool,
     pub(crate) sends_open: bool,
     pub(crate) insert_tick: u64,
+    pub(crate) time_selection: Option<crate::arrange::TimeSelection>,
+    pub(crate) time_drag: Option<(u64, usize)>,
+    pub(crate) zoom_history: crate::arrange::ZoomHistory,
+    pub(crate) lanes_width: f32,
     quit_requested: bool,
     pub(crate) takes_open: HashSet<Id>,
     pub(crate) comp_drag: Option<(Id, usize, u64)>,
@@ -251,6 +255,10 @@ impl App {
             io_open: true,
             sends_open: true,
             insert_tick: 0,
+            time_selection: None,
+            time_drag: None,
+            zoom_history: crate::arrange::ZoomHistory::default(),
+            lanes_width: 800.0,
             quit_requested: false,
             takes_open: HashSet::new(),
             comp_drag: None,
@@ -608,6 +616,30 @@ impl App {
                     self.locate(start);
                     self.send(EngineCommand::Play);
                 }
+            }
+            Command::PlayFromInsert => {
+                let start = self.insert_tick;
+                if self.rate_matches() {
+                    self.locate(start);
+                    if self.transport_state() == TransportState::Stopped {
+                        self.send(EngineCommand::Play);
+                    }
+                }
+            }
+            Command::InsertToPlayhead => {
+                self.insert_tick = self.playhead_tick();
+                self.time_selection = None;
+            }
+            Command::ZoomToSelection => self.zoom_to_selection(),
+            Command::ZoomBack => {
+                if let Some(state) = self.zoom_history.pop() {
+                    self.view.pixels_per_tick = state.pixels_per_tick;
+                    self.view.scroll_tick = state.scroll_tick;
+                }
+            }
+            Command::FitSong => {
+                let end = crate::arrange::song_end(&self.project);
+                self.zoom_to(0, end);
             }
             Command::ContinuePlay => {
                 if self.transport_state() != TransportState::Stopped {

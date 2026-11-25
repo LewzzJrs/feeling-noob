@@ -65,6 +65,8 @@ Done in Phase 21: time signature changes during the song and tempo ramps. The te
 
 Done in Phase 22: shortcuts aligned with the common workstation layout on Windows (see `SPEC.md` section 6), a separate time signature lane, and song tempo points that ramp by default and can be dragged.
 
+Done in Phase 23: time selection across tracks, a flashing insert marker, play from and move the insert marker, MIDI clips from a time selection, zoom to selection and back, fit the song, a minutes:seconds ruler, a song overview strip and locator buttons.
+
 Not started, in rough priority order:
 
 - Audio warping and time stretch, clip tempo

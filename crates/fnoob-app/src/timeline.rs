@@ -20,7 +20,7 @@ type TakeRows = (usize, Id, u8, Vec<(String, Vec<TakeRegion>)>);
 const NAME_WIDTH: f32 = 116.0;
 const IO_WIDTH: f32 = 96.0;
 pub const LOOP_ROW: f32 = 12.0;
-pub const RULER_HEIGHT: f32 = 64.0;
+pub const RULER_HEIGHT: f32 = 64.0 + crate::arrange::OVERVIEW_ROW;
 const TEMPO_ROW: f32 = 16.0;
 const METER_ROW: f32 = 14.0;
 pub const LANE_HEIGHT: f32 = 60.0;
@@ -175,6 +175,18 @@ pub enum UiAction {
     SplitRegion(Id),
     LocateMarker(u64),
     SetInsert(u64),
+    TimeDragStart {
+        tick: u64,
+        index: usize,
+    },
+    TimeDragUpdate {
+        tick: u64,
+        index: usize,
+    },
+    TimeDragEnd,
+    ScrollTo(f32),
+    ToggleMarkerAt(u64),
+    Run(fnoob_core::keymap::Command),
     SetTempo {
         tick: u64,
         bpm: f64,
@@ -285,11 +297,11 @@ impl App {
             ruler: Rect::from_min_max(area.min, Pos2::new(split, area.top() + RULER_HEIGHT)),
             lanes: Rect::from_min_max(
                 Pos2::new(area.left(), area.top() + RULER_HEIGHT),
-                Pos2::new(split, pinned_top),
+                Pos2::new(split, pinned_top - crate::arrange::TIME_ROW),
             ),
             headers: Rect::from_min_max(
                 Pos2::new(split, area.top() + RULER_HEIGHT),
-                Pos2::new(area.right(), pinned_top),
+                Pos2::new(area.right(), pinned_top - crate::arrange::TIME_ROW),
             ),
             pixels_per_tick: self.view.pixels_per_tick,
             scroll_tick: self.view.scroll_tick,
@@ -325,14 +337,36 @@ impl App {
         self.draw_ruler(ui, &geometry, &mut actions);
         self.draw_headers(ui, &geometry, &mut actions);
         self.draw_pinned_rows(ui, area, pinned_top, split);
-        let playhead = geometry.x(self.playhead_tick());
-        if geometry.lanes.x_range().contains(playhead) {
+        self.lanes_width = geometry.lanes.width();
+        let time_row = Rect::from_min_max(
+            Pos2::new(area.left(), geometry.lanes.bottom()),
+            Pos2::new(split, pinned_top),
+        );
+        self.draw_time_row(ui, &geometry, time_row, &mut actions);
+        let corner = Rect::from_min_max(
+            Pos2::new(split, geometry.lanes.bottom()),
+            Pos2::new(area.right(), pinned_top),
+        );
+        self.draw_zoom_corner(ui, corner, &mut actions);
+        let locators = Rect::from_min_max(
+            Pos2::new(split, area.top()),
+            Pos2::new(area.right(), geometry.ruler.bottom()),
+        );
+        self.draw_locators(ui, locators, &mut actions);
+        self.draw_time_selection(ui, &geometry);
+        let playhead_tick = self.playhead_tick();
+        let stopped = self.transport_state() == fnoob_engine::TransportState::Stopped;
+        let playhead = geometry.x(playhead_tick);
+        if (!stopped || playhead_tick != self.insert_tick)
+            && geometry.lanes.x_range().contains(playhead)
+        {
             painter.vline(
                 playhead,
-                geometry.ruler.top()..=geometry.lanes.bottom(),
+                geometry.ruler.top() + crate::arrange::OVERVIEW_ROW..=time_row.bottom(),
                 Stroke::new(1.5, PLAYHEAD),
             );
         }
+        self.draw_insert_marker(ui, &geometry, time_row);
         self.handle_file_drop(ui, &geometry, area, &mut actions);
         let pointer = ui.input(|i| i.pointer.latest_pos());
         if let Some(item) = area_response.dnd_release_payload::<crate::browser::BrowserItem>() {
@@ -580,7 +614,13 @@ impl App {
         let painter = ui.painter_at(g.ruler);
         let visuals = ui.visuals();
         painter.rect_filled(g.ruler, 0.0, visuals.faint_bg_color);
-        let loop_row = Rect::from_min_size(g.ruler.min, Vec2::new(g.ruler.width(), LOOP_ROW));
+        let overview = Rect::from_min_size(
+            g.ruler.min,
+            Vec2::new(g.ruler.width(), crate::arrange::OVERVIEW_ROW),
+        );
+        self.draw_overview(ui, g, overview, actions);
+        let loop_row =
+            Rect::from_min_size(overview.left_bottom(), Vec2::new(g.ruler.width(), LOOP_ROW));
         let bar_row = Rect::from_min_max(
             Pos2::new(g.ruler.left(), loop_row.bottom()),
             Pos2::new(g.ruler.right(), g.ruler.bottom() - TEMPO_ROW - METER_ROW),
@@ -952,8 +992,10 @@ impl App {
         let background = ui.interact(
             g.lanes,
             ui.scope_id().with("lanes_background"),
-            Sense::click(),
+            Sense::click_and_drag(),
         );
+        let last = self.project.tracks.len().saturating_sub(1);
+        self.time_drag_actions(&background, g, last, actions);
         if background.clicked()
             && let Some(pos) = background.interact_pointer_pos()
         {
@@ -995,8 +1037,11 @@ impl App {
             let lane_response = ui.interact(
                 lane.intersect(g.lanes),
                 ui.scope_id().with(("lane", track.id)),
-                Sense::click(),
+                Sense::click_and_drag(),
             );
+            if !self.automation_view && !self.draw_mode {
+                self.time_drag_actions(&lane_response, g, index, actions);
+            }
             let automating = self.automation_view;
             if automating {
                 if lane_response.clicked()
@@ -1844,7 +1889,37 @@ impl App {
             UiAction::SetInsert(tick) => {
                 self.locate(tick);
                 self.insert_tick = tick;
+                self.time_selection = None;
             }
+            UiAction::TimeDragStart { tick, index } => {
+                self.time_drag = Some((tick, index));
+                self.time_selection = None;
+                self.selection.regions.clear();
+            }
+            UiAction::TimeDragUpdate { tick, index } => self.update_time_selection(tick, index),
+            UiAction::TimeDragEnd => {
+                self.time_drag = None;
+                if let Some(start) = self.time_selection.as_ref().map(|s| s.start) {
+                    if self.transport_state() == fnoob_engine::TransportState::Stopped {
+                        self.locate(start);
+                    }
+                    self.insert_tick = start;
+                }
+            }
+            UiAction::ScrollTo(tick) => self.view.scroll_tick = tick.max(0.0),
+            UiAction::ToggleMarkerAt(tick) => {
+                self.edit(
+                    |p| match p.markers.iter().find(|m| m.tick == tick).map(|m| m.id) {
+                        Some(id) => {
+                            edit::delete_marker(p, id);
+                        }
+                        None => {
+                            edit::add_marker(p, tick);
+                        }
+                    },
+                )
+            }
+            UiAction::Run(command) => self.run(command),
             UiAction::SetTempo { tick, bpm } => {
                 let mut added = false;
                 self.edit(|p| added = edit::set_tempo_change(p, tick, bpm));
@@ -2017,6 +2092,303 @@ impl App {
     pub fn zoom(&mut self, factor: f32) {
         self.view.pixels_per_tick =
             (self.view.pixels_per_tick * factor).clamp(MIN_PIXELS_PER_TICK, MAX_PIXELS_PER_TICK);
+    }
+
+    pub(crate) fn zoom_to(&mut self, start: u64, end: u64) {
+        self.zoom_history.push(crate::arrange::ZoomState {
+            pixels_per_tick: self.view.pixels_per_tick,
+            scroll_tick: self.view.scroll_tick,
+        });
+        let state = crate::arrange::fit(
+            start,
+            end,
+            self.lanes_width,
+            MIN_PIXELS_PER_TICK,
+            MAX_PIXELS_PER_TICK,
+        );
+        self.view.pixels_per_tick = state.pixels_per_tick;
+        self.view.scroll_tick = state.scroll_tick;
+    }
+
+    pub(crate) fn zoom_to_selection(&mut self) {
+        let range = match &self.time_selection {
+            Some(selection) => Some((selection.start, selection.end)),
+            None => {
+                let regions: Vec<(u64, u64)> = self
+                    .project
+                    .tracks
+                    .iter()
+                    .flat_map(|t| t.regions.iter())
+                    .filter(|r| self.selection.regions.contains(&r.id))
+                    .map(|r| (r.start_tick, r.end_tick()))
+                    .collect();
+                let start = regions.iter().map(|r| r.0).min();
+                let end = regions.iter().map(|r| r.1).max();
+                start.zip(end)
+            }
+        };
+        match range {
+            Some((start, end)) if end > start => self.zoom_to(start, end),
+            _ => self.message = Some("Select a time range or a clip to zoom to it.".into()),
+        }
+    }
+
+    fn time_drag_actions(
+        &self,
+        response: &egui::Response,
+        g: &Geometry,
+        index: usize,
+        actions: &mut Vec<UiAction>,
+    ) {
+        if self.project.tracks.is_empty() {
+            return;
+        }
+        let last = self.project.tracks.len() - 1;
+        if response.drag_started()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let index = g.track_at(pos.y).unwrap_or(index).min(last);
+            actions.push(UiAction::TimeDragStart {
+                tick: self.snapped(g.tick(pos.x)),
+                index,
+            });
+        } else if response.dragged()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let index = g.track_at(pos.y).unwrap_or(last).min(last);
+            actions.push(UiAction::TimeDragUpdate {
+                tick: self.snapped(g.tick(pos.x)),
+                index,
+            });
+        }
+        if response.drag_stopped() {
+            actions.push(UiAction::TimeDragEnd);
+        }
+    }
+
+    fn update_time_selection(&mut self, tick: u64, index: usize) {
+        let Some((anchor, anchor_index)) = self.time_drag else {
+            return;
+        };
+        if self.project.tracks.is_empty() {
+            return;
+        }
+        let last = self.project.tracks.len() - 1;
+        let (start, end) = (anchor.min(tick), anchor.max(tick));
+        let low = anchor_index.min(index).min(last);
+        let high = anchor_index.max(index).min(last);
+        let tracks: Vec<Id> = self.project.tracks[low..=high]
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        self.selection.track = self
+            .project
+            .tracks
+            .get(anchor_index.min(last))
+            .map(|t| t.id);
+        self.header_focus = false;
+        self.time_selection =
+            (end > start).then_some(crate::arrange::TimeSelection { start, end, tracks });
+    }
+
+    fn draw_overview(&self, ui: &egui::Ui, g: &Geometry, row: Rect, actions: &mut Vec<UiAction>) {
+        let painter = ui.painter_at(row);
+        painter.rect_filled(row, 0.0, ui.visuals().extreme_bg_color);
+        let visible = (g.tick(g.lanes.left()), g.tick(g.lanes.right()));
+        let extent = (crate::arrange::song_end(&self.project)
+            + ticks_per_bar(self.project.time_signature))
+        .max(visible.1) as f32;
+        let x = |tick: u64| row.left() + tick as f32 / extent * row.width();
+        let count = self.project.tracks.len().max(1) as f32;
+        let band = (row.height() - 2.0) / count;
+        for (index, track) in self.project.tracks.iter().enumerate() {
+            let top = row.top() + 1.0 + index as f32 * band;
+            for region in &track.regions {
+                painter.rect_filled(
+                    Rect::from_x_y_ranges(
+                        x(region.start_tick)..=x(region.end_tick()).max(x(region.start_tick) + 1.0),
+                        top..=top + band.max(1.0),
+                    ),
+                    0.0,
+                    track_color(track.color),
+                );
+            }
+        }
+        painter.rect_stroke(
+            Rect::from_x_y_ranges(x(visible.0)..=x(visible.1), row.y_range()),
+            CornerRadius::same(1),
+            Stroke::new(1.0, ui.visuals().strong_text_color()),
+            StrokeKind::Inside,
+        );
+        let response = crate::ui_kit::hint(
+            ui.interact(row, ui.scope_id().with("overview"), Sense::click_and_drag()),
+            "Overview of the whole song. Click or drag to move the view.",
+        );
+        if (response.clicked() || response.dragged())
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let center = (pos.x - row.left()) / row.width() * extent;
+            actions.push(UiAction::ScrollTo(
+                center - (visible.1 - visible.0) as f32 / 2.0,
+            ));
+        }
+    }
+
+    fn draw_time_selection(&self, ui: &egui::Ui, g: &Geometry) {
+        let Some(selection) = &self.time_selection else {
+            return;
+        };
+        let painter = ui.painter_at(g.lanes);
+        let fill = ui.visuals().selection.bg_fill.gamma_multiply(0.35);
+        let (left, right) = (g.x(selection.start), g.x(selection.end));
+        for (index, track) in self.project.tracks.iter().enumerate() {
+            if selection.tracks.contains(&track.id) {
+                let top = g.lane_top(index);
+                painter.rect_filled(
+                    Rect::from_x_y_ranges(left..=right, top..=top + LANE_HEIGHT),
+                    0.0,
+                    fill,
+                );
+            }
+        }
+    }
+
+    fn draw_insert_marker(&self, ui: &egui::Ui, g: &Geometry, time_row: Rect) {
+        let x = g.x(self.insert_tick);
+        if !g.lanes.x_range().contains(x) {
+            return;
+        }
+        let painter = ui.painter_at(g.lanes.union(time_row).union(g.ruler));
+        let color = Color32::from_rgb(120, 220, 230);
+        for y in [g.lanes.top(), time_row.top()] {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(x - 5.0, y),
+                    Pos2::new(x + 5.0, y),
+                    Pos2::new(x, y + 6.0),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        if self.time_selection.is_some() {
+            return;
+        }
+        let time = ui.input(|i| i.time);
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(250));
+        if (time * 2.0) as i64 % 2 == 1 {
+            return;
+        }
+        let marked = self.title_selection();
+        for (index, track) in self.project.tracks.iter().enumerate() {
+            if marked.is_empty() || marked.contains(&track.id) {
+                let top = g.lane_top(index);
+                painter.vline(x, top..=top + LANE_HEIGHT, Stroke::new(1.5, color));
+            }
+        }
+    }
+
+    fn draw_time_row(&self, ui: &egui::Ui, g: &Geometry, row: Rect, actions: &mut Vec<UiAction>) {
+        let painter = ui.painter_at(row);
+        let visuals = ui.visuals();
+        painter.rect_filled(row, 0.0, visuals.faint_bg_color);
+        let rate = self.sample_rate();
+        let timeline = self.timeline();
+        let left_tick = g.tick(row.left());
+        let ticks_per_second =
+            timeline.bpm_at_tick(left_tick) / 60.0 * fnoob_core::time::PPQ as f64;
+        let step = crate::arrange::clock_step(ticks_per_second as f32 * g.pixels_per_tick);
+        let first = crate::arrange::seconds_at(timeline, left_tick, rate) as u64 / step * step;
+        let last = crate::arrange::seconds_at(timeline, g.tick(row.right()), rate) as u64 + step;
+        let mut second = first;
+        while second <= last {
+            let tick = crate::arrange::tick_at_seconds(timeline, second as f64, rate);
+            let x = g.x(tick);
+            painter.vline(
+                x,
+                row.top()..=row.top() + 5.0,
+                Stroke::new(1.0, visuals.weak_text_color()),
+            );
+            painter.text(
+                Pos2::new(x + 3.0, row.center().y),
+                Align2::LEFT_CENTER,
+                crate::arrange::clock_text(second as f64),
+                FontId::proportional(10.0),
+                visuals.weak_text_color(),
+            );
+            second += step;
+        }
+        let response = crate::ui_kit::hint(
+            ui.interact(row, ui.scope_id().with("time_row"), Sense::click_and_drag()),
+            "Time ruler in minutes and seconds. Click to move the insert marker.",
+        );
+        if (response.clicked() || response.dragged())
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            actions.push(UiAction::SetInsert(self.snapped(g.tick(pos.x))));
+        }
+    }
+
+    fn draw_zoom_corner(&self, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiAction>) {
+        use fnoob_core::keymap::{Command, shortcut_label};
+        let with_key = |text: &str, command: Command| match shortcut_label(command) {
+            Some(label) => format!("{text} ({label})"),
+            None => text.to_owned(),
+        };
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(1.0)));
+        child.horizontal_centered(|ui| {
+            crate::ui_kit::compact(ui);
+            for (label, text, command) in [
+                ("W", "Fit the whole song in view", Command::FitSong),
+                ("Z", "Zoom to the time selection", Command::ZoomToSelection),
+                ("X", "Zoom back", Command::ZoomBack),
+            ] {
+                if ui
+                    .small_button(label)
+                    .on_hover_text(with_key(text, command))
+                    .clicked()
+                {
+                    actions.push(UiAction::Run(command));
+                }
+            }
+        });
+    }
+
+    fn draw_locators(&self, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiAction>) {
+        use fnoob_core::keymap::Command;
+        let area = Rect::from_min_size(
+            Pos2::new(rect.left() + 6.0, rect.bottom() - 26.0),
+            Vec2::new(rect.width() - 12.0, 22.0),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
+        child.horizontal(|ui| {
+            crate::ui_kit::compact(ui);
+            let tick = self.insert_tick;
+            let exists = self.project.markers.iter().any(|m| m.tick == tick);
+            let label = if exists { "Delete" } else { "Set" };
+            if ui
+                .button(label)
+                .on_hover_text("Add a locator at the insert marker, or delete the one there")
+                .clicked()
+            {
+                actions.push(UiAction::ToggleMarkerAt(tick));
+            }
+            if ui
+                .button("<")
+                .on_hover_text("Jump to the previous locator")
+                .clicked()
+            {
+                actions.push(UiAction::Run(Command::PreviousMarker));
+            }
+            if ui
+                .button(">")
+                .on_hover_text("Jump to the next locator")
+                .clicked()
+            {
+                actions.push(UiAction::Run(Command::NextMarker));
+            }
+        });
     }
 
     fn zoom_at(&mut self, factor: f32, anchor: f32) {

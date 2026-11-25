@@ -822,6 +822,41 @@ impl App {
     }
 
     pub(crate) fn insert_midi_clip(&mut self) {
+        if !self.session.open
+            && let Some(selection) = self.time_selection.clone()
+        {
+            let tracks: Vec<Id> = selection
+                .tracks
+                .iter()
+                .copied()
+                .filter(|id| {
+                    self.project
+                        .track(*id)
+                        .is_some_and(|t| t.kind == TrackKind::Instrument)
+                })
+                .collect();
+            if tracks.is_empty() {
+                self.message = Some("Select a time range on a MIDI track first.".into());
+                return;
+            }
+            let mut created = Vec::new();
+            self.edit(|p| {
+                for track in &tracks {
+                    created.extend(edit::add_midi_region(
+                        p,
+                        *track,
+                        selection.start,
+                        selection.length(),
+                    ));
+                }
+            });
+            if let Some(&first) = created.first() {
+                self.selection.regions = created;
+                self.time_selection = None;
+                self.open_editor(first);
+            }
+            return;
+        }
         let Some(track) = self.selection.track.filter(|id| {
             self.project
                 .track(*id)
