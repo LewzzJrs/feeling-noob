@@ -88,6 +88,10 @@ pub enum Command {
     ZoomToSelection,
     ZoomBack,
     FitSong,
+    CutTime,
+    PasteTime,
+    DuplicateTime,
+    DeleteTime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -258,6 +262,10 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (ctrl(letter('Z')), Command::Undo),
     (ctrl(letter('Y')), Command::Redo),
     (ctrl(letter('X')), Command::Cut),
+    (ctrl_shift(letter('X')), Command::CutTime),
+    (ctrl_shift(letter('V')), Command::PasteTime),
+    (ctrl_shift(letter('D')), Command::DuplicateTime),
+    (ctrl_shift(Key::Delete), Command::DeleteTime),
     (ctrl(letter('C')), Command::Copy),
     (ctrl(letter('V')), Command::Paste),
     (ctrl(letter('A')), Command::SelectAll),

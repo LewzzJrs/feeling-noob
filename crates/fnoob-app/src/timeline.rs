@@ -187,6 +187,7 @@ pub enum UiAction {
     ScrollTo(f32),
     ToggleMarkerAt(u64),
     Run(fnoob_core::keymap::Command),
+    SetGrid(fnoob_core::model::Grid),
     SetTempo {
         tick: u64,
         bpm: f64,
@@ -996,6 +997,7 @@ impl App {
         );
         let last = self.project.tracks.len().saturating_sub(1);
         self.time_drag_actions(&background, g, last, actions);
+        background.context_menu(|ui| self.selection_menu(ui, actions));
         if background.clicked()
             && let Some(pos) = background.interact_pointer_pos()
         {
@@ -1041,6 +1043,7 @@ impl App {
             );
             if !self.automation_view && !self.draw_mode {
                 self.time_drag_actions(&lane_response, g, index, actions);
+                lane_response.context_menu(|ui| self.selection_menu(ui, actions));
             }
             let automating = self.automation_view;
             if automating {
@@ -1762,6 +1765,7 @@ impl App {
             }
             UiAction::SelectRegion { id, toggle } => {
                 self.header_focus = false;
+                self.time_selection = None;
                 if toggle {
                     if let Some(i) = self.selection.regions.iter().position(|&r| r == id) {
                         self.selection.regions.remove(i);
@@ -1920,6 +1924,7 @@ impl App {
                 )
             }
             UiAction::Run(command) => self.run(command),
+            UiAction::SetGrid(grid) => self.edit(|p| p.snap.grid = grid),
             UiAction::SetTempo { tick, bpm } => {
                 let mut added = false;
                 self.edit(|p| added = edit::set_tempo_change(p, tick, bpm));
@@ -2144,7 +2149,7 @@ impl App {
             return;
         }
         let last = self.project.tracks.len() - 1;
-        if response.drag_started()
+        if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             let index = g.track_at(pos.y).unwrap_or(index).min(last);
@@ -2152,7 +2157,7 @@ impl App {
                 tick: self.snapped(g.tick(pos.x)),
                 index,
             });
-        } else if response.dragged()
+        } else if response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             let index = g.track_at(pos.y).unwrap_or(last).min(last);
@@ -2161,7 +2166,7 @@ impl App {
                 index,
             });
         }
-        if response.drag_stopped() {
+        if response.drag_stopped_by(egui::PointerButton::Primary) {
             actions.push(UiAction::TimeDragEnd);
         }
     }
@@ -2232,6 +2237,237 @@ impl App {
                 center - (visible.1 - visible.0) as f32 / 2.0,
             ));
         }
+    }
+
+    fn selection_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
+        use fnoob_core::keymap::Command;
+        use fnoob_core::model::Grid;
+        let selected = self.time_selection.is_some();
+        let has_clips = !self.regions_in_selection().is_empty();
+        let mut item = |ui: &mut egui::Ui, text: &str, command: Command, enabled: bool| {
+            let mut button = egui::Button::new(text);
+            if let Some(label) = fnoob_core::keymap::shortcut_label(command) {
+                button = button.shortcut_text(label);
+            }
+            if ui.add_enabled(enabled, button).clicked() {
+                actions.push(UiAction::Run(command));
+                ui.close();
+            }
+        };
+        item(ui, "Cut", Command::Cut, selected);
+        item(ui, "Copy", Command::Copy, selected);
+        item(ui, "Duplicate", Command::Duplicate, selected);
+        item(ui, "Delete", Command::Delete, selected);
+        ui.separator();
+        item(
+            ui,
+            "Zoom to Time Selection",
+            Command::ZoomToSelection,
+            selected,
+        );
+        item(ui, "Zoom Back from Time Selection", Command::ZoomBack, true);
+        ui.separator();
+        item(ui, "Deactivate Clip(s)", Command::MuteRegions, has_clips);
+        ui.separator();
+        item(ui, "Loop Selection", Command::ToggleLoop, selected);
+        ui.separator();
+        let snap = self.project.snap;
+        let mut toggle = egui::Button::selectable(snap.enabled, "Snap to Grid");
+        if let Some(label) = fnoob_core::keymap::shortcut_label(Command::ToggleSnap) {
+            toggle = toggle.shortcut_text(label);
+        }
+        if ui.add(toggle).clicked() {
+            actions.push(UiAction::Run(Command::ToggleSnap));
+            ui.close();
+        }
+        ui.label(egui::RichText::new("Fixed Grid:").small().weak());
+        for row in Grid::ALL.chunks(5) {
+            ui.horizontal(|ui| {
+                for grid in row {
+                    if ui
+                        .selectable_label(snap.grid == *grid, grid.label())
+                        .clicked()
+                    {
+                        actions.push(UiAction::SetGrid(*grid));
+                        ui.close();
+                    }
+                }
+            });
+        }
+        ui.separator();
+        let index = Grid::ALL.iter().position(|g| *g == snap.grid).unwrap_or(0);
+        let mut item = |ui: &mut egui::Ui, text: &str, command: Command, enabled: bool| {
+            let mut button = egui::Button::new(text);
+            if let Some(label) = fnoob_core::keymap::shortcut_label(command) {
+                button = button.shortcut_text(label);
+            }
+            if ui.add_enabled(enabled, button).clicked() {
+                actions.push(UiAction::Run(command));
+                ui.close();
+            }
+        };
+        item(
+            ui,
+            "Narrow Grid",
+            Command::NarrowGrid,
+            index + 1 < Grid::ALL.len(),
+        );
+        item(ui, "Widen Grid", Command::WidenGrid, index > 0);
+    }
+
+    pub(crate) fn regions_in_selection(&self) -> Vec<Id> {
+        let Some(selection) = &self.time_selection else {
+            return Vec::new();
+        };
+        self.project
+            .tracks
+            .iter()
+            .filter(|t| selection.tracks.contains(&t.id))
+            .flat_map(|t| t.regions.iter())
+            .filter(|r| r.start_tick < selection.end && r.end_tick() > selection.start)
+            .map(|r| r.id)
+            .collect()
+    }
+
+    pub(crate) fn selection_command(&mut self, command: fnoob_core::keymap::Command) {
+        use fnoob_core::keymap::Command;
+        use fnoob_core::range;
+        let Some(selection) = self.time_selection.clone() else {
+            return;
+        };
+        let (start, end, tracks) = (selection.start, selection.end, selection.tracks.clone());
+        if command != Command::Delete {
+            let clip = range::copy_range(&self.project, &tracks, start, end);
+            if command == Command::Duplicate {
+                let Some(&first) = tracks.first() else {
+                    return;
+                };
+                self.edit(|p| {
+                    range::paste_range(p, first, end, &clip);
+                });
+                self.time_selection = Some(crate::arrange::TimeSelection {
+                    start: end,
+                    end: end + clip.length,
+                    tracks,
+                });
+                self.insert_tick = end;
+                return;
+            }
+            self.time_clipboard = Some(clip);
+            self.clipboard.clear();
+            self.track_clipboard.clear();
+            self.system_clipboard = Some(crate::arrange::length_text(
+                end - start,
+                self.project.time_signature,
+            ));
+        }
+        if command != Command::Copy {
+            self.edit(|p| range::clear_range(p, &tracks, start, end));
+        }
+    }
+
+    pub(crate) fn time_command(&mut self, command: fnoob_core::keymap::Command) {
+        use fnoob_core::keymap::Command;
+        use fnoob_core::range;
+        if command == Command::PasteTime {
+            self.paste_time_clip(true);
+            return;
+        }
+        let Some(selection) = self.time_selection.clone() else {
+            self.message = Some("Select a time range first.".into());
+            return;
+        };
+        let (start, end) = (selection.start, selection.end);
+        match command {
+            Command::CutTime => {
+                self.time_clipboard = Some(range::copy_range(
+                    &self.project,
+                    &selection.tracks,
+                    start,
+                    end,
+                ));
+                self.clipboard.clear();
+                self.track_clipboard.clear();
+                self.edit(|p| range::delete_time(p, start, end));
+                self.time_selection = None;
+                self.insert_tick = start;
+            }
+            Command::DeleteTime => {
+                self.edit(|p| range::delete_time(p, start, end));
+                self.time_selection = None;
+                self.insert_tick = start;
+            }
+            Command::DuplicateTime => {
+                let clip = range::copy_range(&self.project, &selection.tracks, start, end);
+                let Some(&first) = selection.tracks.first() else {
+                    return;
+                };
+                self.edit(|p| {
+                    range::insert_time(p, end, clip.length);
+                    range::paste_range(p, first, end, &clip);
+                });
+                self.time_selection = Some(crate::arrange::TimeSelection {
+                    start: end,
+                    end: end + clip.length,
+                    tracks: selection.tracks,
+                });
+                self.insert_tick = end;
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn insert_silence(&mut self) -> bool {
+        let Some(selection) = self.time_selection.clone() else {
+            return false;
+        };
+        self.edit(|p| fnoob_core::range::insert_time(p, selection.start, selection.length()));
+        true
+    }
+
+    pub(crate) fn paste_time_clip(&mut self, insert: bool) {
+        let Some(clip) = self.time_clipboard.clone() else {
+            self.message = Some("Copy or cut a time selection first.".into());
+            return;
+        };
+        let at = self
+            .time_selection
+            .as_ref()
+            .map_or(self.insert_tick, |s| s.start);
+        let first = self
+            .time_selection
+            .as_ref()
+            .and_then(|s| s.tracks.first().copied())
+            .or(self.selection.track)
+            .or(self.project.tracks.first().map(|t| t.id));
+        let Some(first) = first else {
+            return;
+        };
+        self.edit(|p| {
+            if insert {
+                fnoob_core::range::insert_time(p, at, clip.length);
+            }
+            fnoob_core::range::paste_range(p, first, at, &clip);
+        });
+        let index = self
+            .project
+            .tracks
+            .iter()
+            .position(|t| t.id == first)
+            .unwrap_or(0);
+        let tracks = self
+            .project
+            .tracks
+            .iter()
+            .skip(index)
+            .take(clip.lanes.len().max(1))
+            .map(|t| t.id)
+            .collect();
+        self.time_selection = Some(crate::arrange::TimeSelection {
+            start: at,
+            end: at + clip.length,
+            tracks,
+        });
     }
 
     fn draw_time_selection(&self, ui: &egui::Ui, g: &Geometry) {

@@ -136,9 +136,9 @@ pub struct App {
     pub(crate) bounce: Option<crate::bounce::ActiveBounce>,
     pub(crate) history: History,
     pub(crate) selection: Selection,
-    clipboard: Vec<Region>,
-    system_clipboard: Option<String>,
-    track_clipboard: Vec<Track>,
+    pub(crate) clipboard: Vec<Region>,
+    pub(crate) system_clipboard: Option<String>,
+    pub(crate) track_clipboard: Vec<Track>,
     pub(crate) header_focus: bool,
     pub(crate) view: View,
     pub(crate) drag: Option<Drag>,
@@ -157,6 +157,7 @@ pub struct App {
     pub(crate) insert_tick: u64,
     pub(crate) time_selection: Option<crate::arrange::TimeSelection>,
     pub(crate) time_drag: Option<(u64, usize)>,
+    pub(crate) time_clipboard: Option<fnoob_core::range::RangeClip>,
     pub(crate) zoom_history: crate::arrange::ZoomHistory,
     pub(crate) lanes_width: f32,
     quit_requested: bool,
@@ -257,6 +258,7 @@ impl App {
             insert_tick: 0,
             time_selection: None,
             time_drag: None,
+            time_clipboard: None,
             zoom_history: crate::arrange::ZoomHistory::default(),
             lanes_width: 800.0,
             quit_requested: false,
@@ -463,6 +465,7 @@ impl App {
     }
 
     pub(crate) fn focus_title(&mut self, id: Id, shift: bool, ctrl: bool) {
+        self.time_selection = None;
         let order: Vec<Id> = self.project.tracks.iter().map(|t| t.id).collect();
         if shift
             && self.header_focus
@@ -773,7 +776,14 @@ impl App {
                 let meter = self.project.meter();
                 self.locate(meter.bar_start(meter.bar_at(tick).0 + 1));
             }
-            Command::ToggleLoop => self.edit(|p| p.loop_range.enabled = !p.loop_range.enabled),
+            Command::ToggleLoop => match self.time_selection.clone() {
+                Some(selection) => self.edit(|p| {
+                    p.loop_range.start_tick = selection.start;
+                    p.loop_range.end_tick = selection.end;
+                    p.loop_range.enabled = true;
+                }),
+                None => self.edit(|p| p.loop_range.enabled = !p.loop_range.enabled),
+            },
             Command::ToggleMetronome => self.edit(|p| p.metronome.enabled = !p.metronome.enabled),
             Command::ToggleCountIn => {
                 self.edit(|p| p.metronome.count_in_enabled = !p.metronome.count_in_enabled);
@@ -809,6 +819,7 @@ impl App {
                     }
                 }
             }
+            Command::InsertScene if !self.session.open && self.insert_silence() => {}
             Command::InsertScene => {
                 let at = self
                     .session
@@ -870,7 +881,14 @@ impl App {
                     self.edit_track(id, |t| t.mute = !t.mute);
                 }
             }
-            Command::MuteRegions => self.edit(|p| edit::toggle_regions_muted(p, &regions)),
+            Command::MuteRegions => {
+                let ids = if regions.is_empty() {
+                    self.regions_in_selection()
+                } else {
+                    regions.clone()
+                };
+                self.edit(|p| edit::toggle_regions_muted(p, &ids));
+            }
             Command::NudgeLeft => self.edit(|p| {
                 edit::nudge_regions(p, &regions, -grid);
             }),
@@ -898,6 +916,7 @@ impl App {
                     self.capture_plugin_states();
                     self.track_clipboard = edit::copy_tracks(&self.project, &ids);
                     self.clipboard.clear();
+                    self.time_clipboard = None;
                     let names: Vec<&str> = self
                         .track_clipboard
                         .iter()
@@ -919,6 +938,16 @@ impl App {
                     });
                 }
             }
+            Command::Copy | Command::Cut | Command::Delete | Command::Duplicate
+                if regions.is_empty() && !self.header_focus && self.time_selection.is_some() =>
+            {
+                self.selection_command(command);
+            }
+            Command::CutTime
+            | Command::PasteTime
+            | Command::DuplicateTime
+            | Command::DeleteTime => self.time_command(command),
+            Command::Paste if self.time_clipboard.is_some() => self.paste_time_clip(false),
             Command::Paste if !self.track_clipboard.is_empty() && self.clipboard.is_empty() => {
                 let tracks = self.track_clipboard.clone();
                 let after = self
@@ -939,10 +968,12 @@ impl App {
             Command::Copy => {
                 self.clipboard = edit::copy_regions(&self.project, &regions);
                 self.track_clipboard.clear();
+                self.time_clipboard = None;
                 self.system_clipboard = self.clip_names();
             }
             Command::Cut => {
                 self.track_clipboard.clear();
+                self.time_clipboard = None;
                 self.clipboard = edit::copy_regions(&self.project, &regions);
                 self.system_clipboard = self.clip_names();
                 self.edit(|p| {
@@ -1249,8 +1280,15 @@ impl App {
                 self.menu_item(ui, "Cut", Command::Cut);
                 self.menu_item(ui, "Copy", Command::Copy);
                 self.menu_item(ui, "Paste", Command::Paste);
+                self.menu_item(ui, "Duplicate", Command::Duplicate);
                 self.menu_item(ui, "Delete", Command::Delete);
                 self.menu_item(ui, "Select All", Command::SelectAll);
+                ui.separator();
+                self.menu_item(ui, "Cut Time", Command::CutTime);
+                self.menu_item(ui, "Paste Time", Command::PasteTime);
+                self.menu_item(ui, "Duplicate Time", Command::DuplicateTime);
+                self.menu_item(ui, "Delete Time", Command::DeleteTime);
+                self.menu_item(ui, "Insert Silence", Command::InsertScene);
                 ui.separator();
                 self.menu_item(ui, "Split at Playhead", Command::SplitAtPlayhead);
                 self.menu_item(ui, "Repeat", Command::RepeatRegions);

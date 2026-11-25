@@ -53,21 +53,50 @@ pub struct MetronomeSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Grid {
+    EightBars,
+    FourBars,
+    TwoBars,
     Bar,
+    Half,
     Beat,
     Eighth,
     Sixteenth,
+    ThirtySecond,
 }
 
 impl Grid {
-    pub const ALL: [Grid; 4] = [Grid::Bar, Grid::Beat, Grid::Eighth, Grid::Sixteenth];
+    pub const ALL: [Grid; 9] = [
+        Grid::EightBars,
+        Grid::FourBars,
+        Grid::TwoBars,
+        Grid::Bar,
+        Grid::Half,
+        Grid::Beat,
+        Grid::Eighth,
+        Grid::Sixteenth,
+        Grid::ThirtySecond,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
+            Grid::EightBars => "8 Bars",
+            Grid::FourBars => "4 Bars",
+            Grid::TwoBars => "2 Bars",
             Grid::Bar => "Bar",
+            Grid::Half => "1/2",
             Grid::Beat => "Beat",
             Grid::Eighth => "1/8",
             Grid::Sixteenth => "1/16",
+            Grid::ThirtySecond => "1/32",
+        }
+    }
+
+    pub fn bars(self) -> Option<u64> {
+        match self {
+            Grid::EightBars => Some(8),
+            Grid::FourBars => Some(4),
+            Grid::TwoBars => Some(2),
+            _ => None,
         }
     }
 }

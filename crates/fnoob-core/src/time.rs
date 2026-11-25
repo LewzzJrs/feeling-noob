@@ -23,10 +23,15 @@ pub fn ticks_per_bar(ts: TimeSignature) -> u64 {
 
 pub fn grid_ticks(grid: Grid, ts: TimeSignature) -> u64 {
     match grid {
+        Grid::EightBars | Grid::FourBars | Grid::TwoBars => {
+            ticks_per_bar(ts) * grid.bars().unwrap_or(1)
+        }
         Grid::Bar => ticks_per_bar(ts),
+        Grid::Half => PPQ * 2,
         Grid::Beat => ticks_per_beat(ts),
         Grid::Eighth => PPQ / 2,
         Grid::Sixteenth => PPQ / 4,
+        Grid::ThirtySecond => PPQ / 8,
     }
 }
 
@@ -307,12 +312,24 @@ impl MeterMap {
     }
 
     pub fn snap_floor(&self, tick: u64, grid: Grid) -> u64 {
+        if let Some(bars) = grid.bars() {
+            return self.bar_start(self.bar_at(tick).0 / bars * bars);
+        }
         let (_, start, ts) = self.bar_at(tick);
         let length = grid_ticks(grid, ts).max(1);
         start + (tick - start) / length * length
     }
 
     pub fn snap_round(&self, tick: u64, grid: Grid) -> u64 {
+        if let Some(bars) = grid.bars() {
+            let first = self.bar_at(tick).0 / bars * bars;
+            let (down, up) = (self.bar_start(first), self.bar_start(first + bars));
+            return if tick - down >= (up - down).div_ceil(2) {
+                up
+            } else {
+                down
+            };
+        }
         let down = self.snap_floor(tick, grid);
         let (bar, _, ts) = self.bar_at(tick);
         let next_bar = self.bar_start(bar + 1);
@@ -516,5 +533,16 @@ mod tests {
         assert_eq!(map.snap_round(9500, Grid::Bar), 10_560);
         assert_eq!(map.snap_floor(9500, Grid::Beat), 9600 - 960);
         assert_eq!(map.snap_round(10_500, Grid::Beat), 10_560);
+        let plain = MeterMap::new(TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        });
+        let bar = ticks_per_bar(TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        });
+        assert_eq!(plain.snap_floor(5 * bar + 10, Grid::FourBars), 4 * bar);
+        assert_eq!(plain.snap_round(7 * bar, Grid::FourBars), 8 * bar);
+        assert_eq!(plain.snap_round(5 * bar - 10, Grid::TwoBars), 4 * bar);
     }
 }

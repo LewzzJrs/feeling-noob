@@ -7,6 +7,7 @@ pub mod history;
 pub mod io;
 pub mod keymap;
 pub mod model;
+pub mod range;
 pub mod scale;
 pub mod session;
 pub mod settings;

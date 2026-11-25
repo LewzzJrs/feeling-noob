@@ -98,7 +98,7 @@ pub fn clear_range(project: &mut Project, track: Id, start: u64, end: u64) {
     }
 }
 
-fn piece(project: &Project, region: &Region, start: u64, end: u64) -> Option<Region> {
+pub(crate) fn piece(project: &Project, region: &Region, start: u64, end: u64) -> Option<Region> {
     let from = start.max(region.start_tick);
     let to = end.min(region.end_tick());
     if to <= from {
