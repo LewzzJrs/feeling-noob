@@ -48,6 +48,7 @@ enum GridAction {
     LaunchScene(usize),
     Select(Id, Id),
     SelectTrack(Id),
+    FocusTitle(Id, bool, bool),
     Edit(Id),
     NewClip(Id, usize),
     Move(ClipDrag, Id, usize),
@@ -188,7 +189,7 @@ impl App {
             let x = area.left() + column as f32 * CELL_W;
             let header =
                 Rect::from_min_size(Pos2::new(x, area.top()), vec2(CELL_W - 2.0, HEADER_H - 2.0));
-            let selected = self.selection.track == Some(*track);
+            let selected = self.is_title_selected(*track);
             painter.rect_filled(header, 2.0, dim(color, if selected { 0.9 } else { 0.55 }));
             painter.text(
                 header.left_center() + vec2(6.0, 0.0),
@@ -201,7 +202,12 @@ impl App {
                 .interact(header, base.with(("header", track)), Sense::click())
                 .clicked()
             {
-                actions.push(GridAction::SelectTrack(*track));
+                let modifiers = ui.input(|i| i.modifiers);
+                actions.push(GridAction::FocusTitle(
+                    *track,
+                    modifiers.shift,
+                    modifiers.ctrl,
+                ));
             }
             let status = self.clip_status(column);
             for scene in 0..scenes {
@@ -666,6 +672,11 @@ impl App {
             GridAction::SelectTrack(track) => {
                 self.selection.track = Some(track);
                 self.session.selected = None;
+                self.header_focus = false;
+            }
+            GridAction::FocusTitle(track, shift, ctrl) => {
+                self.session.selected = None;
+                self.focus_title(track, shift, ctrl);
             }
             GridAction::Edit(clip) => {
                 let midi = self

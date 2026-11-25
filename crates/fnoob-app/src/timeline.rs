@@ -52,6 +52,11 @@ pub fn track_color(index: u8) -> Color32 {
 
 pub enum UiAction {
     SelectTrack(Id),
+    FocusTrackTitle {
+        id: Id,
+        shift: bool,
+        ctrl: bool,
+    },
     ShowDevices,
     ToggleTakes(Id),
     Comp {
@@ -1360,7 +1365,7 @@ impl App {
             if row.bottom() < g.headers.top() || row.top() > g.headers.bottom() {
                 continue;
             }
-            let selected = self.selection.track == Some(id);
+            let selected = self.is_title_selected(id);
             let fill = if selected {
                 ui.visuals().selection.bg_fill.gamma_multiply(0.35)
             } else {
@@ -1446,7 +1451,12 @@ impl App {
             if name_response.double_clicked() {
                 actions.push(UiAction::StartRename(id));
             } else if name_response.clicked() {
-                actions.push(UiAction::SelectTrack(id));
+                let modifiers = ui.input(|i| i.modifiers);
+                actions.push(UiAction::FocusTrackTitle {
+                    id,
+                    shift: modifiers.shift,
+                    ctrl: modifiers.ctrl,
+                });
                 actions.push(UiAction::ShowDevices);
             }
             name_response.context_menu(|ui| {
@@ -1647,7 +1657,11 @@ impl App {
 
     pub fn apply_ui_action(&mut self, action: UiAction) {
         match action {
-            UiAction::SelectTrack(id) => self.selection.track = Some(id),
+            UiAction::SelectTrack(id) => {
+                self.selection.track = Some(id);
+                self.header_focus = false;
+            }
+            UiAction::FocusTrackTitle { id, shift, ctrl } => self.focus_title(id, shift, ctrl),
             UiAction::ToggleTakes(track) => {
                 if !self.takes_open.remove(&track) {
                     self.takes_open.insert(track);
@@ -1678,6 +1692,7 @@ impl App {
                 }
             }
             UiAction::SelectRegion { id, toggle } => {
+                self.header_focus = false;
                 if toggle {
                     if let Some(i) = self.selection.regions.iter().position(|&r| r == id) {
                         self.selection.regions.remove(i);

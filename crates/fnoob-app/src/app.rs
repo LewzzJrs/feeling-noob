@@ -87,6 +87,8 @@ pub enum Focus {
 pub struct Selection {
     pub track: Option<Id>,
     pub regions: Vec<Id>,
+    pub tracks: Vec<Id>,
+    pub anchor: Option<Id>,
 }
 
 pub struct View {
@@ -135,6 +137,8 @@ pub struct App {
     pub(crate) history: History,
     pub(crate) selection: Selection,
     clipboard: Vec<Region>,
+    track_clipboard: Vec<Track>,
+    pub(crate) header_focus: bool,
     pub(crate) view: View,
     pub(crate) drag: Option<Drag>,
     pub(crate) renaming: Option<(Id, String)>,
@@ -223,6 +227,8 @@ impl App {
             history: History::default(),
             selection: Selection::default(),
             clipboard: Vec::new(),
+            track_clipboard: Vec::new(),
+            header_focus: false,
             view: View {
                 pixels_per_tick: 0.04,
                 scroll_tick: 0.0,
@@ -405,6 +411,55 @@ impl App {
             &self.plugins.map(),
         ));
         self.send(EngineCommand::SetPlan(plan));
+    }
+
+    pub(crate) fn title_selection(&self) -> Vec<Id> {
+        let chosen: Vec<Id> = self
+            .project
+            .tracks
+            .iter()
+            .map(|t| t.id)
+            .filter(|id| self.selection.tracks.contains(id))
+            .collect();
+        if chosen.is_empty() {
+            self.selection.track.into_iter().collect()
+        } else {
+            chosen
+        }
+    }
+
+    pub(crate) fn is_title_selected(&self, id: Id) -> bool {
+        self.selection.track == Some(id) || self.header_focus && self.selection.tracks.contains(&id)
+    }
+
+    pub(crate) fn focus_title(&mut self, id: Id, shift: bool, ctrl: bool) {
+        let order: Vec<Id> = self.project.tracks.iter().map(|t| t.id).collect();
+        if shift
+            && self.header_focus
+            && let Some(anchor) = self.selection.anchor.or(self.selection.track)
+            && let (Some(a), Some(b)) = (
+                order.iter().position(|t| *t == anchor),
+                order.iter().position(|t| *t == id),
+            )
+        {
+            self.selection.tracks = order[a.min(b)..=a.max(b)].to_vec();
+        } else if ctrl && self.header_focus {
+            if self.selection.tracks.is_empty() {
+                self.selection.tracks.extend(self.selection.track);
+            }
+            if let Some(i) = self.selection.tracks.iter().position(|t| *t == id) {
+                self.selection.tracks.remove(i);
+            } else {
+                self.selection.tracks.push(id);
+            }
+            self.selection.anchor = Some(id);
+        } else {
+            self.selection.tracks = vec![id];
+            self.selection.anchor = Some(id);
+        }
+        self.selection.track = Some(id);
+        self.selection.regions.clear();
+        self.header_focus = true;
     }
 
     pub(crate) fn locate(&mut self, tick: u64) {
@@ -778,8 +833,55 @@ impl App {
                     self.after_history_jump();
                 }
             }
-            Command::Copy => self.clipboard = edit::copy_regions(&self.project, &regions),
+            Command::Copy | Command::Cut | Command::Delete
+                if self.header_focus && regions.is_empty() && self.selection.track.is_some() =>
+            {
+                let ids = self.title_selection();
+                let Some(&track) = ids.first() else {
+                    return;
+                };
+                if command != Command::Delete {
+                    self.capture_plugin_states();
+                    self.track_clipboard = edit::copy_tracks(&self.project, &ids);
+                    self.clipboard.clear();
+                }
+                if command != Command::Copy {
+                    let index = self.project.tracks.iter().position(|t| t.id == track);
+                    self.edit(|p| {
+                        for id in &ids {
+                            edit::delete_track(p, *id);
+                        }
+                    });
+                    self.selection.tracks.clear();
+                    self.selection.track = index.and_then(|i| {
+                        let i = i.min(self.project.tracks.len().saturating_sub(1));
+                        self.project.tracks.get(i).map(|t| t.id)
+                    });
+                }
+            }
+            Command::Paste if !self.track_clipboard.is_empty() && self.clipboard.is_empty() => {
+                let tracks = self.track_clipboard.clone();
+                let after = self
+                    .title_selection()
+                    .last()
+                    .copied()
+                    .or(self.selection.track);
+                let mut created = Vec::new();
+                self.edit(|p| created = edit::paste_tracks(p, after, &tracks));
+                if let Some(&first) = created.first() {
+                    self.selection.track = Some(first);
+                    self.selection.anchor = Some(first);
+                    self.selection.tracks = created.clone();
+                    self.selection.regions.clear();
+                    self.header_focus = true;
+                }
+            }
+            Command::Copy => {
+                self.clipboard = edit::copy_regions(&self.project, &regions);
+                self.track_clipboard.clear();
+            }
             Command::Cut => {
+                self.track_clipboard.clear();
                 self.clipboard = edit::copy_regions(&self.project, &regions);
                 self.edit(|p| {
                     edit::delete_regions(p, &regions);
@@ -846,12 +948,28 @@ impl App {
                 }
             }
             Command::Duplicate => {
-                if let Some(track) = self.selection.track {
-                    let mut created = None;
+                let ids = if self.header_focus {
+                    self.title_selection()
+                } else {
+                    self.selection.track.into_iter().collect()
+                };
+                if !ids.is_empty() {
                     self.capture_plugin_states();
-                    self.edit(|p| created = edit::duplicate_track(p, track));
-                    if created.is_some() {
-                        self.selection.track = created;
+                    let after = ids.last().copied();
+                    let mut created = Vec::new();
+                    self.edit(|p| {
+                        let copies = edit::copy_tracks(p, &ids);
+                        created = edit::paste_tracks(p, after, &copies);
+                        for (copy, id) in copies.iter().zip(&created) {
+                            if let Some(t) = p.track_mut(*id) {
+                                t.name = format!("{} copy", copy.name);
+                            }
+                        }
+                    });
+                    if let Some(&first) = created.first() {
+                        self.selection.track = Some(first);
+                        self.selection.anchor = Some(first);
+                        self.selection.tracks = created;
                         self.selection.regions.clear();
                     }
                 }
