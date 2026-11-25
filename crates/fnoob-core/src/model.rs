@@ -24,6 +24,12 @@ pub struct LoopRange {
     pub end_tick: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TempoChange {
+    pub tick: u64,
+    pub bpm: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Punch {
     pub punch_in: bool,
@@ -702,6 +708,8 @@ pub struct Project {
     pub loop_range: LoopRange,
     #[serde(default)]
     pub punch: Punch,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tempo_changes: Vec<TempoChange>,
     #[serde(default)]
     pub scale: crate::scale::Scale,
     pub metronome: MetronomeSettings,
@@ -746,6 +754,14 @@ impl Project {
         }
     }
 
+    pub fn timeline(&self, sample_rate: u32) -> crate::time::Timeline {
+        crate::time::Timeline::with_changes(
+            sample_rate,
+            self.tempo_bpm,
+            self.tempo_changes.iter().map(|c| (c.tick, c.bpm)),
+        )
+    }
+
     pub fn monitors(&self, track: &Track) -> bool {
         match track.monitor {
             Monitor::In => true,
@@ -771,6 +787,7 @@ impl Project {
                 end_tick: 4 * 3840,
             },
             punch: Punch::default(),
+            tempo_changes: Vec::new(),
             scale: crate::scale::Scale::default(),
             metronome: MetronomeSettings {
                 enabled: true,

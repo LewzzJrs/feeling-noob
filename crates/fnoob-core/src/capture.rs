@@ -71,10 +71,7 @@ pub fn notes(phrase: &[Played], timeline: Timeline, stopped_at_tick: u64) -> Vec
 mod tests {
     use super::*;
 
-    const TL: Timeline = Timeline {
-        sample_rate: 48_000,
-        bpm: 120.0,
-    };
+    const TL: Timeline = Timeline::new(48_000, 120.0);
 
     fn played(clock: u64, position: Option<u64>, pitch: u8, velocity: u8) -> Played {
         Played {

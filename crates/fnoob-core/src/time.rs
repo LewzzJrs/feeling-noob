@@ -44,23 +44,109 @@ pub fn snap_floor(tick: u64, grid: u64) -> u64 {
     tick / grid * grid
 }
 
+pub const MAX_TEMPO_CHANGES: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timeline {
     pub sample_rate: u32,
     pub bpm: f64,
+    changes: [(u64, f64); MAX_TEMPO_CHANGES],
+    count: usize,
 }
 
 impl Timeline {
+    pub const fn new(sample_rate: u32, bpm: f64) -> Self {
+        Self {
+            sample_rate,
+            bpm,
+            changes: [(0, 0.0); MAX_TEMPO_CHANGES],
+            count: 0,
+        }
+    }
+
+    pub fn with_changes(
+        sample_rate: u32,
+        bpm: f64,
+        changes: impl IntoIterator<Item = (u64, f64)>,
+    ) -> Self {
+        let mut timeline = Self::new(sample_rate, bpm);
+        let mut last = 0;
+        for (tick, change) in changes {
+            if timeline.count == MAX_TEMPO_CHANGES {
+                break;
+            }
+            if tick > last {
+                timeline.changes[timeline.count] = (tick, change);
+                timeline.count += 1;
+                last = tick;
+            }
+        }
+        timeline
+    }
+
+    fn per_tick(self, bpm: f64) -> f64 {
+        f64::from(self.sample_rate) * 60.0 / (clamp_bpm(bpm) * PPQ as f64)
+    }
+
     pub fn samples_per_tick(self) -> f64 {
-        f64::from(self.sample_rate) * 60.0 / (clamp_bpm(self.bpm) * PPQ as f64)
+        self.per_tick(self.bpm)
+    }
+
+    pub fn changes(&self) -> &[(u64, f64)] {
+        &self.changes[..self.count]
+    }
+
+    pub fn bpm_at_tick(self, tick: u64) -> f64 {
+        self.changes()
+            .iter()
+            .take_while(|(t, _)| *t <= tick)
+            .last()
+            .map_or(self.bpm, |(_, b)| *b)
+    }
+
+    pub fn tick_to_sample_f64(self, tick: f64) -> f64 {
+        let mut samples = 0.0;
+        let (mut from, mut bpm) = (0.0, self.bpm);
+        for &(at, next) in self.changes() {
+            let at = at as f64;
+            if at >= tick {
+                break;
+            }
+            samples += (at - from) * self.per_tick(bpm);
+            from = at;
+            bpm = next;
+        }
+        samples + (tick - from) * self.per_tick(bpm)
+    }
+
+    pub fn sample_to_tick_f64(self, sample: f64) -> f64 {
+        let mut samples = 0.0;
+        let (mut from, mut bpm) = (0.0, self.bpm);
+        for &(at, next) in self.changes() {
+            let at = at as f64;
+            let end = samples + (at - from) * self.per_tick(bpm);
+            if end > sample {
+                break;
+            }
+            samples = end;
+            from = at;
+            bpm = next;
+        }
+        from + (sample - samples) / self.per_tick(bpm)
     }
 
     pub fn tick_to_sample(self, tick: u64) -> u64 {
-        (tick as f64 * self.samples_per_tick()).round() as u64
+        self.tick_to_sample_f64(tick as f64).round() as u64
     }
 
     pub fn sample_to_tick(self, sample: u64) -> u64 {
-        (sample as f64 / self.samples_per_tick()).floor() as u64
+        let tick = self.sample_to_tick_f64(sample as f64);
+        let rounded = tick.round();
+        if (tick - rounded).abs() < 1e-6 {
+            rounded as u64
+        } else {
+            tick.floor() as u64
+        }
     }
 }
 
@@ -148,13 +234,28 @@ mod tests {
 
     #[test]
     fn tick_sample_round_trip_at_120_bpm_48k() {
-        let tl = Timeline {
-            sample_rate: 48_000,
-            bpm: 120.0,
-        };
+        let tl = Timeline::new(48_000, 120.0);
         assert_eq!(tl.tick_to_sample(960), 24_000);
         assert_eq!(tl.sample_to_tick(24_000), 960);
         assert_eq!(tl.sample_to_tick(23_999), 959);
+    }
+
+    #[test]
+    fn tempo_changes_bend_the_time_line() {
+        let tl = Timeline::with_changes(48_000, 120.0, [(960, 60.0), (0, 30.0), (2880, 240.0)]);
+        assert_eq!(tl.changes().len(), 2);
+        assert_eq!(tl.tick_to_sample(960), 24_000);
+        assert_eq!(tl.tick_to_sample(1920), 72_000);
+        assert_eq!(tl.tick_to_sample(2880), 120_000);
+        assert_eq!(tl.tick_to_sample(3840), 132_000);
+        assert_eq!(tl.sample_to_tick(48_000), 1440);
+        assert_eq!(tl.sample_to_tick(132_000), 3840);
+        assert_eq!(tl.bpm_at_tick(959), 120.0);
+        assert_eq!(tl.bpm_at_tick(960), 60.0);
+        assert_eq!(tl.bpm_at_tick(5000), 240.0);
+        for tick in (0..6000).step_by(37) {
+            assert_eq!(tl.sample_to_tick(tl.tick_to_sample(tick)), tick);
+        }
     }
 
     #[test]

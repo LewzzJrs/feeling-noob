@@ -179,10 +179,38 @@ pub fn nudge_regions(project: &mut Project, ids: &[Id], delta: i64) -> bool {
 }
 
 fn project_timeline(project: &Project) -> Timeline {
-    Timeline {
-        sample_rate: project.sample_rate,
-        bpm: project.tempo_bpm,
+    project.timeline(project.sample_rate)
+}
+
+pub fn frames_to_ticks_at(project: &Project, start_tick: u64, frames: u64) -> u64 {
+    let timeline = project_timeline(project);
+    let start = timeline.tick_to_sample_f64(start_tick as f64);
+    let end = timeline.sample_to_tick_f64(start + frames as f64);
+    ((end - start_tick as f64).ceil() as u64).max(1)
+}
+
+pub fn set_tempo_change(project: &mut Project, tick: u64, bpm: f64) -> bool {
+    if tick == 0 {
+        project.tempo_bpm = bpm;
+        return true;
     }
+    let changes = &mut project.tempo_changes;
+    match changes.binary_search_by_key(&tick, |c| c.tick) {
+        Ok(index) => changes[index].bpm = bpm,
+        Err(index) => {
+            if changes.len() >= crate::time::MAX_TEMPO_CHANGES {
+                return false;
+            }
+            changes.insert(index, crate::model::TempoChange { tick, bpm });
+        }
+    }
+    true
+}
+
+pub fn delete_tempo_change(project: &mut Project, tick: u64) -> bool {
+    let before = project.tempo_changes.len();
+    project.tempo_changes.retain(|c| c.tick != tick);
+    project.tempo_changes.len() != before
 }
 
 pub fn ticks_to_frames(project: &Project, start_tick: u64, ticks: u64) -> u64 {
@@ -400,7 +428,7 @@ pub fn add_audio_region(
     if offset_frames >= frames || project.track(track_id)?.kind != TrackKind::Audio {
         return None;
     }
-    let length_tick = frames_to_ticks(project, frames - offset_frames);
+    let length_tick = frames_to_ticks_at(project, start_tick, frames - offset_frames);
     let name = project.audio_file(file_id).map_or_else(String::new, |f| {
         std::path::Path::new(&f.path)
             .file_stem()

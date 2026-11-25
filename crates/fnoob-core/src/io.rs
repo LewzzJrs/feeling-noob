@@ -180,6 +180,16 @@ pub fn validate(project: &Project) -> Result<(), String> {
         return Err("loop end must be after loop start".into());
     }
     let fader = SILENT_DB..=MAX_FADER_DB;
+    let mut last = 0;
+    for change in &project.tempo_changes {
+        if change.tick <= last || !(MIN_BPM..=MAX_BPM).contains(&change.bpm) {
+            return Err("tempo changes must be in order, after bar 1, and in range".into());
+        }
+        last = change.tick;
+    }
+    if project.tempo_changes.len() > crate::time::MAX_TEMPO_CHANGES {
+        return Err("too many tempo changes".into());
+    }
     if !project.scale.is_valid() {
         return Err("the scale root must be 0 to 11".into());
     }
