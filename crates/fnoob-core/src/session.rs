@@ -215,6 +215,7 @@ fn new_clip(
 ) -> SessionClip {
     SessionClip {
         region: Region {
+            loop_ticks: None,
             id: project.alloc_id(),
             name,
             start_tick: 0,

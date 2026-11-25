@@ -554,6 +554,8 @@ pub struct Region {
     #[serde(default)]
     pub fade_out_tick: u64,
     pub content: RegionContent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_ticks: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

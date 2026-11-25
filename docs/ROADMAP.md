@@ -69,6 +69,8 @@ Done in Phase 23: time selection across tracks, a flashing insert marker, play f
 
 Done in Phase 24: time selection edits (cut, copy, paste, duplicate, delete, and the same over time for all tracks, insert silence), a selection menu, finer fixed grids, consolidate for MIDI, crop, reverse, fades from a selection, group tracks with their own channel, and freeze, unfreeze, freeze and flatten.
 
+Done in Phase 25: clip view panel with position and length Set buttons, MIDI clip loops and Duplicate Loop, piano roll Fit, Fold and Scale views, a grid menu in the editor, and velocity Randomize and Ramp.
+
 Not started, in rough priority order:
 
 - Audio warping and time stretch, clip tempo

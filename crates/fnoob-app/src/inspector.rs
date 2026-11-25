@@ -36,11 +36,83 @@ impl App {
             });
         }
         self.inspector.region_name = Some((id, text));
+        let meter = self.project.meter();
+        let track = self.project.find_region(id).map(|(t, _)| t.id);
+        let insert = self.insert_tick;
+        ui.horizontal(|ui| {
+            ui.label(format!(
+                "Position {}",
+                crate::arrange::position_text(&meter, region.start_tick)
+            ));
+            if ui
+                .small_button("Set")
+                .on_hover_text("Move the clip to the insert marker")
+                .clicked()
+                && let Some(track) = track
+            {
+                self.edit(|p| {
+                    edit::move_region(p, id, insert, track);
+                });
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(format!(
+                "Length {}",
+                crate::arrange::length_text(region.length_tick, self.project.time_signature)
+            ));
+            if ui
+                .add_enabled(insert > region.start_tick, egui::Button::new("Set").small())
+                .on_hover_text("End the clip at the insert marker")
+                .clicked()
+            {
+                self.edit(|p| {
+                    edit::resize_region(p, id, insert - region.start_tick);
+                });
+            }
+        });
+        let signature = meter.signature_at(region.start_tick);
         ui.label(format!(
-            "Start {}   Length {:.2} beats",
-            self.project.meter().position(region.start_tick),
-            beats(region.length_tick)
+            "Signature {}/{}",
+            signature.numerator, signature.denominator
         ));
+        if matches!(region.content, RegionContent::Midi { .. }) {
+            ui.horizontal(|ui| {
+                let mut looped = region.loop_ticks.is_some();
+                if ui
+                    .checkbox(&mut looped, "Loop")
+                    .on_hover_text("Repeat the start of the clip over its whole length")
+                    .changed()
+                {
+                    let length = region.length_tick;
+                    self.edit(|p| {
+                        edit::set_region_loop(p, id, looped.then_some(length));
+                    });
+                }
+                if let Some(repeat) = region.loop_ticks {
+                    let mut loop_beats = beats(repeat);
+                    let response = ui.add(
+                        egui::DragValue::new(&mut loop_beats)
+                            .speed(0.25)
+                            .range(0.25..=100_000.0)
+                            .suffix(" beats"),
+                    );
+                    self.live_edit(&response, |p| {
+                        edit::set_region_loop(p, id, Some(ticks(loop_beats).max(1)));
+                    });
+                }
+                if ui
+                    .button("Duplicate Loop")
+                    .on_hover_text(
+                        "Copy the loop (or the whole clip) after itself and make it twice as long",
+                    )
+                    .clicked()
+                {
+                    self.edit(|p| {
+                        edit::duplicate_loop(p, id);
+                    });
+                }
+            });
+        }
         let mut start = beats(region.start_tick);
         ui.horizontal(|ui| {
             ui.label("Start (beats)");

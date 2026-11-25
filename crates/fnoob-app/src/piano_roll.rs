@@ -45,6 +45,19 @@ pub struct Editor {
     pub clipboard: Vec<Note>,
     pub preview: Option<(Id, u8, Instant)>,
     pub held_key: Option<(Id, u8)>,
+    pub fold: Fold,
+    pub spread: u8,
+    pub ramp: (u8, u8),
+    rows: usize,
+    width: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fold {
+    #[default]
+    Off,
+    Notes,
+    Scale,
 }
 
 impl Default for Editor {
@@ -60,6 +73,11 @@ impl Default for Editor {
             clipboard: Vec::new(),
             preview: None,
             held_key: None,
+            fold: Fold::Off,
+            spread: 20,
+            ramp: (40, 110),
+            rows: 128,
+            width: 800.0,
         }
     }
 }
@@ -117,6 +135,7 @@ struct Layout {
     pixels_per_tick: f32,
     scroll_tick: f32,
     scroll_y: f32,
+    rows: Vec<u8>,
 }
 
 impl Layout {
@@ -129,12 +148,19 @@ impl Layout {
     }
 
     fn y(&self, pitch: u8) -> f32 {
-        self.notes.top() + f32::from(127 - pitch) * ROW - self.scroll_y
+        match self.rows.iter().position(|p| *p == pitch) {
+            Some(index) => self.notes.top() + index as f32 * ROW - self.scroll_y,
+            None => -100_000.0,
+        }
     }
 
     fn pitch(&self, y: f32) -> u8 {
         let row = ((y - self.notes.top() + self.scroll_y) / ROW).floor();
-        (127.0 - row).clamp(0.0, 127.0) as u8
+        let last = self.rows.len().saturating_sub(1) as f32;
+        self.rows
+            .get(row.clamp(0.0, last) as usize)
+            .copied()
+            .unwrap_or(60)
     }
 
     fn velocity_y(&self, velocity: u8) -> f32 {
@@ -182,6 +208,7 @@ impl App {
         let pitches = region.notes().iter().map(|n| n.pitch);
         let top = pitches.max().map_or(84, |p| p.saturating_add(4).min(127));
         self.editor.scroll_y = f32::from(127 - top) * ROW;
+        self.editor.fold = Fold::Off;
         self.editor.scroll_tick = region.start_tick as f32;
         self.editor.region = Some(region_id);
         self.editor.selected.clear();
@@ -318,7 +345,11 @@ impl App {
             return;
         };
         self.editor_toolbar(ui, region, track);
+        self.editor_tools(ui, region, start, end);
+        let rows = self.editor_rows(region);
+        self.editor.rows = rows.len();
         let (area, response) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        self.editor.width = (area.width() - KEYS_WIDTH).max(50.0);
         let layout = Layout {
             keys: Rect::from_min_max(
                 Pos2::new(area.left(), area.top() + RULER),
@@ -339,6 +370,7 @@ impl App {
             pixels_per_tick: self.editor.pixels_per_tick,
             scroll_tick: self.editor.scroll_tick,
             scroll_y: self.editor.scroll_y,
+            rows,
         };
         let mut actions = Vec::new();
         if response.contains_pointer() {
@@ -379,6 +411,105 @@ impl App {
         for action in actions {
             self.apply_editor_action(action, region, track, start, end);
         }
+    }
+
+    fn editor_rows(&self, region: Id) -> Vec<u8> {
+        let scale = self.project.scale;
+        let notes: Vec<u8> = self
+            .project
+            .find_region(region)
+            .map(|(_, r)| r.notes().iter().map(|n| n.pitch).collect())
+            .unwrap_or_default();
+        let rows: Vec<u8> = (0..=127u8)
+            .rev()
+            .filter(|p| match self.editor.fold {
+                Fold::Off => true,
+                Fold::Notes => notes.contains(p),
+                Fold::Scale => scale.contains(*p),
+            })
+            .collect();
+        if rows.is_empty() {
+            (0..=127u8).rev().collect()
+        } else {
+            rows
+        }
+    }
+
+    fn editor_tools(&mut self, ui: &mut egui::Ui, region: Id, start: u64, end: u64) {
+        ui.horizontal(|ui| {
+            crate::ui_kit::compact(ui);
+            if ui
+                .button("Fit")
+                .on_hover_text("Zoom the editor to the whole clip")
+                .clicked()
+            {
+                let span = end.saturating_sub(start).max(1) as f32;
+                self.editor.pixels_per_tick = (self.editor.width * 0.96 / span)
+                    .clamp(MIN_PIXELS_PER_TICK, MAX_PIXELS_PER_TICK);
+                self.editor.scroll_tick = start as f32;
+            }
+            for (fold, label, text) in [
+                (Fold::Notes, "Fold", "Show only the rows that hold notes"),
+                (Fold::Scale, "Scale", "Show only the rows in the song key"),
+            ] {
+                let on = self.editor.fold == fold;
+                if ui.selectable_label(on, label).on_hover_text(text).clicked() {
+                    self.editor.fold = if on { Fold::Off } else { fold };
+                    self.editor.scroll_y = 0.0;
+                }
+            }
+            let mut highlight = self.project.scale.enabled;
+            if ui
+                .checkbox(&mut highlight, "Highlight Scale")
+                .on_hover_text("Shade the notes of the song key")
+                .changed()
+            {
+                self.edit(|p| p.scale.enabled = highlight);
+            }
+            ui.separator();
+            let mut grid = self.project.snap.grid;
+            egui::ComboBox::from_id_salt("editor_grid")
+                .width(56.0)
+                .selected_text(grid.label())
+                .show_ui(ui, |ui| {
+                    for option in fnoob_core::model::Grid::ALL {
+                        ui.selectable_value(&mut grid, option, option.label());
+                    }
+                });
+            if grid != self.project.snap.grid {
+                self.edit(|p| p.snap.grid = grid);
+            }
+            ui.separator();
+            let selected = self.editor.selected.clone();
+            ui.label("Velocity");
+            if ui
+                .button("Randomize")
+                .on_hover_text("Move each velocity up or down by up to this amount (selected notes, or all)")
+                .clicked()
+            {
+                let amount = self.editor.spread;
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.as_nanos() as u64);
+                self.edit(|p| {
+                    edit::randomize_velocities(p, region, &selected, amount, seed);
+                });
+            }
+            ui.add(egui::DragValue::new(&mut self.editor.spread).range(1..=64).prefix("±"));
+            if ui
+                .button("Ramp")
+                .on_hover_text("Spread velocities from the first value to the second over time (selected notes, or all)")
+                .clicked()
+            {
+                let (from, to) = self.editor.ramp;
+                self.edit(|p| {
+                    edit::ramp_velocities(p, region, &selected, from, to);
+                });
+            }
+            ui.add(egui::DragValue::new(&mut self.editor.ramp.0).range(1..=127));
+            ui.label("to");
+            ui.add(egui::DragValue::new(&mut self.editor.ramp.1).range(1..=127));
+        });
     }
 
     fn editor_toolbar(&mut self, ui: &mut egui::Ui, region: Id, track: Id) {
@@ -596,6 +727,18 @@ impl App {
             g.ruler.bottom() - 4.0..=g.ruler.bottom(),
         );
         painter.rect_filled(span, 0.0, visuals.selection.bg_fill);
+        if let Some(repeat) = self
+            .editor
+            .region
+            .and_then(|id| self.project.find_region(id))
+            .and_then(|(_, r)| r.loop_ticks)
+        {
+            let brace = Rect::from_x_y_ranges(
+                g.x(start)..=g.x(start + repeat),
+                g.ruler.bottom() - 9.0..=g.ruler.bottom() - 5.0,
+            );
+            painter.rect_filled(brace, 1.0, Color32::from_rgb(64, 170, 150));
+        }
         let bar = ticks_per_bar(self.project.time_signature);
         let bar_px = bar as f32 * g.pixels_per_tick;
         let label_every = ((40.0 / bar_px).ceil() as u64).max(1);
@@ -633,6 +776,14 @@ impl App {
     fn draw_keys(&self, ui: &mut egui::Ui, g: &Layout, actions: &mut Vec<EditorAction>) {
         let painter = ui.painter_at(g.keys);
         painter.rect_filled(g.keys, 0.0, Color32::from_gray(230));
+        let rows_end = g.notes.top() + g.rows.len() as f32 * ROW - g.scroll_y;
+        if rows_end < g.keys.bottom() {
+            painter.rect_filled(
+                Rect::from_x_y_ranges(g.keys.x_range(), rows_end..=g.keys.bottom()),
+                0.0,
+                ui.visuals().extreme_bg_color,
+            );
+        }
         let first = g.pitch(g.keys.bottom());
         let last = g.pitch(g.keys.top());
         let held = self.editor.held_key.map(|(_, p)| p);
@@ -887,7 +1038,8 @@ impl App {
             EditorAction::Locate(tick) => self.locate(tick),
             EditorAction::Scroll { ticks, pixels } => {
                 self.editor.scroll_tick = (self.editor.scroll_tick + ticks).max(0.0);
-                self.editor.scroll_y = (self.editor.scroll_y + pixels).clamp(0.0, 127.0 * ROW);
+                let most = (self.editor.rows as f32 * ROW - ROW * 4.0).max(0.0);
+                self.editor.scroll_y = (self.editor.scroll_y + pixels).clamp(0.0, most);
             }
             EditorAction::Zoom { factor, anchor } => {
                 let tick = self.editor.scroll_tick + anchor / self.editor.pixels_per_tick;

@@ -394,20 +394,34 @@ fn track_plans(
                     .iter()
                     .filter(|r| !r.muted)
                     .flat_map(|region| {
-                        region
-                            .notes()
-                            .iter()
-                            .filter(|n| n.start_tick < region.length_tick)
-                            .map(move |n| {
-                                let start = region.start_tick + n.start_tick;
-                                let end = (start + n.length_tick).min(region.end_tick());
-                                PlannedNote {
-                                    start: timeline.tick_to_sample(start),
-                                    end: timeline.tick_to_sample(end),
-                                    pitch: n.pitch,
-                                    velocity: n.velocity,
-                                }
-                            })
+                        let span = region.loop_ticks.unwrap_or(region.length_tick).max(1);
+                        let passes = region.length_tick.div_ceil(span);
+                        (0..passes).flat_map(move |pass| {
+                            let offset = pass * span;
+                            region
+                                .notes()
+                                .iter()
+                                .filter(move |n| {
+                                    n.start_tick < span
+                                        && offset + n.start_tick < region.length_tick
+                                })
+                                .map(move |n| {
+                                    let start = region.start_tick + offset + n.start_tick;
+                                    let stop = if region.loop_ticks.is_some() {
+                                        region.start_tick + offset + span
+                                    } else {
+                                        region.end_tick()
+                                    };
+                                    let end =
+                                        (start + n.length_tick).min(region.end_tick()).min(stop);
+                                    PlannedNote {
+                                        start: timeline.tick_to_sample(start),
+                                        end: timeline.tick_to_sample(end),
+                                        pitch: n.pitch,
+                                        velocity: n.velocity,
+                                    }
+                                })
+                        })
                     })
                     .filter(|n| n.end > n.start)
                     .collect()
@@ -545,6 +559,22 @@ mod tests {
             start_tick,
             length_tick,
         }
+    }
+
+    #[test]
+    fn looped_clips_repeat_their_notes() {
+        let mut p = Project::new("t", 48_000);
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        let region = add_midi_region(&mut p, inst, 0, 2400).unwrap();
+        add_note(&mut p, region, note(60, 100, 2000));
+        fnoob_core::edit::set_region_loop(&mut p, region, Some(960));
+        let plan = RenderPlan::from_project(&p, 48_000);
+        let spt = plan.samples_per_tick;
+        let starts: Vec<u64> = plan.tracks[0].notes.iter().map(|n| n.start).collect();
+        let at = |t: f64| (t * spt).round() as u64;
+        assert_eq!(starts, vec![at(100.0), at(1060.0), at(2020.0)]);
+        assert_eq!(plan.tracks[0].notes[0].end, at(960.0));
+        assert_eq!(plan.tracks[0].notes[2].end, at(2400.0));
     }
 
     #[test]

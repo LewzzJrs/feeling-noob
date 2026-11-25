@@ -49,6 +49,7 @@ pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
     target.session.clear();
     target.takes.clear();
     target.regions = vec![Region {
+        loop_ticks: None,
         id,
         name,
         start_tick: 0,
@@ -63,6 +64,115 @@ pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
         },
     }];
     Some(id)
+}
+
+pub fn set_region_loop(project: &mut Project, id: Id, loop_ticks: Option<u64>) -> bool {
+    let Some(region) = region_mut(project, id) else {
+        return false;
+    };
+    if !matches!(region.content, RegionContent::Midi { .. }) {
+        return false;
+    }
+    let value = loop_ticks
+        .filter(|l| *l > 0)
+        .map(|l| l.min(region.length_tick));
+    let changed = region.loop_ticks != value;
+    region.loop_ticks = value;
+    changed
+}
+
+pub fn duplicate_loop(project: &mut Project, id: Id) -> bool {
+    let Some(region) = region_mut(project, id) else {
+        return false;
+    };
+    let span = region.loop_ticks.unwrap_or(region.length_tick);
+    let RegionContent::Midi { notes } = &mut region.content else {
+        return false;
+    };
+    let copies: Vec<Note> = notes
+        .iter()
+        .filter(|n| n.start_tick < span)
+        .map(|n| Note {
+            start_tick: n.start_tick + span,
+            ..*n
+        })
+        .collect();
+    notes.retain(|n| n.start_tick < span);
+    notes.extend(copies);
+    notes.sort_by_key(|n| (n.start_tick, n.pitch));
+    if region.loop_ticks.is_some() {
+        region.loop_ticks = Some(span * 2);
+    }
+    region.length_tick = region.length_tick.max(span * 2);
+    true
+}
+
+fn spread(seed: u64, index: usize) -> f32 {
+    let mut x = seed ^ (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    x ^= x >> 33;
+    (x >> 11) as f32 / (1u64 << 53) as f32 * 2.0 - 1.0
+}
+
+pub fn randomize_velocities(
+    project: &mut Project,
+    region: Id,
+    indices: &[usize],
+    amount: u8,
+    seed: u64,
+) -> bool {
+    let Some(notes) = notes_of(project, region) else {
+        return false;
+    };
+    let all: Vec<usize> = (0..notes.len()).collect();
+    let chosen = if indices.is_empty() { &all } else { indices };
+    for &i in chosen {
+        if let Some(note) = notes.get_mut(i) {
+            let shift = (spread(seed, i) * f32::from(amount)).round() as i32;
+            note.velocity = (i32::from(note.velocity) + shift).clamp(1, 127) as u8;
+        }
+    }
+    !chosen.is_empty()
+}
+
+pub fn ramp_velocities(
+    project: &mut Project,
+    region: Id,
+    indices: &[usize],
+    from: u8,
+    to: u8,
+) -> bool {
+    let Some(notes) = notes_of(project, region) else {
+        return false;
+    };
+    let all: Vec<usize> = (0..notes.len()).collect();
+    let chosen: Vec<usize> = if indices.is_empty() {
+        all
+    } else {
+        indices.to_vec()
+    };
+    let starts: Vec<u64> = chosen
+        .iter()
+        .filter_map(|&i| notes.get(i).map(|n| n.start_tick))
+        .collect();
+    let (Some(&first), Some(&last)) = (starts.iter().min(), starts.iter().max()) else {
+        return false;
+    };
+    for &i in &chosen {
+        if let Some(note) = notes.get_mut(i) {
+            let t = if last > first {
+                (note.start_tick - first) as f32 / (last - first) as f32
+            } else {
+                0.0
+            };
+            let value = f32::from(from) + (f32::from(to) - f32::from(from)) * t;
+            note.velocity = value.round().clamp(1.0, 127.0) as u8;
+        }
+    }
+    true
 }
 
 pub fn group_tracks(project: &mut Project, ids: &[Id]) -> Option<Id> {
@@ -209,6 +319,7 @@ pub fn add_midi_region(
     let id = project.alloc_id();
     let track = project.track_mut(track_id)?;
     track.regions.push(Region {
+        loop_ticks: None,
         id,
         name: track.name.clone(),
         start_tick,
@@ -409,6 +520,7 @@ pub fn split_regions_at(project: &mut Project, ids: &[Id], tick: u64) -> Vec<Id>
             let cut = tick - region.start_tick;
             let content = split_content(region, cut, cut_frames);
             let right = Region {
+                loop_ticks: None,
                 id,
                 name: region.name.clone(),
                 start_tick: tick,
@@ -574,6 +686,7 @@ pub fn add_audio_region(
     });
     let id = project.alloc_id();
     project.track_mut(track_id)?.regions.push(Region {
+        loop_ticks: None,
         id,
         name,
         start_tick,
@@ -1083,6 +1196,63 @@ mod tests {
 
     fn notes(p: &Project, id: Id) -> Vec<Note> {
         region(p, id).notes().to_vec()
+    }
+
+    #[test]
+    fn duplicating_a_loop_doubles_its_notes() {
+        let mut p = Project::new("t", 48_000);
+        let t = add_track(&mut p, TrackKind::Instrument);
+        let r = add_midi_region(&mut p, t, 0, 960).unwrap();
+        add_note(
+            &mut p,
+            r,
+            Note {
+                pitch: 60,
+                velocity: 100,
+                start_tick: 100,
+                length_tick: 50,
+            },
+        );
+        assert!(set_region_loop(&mut p, r, Some(960)));
+        assert!(duplicate_loop(&mut p, r));
+        let region = p.find_region(r).unwrap().1.clone();
+        assert_eq!(region.loop_ticks, Some(1920));
+        assert_eq!(region.length_tick, 1920);
+        let starts: Vec<u64> = region.notes().iter().map(|n| n.start_tick).collect();
+        assert_eq!(starts, vec![100, 1060]);
+    }
+
+    #[test]
+    fn velocity_tools_stay_in_range() {
+        let mut p = Project::new("t", 48_000);
+        let t = add_track(&mut p, TrackKind::Instrument);
+        let r = add_midi_region(&mut p, t, 0, 3840).unwrap();
+        for k in 0..4u64 {
+            add_note(
+                &mut p,
+                r,
+                Note {
+                    pitch: 60,
+                    velocity: 120,
+                    start_tick: k * 960,
+                    length_tick: 100,
+                },
+            );
+        }
+        assert!(ramp_velocities(&mut p, r, &[], 20, 110));
+        let v: Vec<u8> = p
+            .find_region(r)
+            .unwrap()
+            .1
+            .notes()
+            .iter()
+            .map(|n| n.velocity)
+            .collect();
+        assert_eq!(v, vec![20, 50, 80, 110]);
+        assert!(randomize_velocities(&mut p, r, &[0], 64, 7));
+        let after = p.find_region(r).unwrap().1.notes()[0].velocity;
+        assert!((1..=84).contains(&after));
+        assert_eq!(p.find_region(r).unwrap().1.notes()[1].velocity, 50);
     }
 
     #[test]

@@ -1160,18 +1160,35 @@ impl App {
                     );
                     let span = f32::from(high - low).max(12.0);
                     let note_painter = ui.painter_at(body.intersect(g.lanes));
-                    for note in notes {
-                        let start = region.start_tick + note.start_tick;
-                        if start >= region.end_tick() {
-                            continue;
+                    let repeat = region.loop_ticks.unwrap_or(region.length_tick).max(1);
+                    for pass in 0..region.length_tick.div_ceil(repeat) {
+                        let offset = region.start_tick + pass * repeat;
+                        if pass > 0 {
+                            note_painter.vline(
+                                g.x(offset),
+                                body.y_range(),
+                                Stroke::new(1.0, Color32::from_black_alpha(90)),
+                            );
                         }
-                        let end = (start + note.length_tick).min(region.end_tick());
-                        let y = body.bottom() - body.height() * f32::from(note.pitch - low) / span;
-                        note_painter.hline(
-                            g.x(start)..=g.x(end).max(g.x(start) + 1.0),
-                            y,
-                            Stroke::new(2.0, Color32::from_black_alpha(170)),
-                        );
+                        let stop = if region.loop_ticks.is_some() {
+                            (offset + repeat).min(region.end_tick())
+                        } else {
+                            region.end_tick()
+                        };
+                        for note in notes.iter().filter(|n| n.start_tick < repeat) {
+                            let start = offset + note.start_tick;
+                            if start >= stop {
+                                continue;
+                            }
+                            let end = (start + note.length_tick).min(stop);
+                            let y =
+                                body.bottom() - body.height() * f32::from(note.pitch - low) / span;
+                            note_painter.hline(
+                                g.x(start)..=g.x(end).max(g.x(start) + 1.0),
+                                y,
+                                Stroke::new(2.0, Color32::from_black_alpha(170)),
+                            );
+                        }
                     }
                 }
                 let label = if missing {
