@@ -325,6 +325,61 @@ impl App {
         Ok((rel, data))
     }
 
+    pub(crate) fn reversed_audio(
+        &mut self,
+        region: Id,
+    ) -> Result<(Id, String, u16, u64, AudioData), String> {
+        let found = self
+            .project
+            .tracks
+            .iter()
+            .flat_map(|t| t.regions.iter())
+            .find(|r| r.id == region)
+            .cloned();
+        let Some(found) = found else {
+            return Err("The clip is gone.".into());
+        };
+        let fnoob_core::model::RegionContent::Audio {
+            file_id,
+            offset_frames,
+            ..
+        } = found.content
+        else {
+            return Err("Only audio clips need a reversed file.".into());
+        };
+        let Some(source) = self.pool.get(&file_id).cloned() else {
+            return Err("The audio file of this clip is not loaded.".into());
+        };
+        if self.project_dir.is_none() && !self.save_as() {
+            return Err(
+                "Reversed audio is saved in the project folder, so save the project first.".into(),
+            );
+        }
+        let Some(dir) = self.project_dir.clone() else {
+            return Err("Save the project first.".into());
+        };
+        let wanted = edit::ticks_to_frames(&self.project, found.start_tick, found.length_tick);
+        let start = offset_frames.min(source.frames);
+        let end = (start + wanted).min(source.frames);
+        let channels = usize::from(source.channels.max(1));
+        let mut samples = Vec::with_capacity((end - start) as usize * channels);
+        for frame in (start..end).rev() {
+            let at = frame as usize * channels;
+            samples.extend_from_slice(&source.samples[at..at + channels]);
+        }
+        let data = AudioData::from_samples(source.channels, samples);
+        let stem = format!("{} Reverse", file_stem_for(&found.name));
+        let rel = unique_audio_path(&dir, &stem, &HashSet::new());
+        let destination = dir.join(&rel);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        decode::write_wav(&destination, &data, self.project.sample_rate)
+            .map_err(|e| format!("Cannot write the reversed audio. {e}"))?;
+        let frames = data.frames;
+        Ok((region, rel, source.channels, frames, data))
+    }
+
     pub(crate) fn copy_into_project(&mut self, source: &Path) -> Option<(String, AudioData)> {
         if self.project_dir.is_none() && !self.save_as() {
             self.message = Some(

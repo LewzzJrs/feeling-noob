@@ -92,6 +92,10 @@ pub enum Command {
     PasteTime,
     DuplicateTime,
     DeleteTime,
+    Consolidate,
+    Crop,
+    Reverse,
+    CreateFade,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -266,6 +270,10 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (ctrl_shift(letter('V')), Command::PasteTime),
     (ctrl_shift(letter('D')), Command::DuplicateTime),
     (ctrl_shift(Key::Delete), Command::DeleteTime),
+    (ctrl(letter('J')), Command::Consolidate),
+    (ctrl_shift(letter('J')), Command::Crop),
+    (plain(letter('R')), Command::Reverse),
+    (ctrl_alt(letter('F')), Command::CreateFade),
     (ctrl(letter('C')), Command::Copy),
     (ctrl(letter('V')), Command::Paste),
     (ctrl(letter('A')), Command::SelectAll),

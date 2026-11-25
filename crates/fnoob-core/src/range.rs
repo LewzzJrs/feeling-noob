@@ -1,4 +1,4 @@
-use crate::model::{Id, Project, Region};
+use crate::model::{Id, Project, Region, RegionContent, TrackKind};
 use crate::takes;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -160,6 +160,138 @@ pub fn delete_time(project: &mut Project, start: u64, end: u64) {
     }
 }
 
+pub fn consolidate_midi(project: &mut Project, track: Id, start: u64, end: u64) -> Option<Id> {
+    if end <= start {
+        return None;
+    }
+    let source = project.track(track)?;
+    if source.kind != TrackKind::Instrument {
+        return None;
+    }
+    let touched: Vec<&Region> = source
+        .regions
+        .iter()
+        .filter(|r| r.start_tick < end && r.end_tick() > start)
+        .collect();
+    let name = touched.first()?.name.clone();
+    let mut notes = Vec::new();
+    for region in &touched {
+        if let RegionContent::Midi { notes: inner } = &region.content {
+            for note in inner {
+                if note.start_tick >= region.length_tick {
+                    continue;
+                }
+                let at = region.start_tick + note.start_tick;
+                if at >= start && at < end {
+                    let mut moved = *note;
+                    moved.start_tick = at - start;
+                    moved.length_tick = moved
+                        .length_tick
+                        .min(region.end_tick() - at)
+                        .min(end - at)
+                        .max(1);
+                    notes.push(moved);
+                }
+            }
+        }
+    }
+    notes.sort_by_key(|n| (n.start_tick, n.pitch));
+    takes::clear_range(project, track, start, end);
+    let id = crate::edit::add_midi_region(project, track, start, end - start)?;
+    if let Some(region) = crate::edit::region_mut(project, id) {
+        region.name = name;
+        region.content = RegionContent::Midi { notes };
+    }
+    Some(id)
+}
+
+pub fn crop(project: &mut Project, tracks: &[Id], start: u64, end: u64) -> usize {
+    if end <= start {
+        return 0;
+    }
+    let mut cropped = 0;
+    for id in ordered(project, tracks) {
+        let touched: Vec<Id> = project
+            .track(id)
+            .map(|t| {
+                t.regions
+                    .iter()
+                    .filter(|r| r.start_tick < end && r.end_tick() > start)
+                    .map(|r| r.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if touched.is_empty() {
+            continue;
+        }
+        let mut pieces = touched.clone();
+        pieces.extend(crate::edit::split_regions_at(
+            project,
+            &pieces.clone(),
+            start,
+        ));
+        pieces.extend(crate::edit::split_regions_at(project, &pieces.clone(), end));
+        if let Some(track) = project.track_mut(id) {
+            let before = track.regions.len();
+            track.regions.retain(|r| {
+                !pieces.contains(&r.id) || (r.start_tick >= start && r.end_tick() <= end)
+            });
+            cropped += touched.len().min(before);
+        }
+    }
+    cropped
+}
+
+pub fn fade_range(project: &mut Project, tracks: &[Id], start: u64, end: u64) -> usize {
+    let mut changes = Vec::new();
+    for id in ordered(project, tracks) {
+        let Some(track) = project.track(id) else {
+            continue;
+        };
+        for region in &track.regions {
+            if !matches!(region.content, RegionContent::Audio { .. })
+                || region.start_tick >= end
+                || region.end_tick() <= start
+            {
+                continue;
+            }
+            let mut fade_in = region.fade_in_tick;
+            let mut fade_out = region.fade_out_tick;
+            if region.start_tick >= start {
+                fade_in = end.min(region.end_tick()) - region.start_tick;
+            }
+            if region.end_tick() <= end {
+                fade_out = region.end_tick() - start.max(region.start_tick);
+            }
+            if region.start_tick < start && region.end_tick() > end {
+                fade_out = region.end_tick() - start;
+            }
+            changes.push((region.id, fade_in, fade_out));
+        }
+    }
+    let count = changes.len();
+    for (id, fade_in, fade_out) in changes {
+        if fade_in + fade_out > 0 {
+            crate::edit::set_region_fades(project, id, fade_in, fade_out);
+        }
+    }
+    count
+}
+
+pub fn reverse_midi(region: &mut Region) -> bool {
+    let length = region.length_tick;
+    let RegionContent::Midi { notes } = &mut region.content else {
+        return false;
+    };
+    for note in notes.iter_mut() {
+        let end = (note.start_tick + note.length_tick).min(length);
+        note.start_tick = length.saturating_sub(end);
+        note.length_tick = note.length_tick.min(length - note.start_tick).max(1);
+    }
+    notes.sort_by_key(|n| (n.start_tick, n.pitch));
+    true
+}
+
 fn ordered(project: &Project, tracks: &[Id]) -> Vec<Id> {
     project
         .tracks
@@ -247,6 +379,48 @@ mod tests {
         assert_eq!(spans(&p, a), vec![(0, 1500), (2500, 5000)]);
         assert_eq!(spans(&p, b), vec![(1000, 1500), (2500, 3000)]);
         assert_eq!(p.markers[0].tick, 4000);
+    }
+
+    #[test]
+    fn consolidating_joins_clips_and_keeps_notes_in_place() {
+        let (mut p, a, b) = setup();
+        add_midi_region(&mut p, a, 5000, 1000).unwrap();
+        let id = consolidate_midi(&mut p, a, 0, 6000).unwrap();
+        assert_eq!(spans(&p, a), vec![(0, 6000)]);
+        let region = p
+            .track(a)
+            .unwrap()
+            .regions
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap();
+        match &region.content {
+            RegionContent::Midi { notes } => {
+                assert_eq!(notes.len(), 1);
+                assert_eq!(notes[0].start_tick, 2500);
+            }
+            _ => panic!("expected MIDI"),
+        }
+        assert_eq!(spans(&p, b), vec![(1000, 2000)]);
+    }
+
+    #[test]
+    fn cropping_keeps_only_the_selected_part() {
+        let (mut p, a, b) = setup();
+        crop(&mut p, &[a, b], 1500, 3000);
+        assert_eq!(spans(&p, a), vec![(1500, 3000)]);
+        assert_eq!(spans(&p, b), vec![(1500, 2000)]);
+    }
+
+    #[test]
+    fn reversing_mirrors_notes() {
+        let (mut p, a, _) = setup();
+        let region = &mut p.track_mut(a).unwrap().regions[0];
+        assert!(reverse_midi(region));
+        match &region.content {
+            RegionContent::Midi { notes } => assert_eq!(notes[0].start_tick, 4000 - 2600),
+            _ => panic!("expected MIDI"),
+        }
     }
 
     #[test]

@@ -947,6 +947,10 @@ impl App {
             | Command::PasteTime
             | Command::DuplicateTime
             | Command::DeleteTime => self.time_command(command),
+            Command::Consolidate => self.consolidate(),
+            Command::Crop => self.crop_selection(),
+            Command::Reverse => self.reverse_clips(),
+            Command::CreateFade => self.fade_selection(),
             Command::Paste if self.time_clipboard.is_some() => self.paste_time_clip(false),
             Command::Paste if !self.track_clipboard.is_empty() && self.clipboard.is_empty() => {
                 let tracks = self.track_clipboard.clone();
@@ -1289,6 +1293,11 @@ impl App {
                 self.menu_item(ui, "Duplicate Time", Command::DuplicateTime);
                 self.menu_item(ui, "Delete Time", Command::DeleteTime);
                 self.menu_item(ui, "Insert Silence", Command::InsertScene);
+                ui.separator();
+                self.menu_item(ui, "Consolidate", Command::Consolidate);
+                self.menu_item(ui, "Crop Clip(s)", Command::Crop);
+                self.menu_item(ui, "Reverse Clip(s)", Command::Reverse);
+                self.menu_item(ui, "Create Fade", Command::CreateFade);
                 ui.separator();
                 self.menu_item(ui, "Split at Playhead", Command::SplitAtPlayhead);
                 self.menu_item(ui, "Repeat", Command::RepeatRegions);

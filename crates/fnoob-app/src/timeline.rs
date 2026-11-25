@@ -2315,6 +2315,158 @@ impl App {
         item(ui, "Widen Grid", Command::WidenGrid, index > 0);
     }
 
+    fn clip_ranges(&self) -> Vec<(Id, u64, u64)> {
+        if let Some(selection) = &self.time_selection {
+            return selection
+                .tracks
+                .iter()
+                .map(|t| (*t, selection.start, selection.end))
+                .collect();
+        }
+        let mut ranges: Vec<(Id, u64, u64)> = Vec::new();
+        for track in &self.project.tracks {
+            for region in track
+                .regions
+                .iter()
+                .filter(|r| self.selection.regions.contains(&r.id))
+            {
+                match ranges.iter_mut().find(|(t, _, _)| *t == track.id) {
+                    Some(range) => {
+                        range.1 = range.1.min(region.start_tick);
+                        range.2 = range.2.max(region.end_tick());
+                    }
+                    None => ranges.push((track.id, region.start_tick, region.end_tick())),
+                }
+            }
+        }
+        ranges
+    }
+
+    pub(crate) fn consolidate(&mut self) {
+        let ranges = self.clip_ranges();
+        let midi: Vec<(Id, u64, u64)> = ranges
+            .iter()
+            .copied()
+            .filter(|(t, _, _)| {
+                self.project
+                    .track(*t)
+                    .is_some_and(|t| t.kind == fnoob_core::model::TrackKind::Instrument)
+            })
+            .collect();
+        if midi.is_empty() {
+            self.message = Some(if ranges.is_empty() {
+                "Select clips or a time range to consolidate.".into()
+            } else {
+                "Only MIDI clips can be consolidated for now.".into()
+            });
+            return;
+        }
+        let mut created = Vec::new();
+        self.edit(|p| {
+            for (track, start, end) in &midi {
+                created.extend(fnoob_core::range::consolidate_midi(p, *track, *start, *end));
+            }
+        });
+        self.selection.regions = created;
+        self.time_selection = None;
+        if midi.len() < ranges.len() {
+            self.message =
+                Some("Audio clips were left as they are; only MIDI is consolidated.".into());
+        }
+    }
+
+    pub(crate) fn crop_selection(&mut self) {
+        let Some(selection) = self.time_selection.clone() else {
+            self.message = Some("Select a time range inside the clips to crop them.".into());
+            return;
+        };
+        self.edit(|p| {
+            fnoob_core::range::crop(p, &selection.tracks, selection.start, selection.end);
+        });
+    }
+
+    pub(crate) fn fade_selection(&mut self) {
+        let Some(selection) = self.time_selection.clone() else {
+            self.message =
+                Some("Select a time range over the start or end of an audio clip.".into());
+            return;
+        };
+        let mut count = 0;
+        self.edit(|p| {
+            count =
+                fnoob_core::range::fade_range(p, &selection.tracks, selection.start, selection.end);
+        });
+        if count == 0 {
+            self.message = Some("Fades need an audio clip under the time selection.".into());
+        }
+    }
+
+    pub(crate) fn reverse_clips(&mut self) {
+        let ids = if self.selection.regions.is_empty() {
+            self.regions_in_selection()
+        } else {
+            self.selection.regions.clone()
+        };
+        if ids.is_empty() {
+            self.message = Some("Select clips to reverse.".into());
+            return;
+        }
+        let audio: Vec<Id> = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.project
+                    .tracks
+                    .iter()
+                    .flat_map(|t| t.regions.iter())
+                    .any(|r| {
+                        r.id == *id
+                            && matches!(r.content, fnoob_core::model::RegionContent::Audio { .. })
+                    })
+            })
+            .collect();
+        let mut prepared = Vec::new();
+        for id in &audio {
+            match self.reversed_audio(*id) {
+                Ok(item) => prepared.push(item),
+                Err(e) => {
+                    self.message = Some(e);
+                    return;
+                }
+            }
+        }
+        let mut files = Vec::new();
+        self.edit(|p| {
+            for track in &mut p.tracks {
+                for region in &mut track.regions {
+                    if ids.contains(&region.id) && !audio.contains(&region.id) {
+                        fnoob_core::range::reverse_midi(region);
+                    }
+                }
+            }
+            for (region, rel, channels, frames, _) in &prepared {
+                let file = edit::add_audio_file(p, rel.clone(), *channels, *frames);
+                if let Some(target) = edit::region_mut(p, *region) {
+                    if let fnoob_core::model::RegionContent::Audio {
+                        file_id,
+                        offset_frames,
+                        ..
+                    } = &mut target.content
+                    {
+                        *file_id = file;
+                        *offset_frames = 0;
+                    }
+                    std::mem::swap(&mut target.fade_in_tick, &mut target.fade_out_tick);
+                }
+                files.push(file);
+            }
+        });
+        for ((_, _, _, _, data), file) in prepared.into_iter().zip(files) {
+            self.pool.insert(file, std::sync::Arc::new(data));
+        }
+        self.sync_plan();
+    }
+
     pub(crate) fn regions_in_selection(&self) -> Vec<Id> {
         let Some(selection) = &self.time_selection else {
             return Vec::new();
