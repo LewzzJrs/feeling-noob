@@ -336,44 +336,56 @@ Autosave uses the same steps into `autosave\project.json`, without backups.
 
 ## 6. Keyboard shortcuts
 
-Phase 15 replaced the first set of single-letter shortcuts with this set.
+Phase 22 aligned the shortcuts with the common clip-based workstation layout on Windows.
 
 | Command | Key |
 |---|---|
-| Play / Stop | `Space` |
+| Play from insert marker / Stop (back to insert marker) | `Space` |
+| Continue from stop point | `Shift+Space` |
 | Record | `F9` |
-| Go to Beginning | `Home` |
-| Back / Forward 1 bar | `Left` / `Right` |
+| Back to Timeline (stop grid clips) | `F10` |
+| Insert marker to start | `Home` |
+| Move insert marker / nudge selected regions by grid | `Left` / `Right` (`Alt` + arrows also nudge) |
 | Loop on/off | `Ctrl+L` |
+| Loop start / end at insert marker | `Ctrl+F10` / `Ctrl+F11` |
+| Loop shorter / longer by a bar | `Ctrl+Left` / `Ctrl+Right` |
+| Loop halve / double | `Ctrl+Down` / `Ctrl+Up` |
 | Metronome | `O` |
 | Switch Timeline / Clip Grid | `Tab` |
-| Switch Clip / Devices in the detail area | `Shift+Tab` |
+| Switch Clip / Devices | `Shift+Tab`, `F12` |
+| Show Clip view / Device view | `Ctrl+Alt+3` / `Ctrl+Alt+4` |
 | Show/Hide Detail Area | `Ctrl+Alt+L` |
-| Show/Hide Browser | `Ctrl+Alt+B` |
-| Show/Hide Mixer Section (clip grid) | `Ctrl+Alt+M` |
-| Insert Audio Track / MIDI Track / Return Track | `Ctrl+T` / `Ctrl+Shift+T` / `Ctrl+Alt+T` |
+| Show/Hide Browser | `Ctrl+Alt+B`, `Ctrl+Alt+5` |
+| Show/Hide Mixer / In-Out / Sends / Returns | `Ctrl+Alt+M` / `Ctrl+Alt+I` / `Ctrl+Alt+S` / `Ctrl+Alt+R` |
+| Show take lanes of the selected track | `Ctrl+Alt+U` |
+| Settings | `Ctrl+,` |
+| Insert Audio / MIDI / Return track | `Ctrl+T` / `Ctrl+Shift+T` / `Ctrl+Alt+T` |
+| Insert MIDI clip | `Ctrl+Shift+M` |
 | Insert Scene | `Ctrl+I` |
+| Launch selected clip / stop the selected track's clips | `Enter` / `Ctrl+Enter` |
 | Rename | `Ctrl+R` |
-| Duplicate (regions, clip, or track) | `Ctrl+D` |
-| Split at Playhead | `Ctrl+E` |
+| Duplicate | `Ctrl+D` |
+| Split | `Ctrl+E` |
 | Quantize | `Ctrl+U` |
-| Snap to Grid | `Ctrl+4` |
-| Mute regions, or the track when no region is selected | `0` |
-| Nudge Left / Right (1 grid step) | `Alt+Left` / `Alt+Right` |
-| Draw Mode | `B` |
-| Automation | `A` |
-| Computer MIDI Keyboard | `M` |
-| Follow | `Ctrl+Shift+F` |
+| Narrow / widen grid | `Ctrl+1` / `Ctrl+2` |
+| Snap to grid | `Ctrl+4` |
+| Launch quantize 1/16, 1/8, 1/4, 1 bar, off | `Ctrl+6`, `Ctrl+7`, `Ctrl+8`, `Ctrl+9`, `Ctrl+0` |
+| Deactivate regions, or the selected track | `0` |
+| Solo / arm selected track | `S` / `C` |
+| Track activators 1 to 8 | `F1` to `F8` |
+| Draw mode / Automation / Computer MIDI keyboard | `B` / `A` / `M` |
+| Follow | `Ctrl+Shift+F`, `Alt+Shift+F` |
 | Capture MIDI | `Ctrl+Shift+C` |
-| Bounce / Export | `Ctrl+Shift+R` |
+| Export audio | `Ctrl+Shift+R` |
 | Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
-| Cut / Copy / Paste | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` |
-| Select All | `Ctrl+A` |
+| Cut / Copy / Paste / Select All | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` / `Ctrl+A` |
 | Delete | `Delete`, `Backspace` |
 | Zoom In / Out | `+` or `=` / `-` |
-| Select Previous / Next Track | `Up` / `Down` |
-| New / Open / Save / Save As | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` |
-| Add Marker, Previous / Next Marker | `Alt+M`, `Alt+,` / `Alt+.` |
+| Select previous / next track | `Up` / `Down` |
+| New / Open / Save / Save As / Quit | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+Q` |
+| Add marker, previous / next marker | `Alt+M`, `Alt+,` / `Alt+.` |
+
+While the computer MIDI keyboard is on, its letter keys play notes and do not reach these shortcuts.
 
 Rules:
 - Every shortcut goes through one table in `fnoob-core::keymap`. The UI never reads keys on its own.
