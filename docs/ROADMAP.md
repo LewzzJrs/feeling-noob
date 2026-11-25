@@ -61,9 +61,10 @@ Done in Phase 18: loop recording for audio. Every loop pass becomes a take lane 
 
 Done in Phase 19: tempo changes. A tempo lane under the ruler adds, edits and deletes tempo changes; regions, notes, the metronome, recording, bounce and plugin transport all follow the tempo map.
 
+Done in Phase 21: time signature changes during the song and tempo ramps. The tempo lane adds time signature changes at bar starts and lets a tempo change ramp from the previous tempo; bar lines, positions, bar and beat snapping, bar jumps and the metronome (beat length and accents) follow them.
+
 Not started, in rough priority order:
 
-- Time signature changes during the song, tempo ramps
 - Audio warping and time stretch, clip tempo
 - MIDI tools: transpose, humanize, legato, chop, strum, arpeggiate, rhythm and chord generators
 - Scale mode: fold the piano roll to scale notes, scale-aware MIDI tools
