@@ -29,8 +29,40 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         takes: Vec::new(),
         group: None,
         folded: false,
+        frozen: None,
     });
     id
+}
+
+pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
+    let file = project.track(track)?.frozen?;
+    let frames = project.audio_file(file)?.frames;
+    let length_tick = frames_to_ticks_at(project, 0, frames);
+    let name = project.track(track)?.name.clone();
+    let id = project.alloc_id();
+    let target = project.track_mut(track)?;
+    target.kind = TrackKind::Audio;
+    target.instrument = None;
+    target.audio_input = Some(AudioInput::default());
+    target.strip.inserts.clear();
+    target.frozen = None;
+    target.session.clear();
+    target.takes.clear();
+    target.regions = vec![Region {
+        id,
+        name,
+        start_tick: 0,
+        length_tick,
+        muted: false,
+        fade_in_tick: 0,
+        fade_out_tick: 0,
+        content: RegionContent::Audio {
+            file_id: file,
+            offset_frames: 0,
+            gain_db: 0.0,
+        },
+    }];
+    Some(id)
 }
 
 pub fn group_tracks(project: &mut Project, ids: &[Id]) -> Option<Id> {

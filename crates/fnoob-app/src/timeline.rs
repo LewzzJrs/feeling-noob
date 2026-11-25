@@ -1090,6 +1090,13 @@ impl App {
                     actions.push(UiAction::SetInsert(self.snapped(g.tick(pos.x))));
                 }
             }
+            if track.frozen.is_some() {
+                painter.rect_filled(
+                    lane,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(120, 180, 255, 22),
+                );
+            }
             if track.kind == TrackKind::Group {
                 let tint = track_color(track.color).gamma_multiply(0.35);
                 for region in self
@@ -1575,6 +1582,15 @@ impl App {
                         Color32::BLACK,
                     );
                 }
+            }
+            if self.project.track(id).is_some_and(|t| t.frozen.is_some()) {
+                ui.painter_at(name_rect.intersect(g.headers)).text(
+                    name_rect.left_bottom() + Vec2::new(6.0, -4.0),
+                    Align2::LEFT_BOTTOM,
+                    "Frozen",
+                    FontId::proportional(11.0),
+                    Color32::from_rgb(20, 60, 120),
+                );
             }
             let takes = self.project.track(id).map_or(0, |t| t.takes.len());
             if takes > 0 {
@@ -3043,6 +3059,8 @@ pub(crate) fn title_menu(ui: &mut egui::Ui) -> Option<fnoob_core::keymap::Comman
         ("Rename", Command::Rename),
         ("Group Tracks", Command::GroupTracks),
         ("Ungroup Tracks", Command::Ungroup),
+        ("Freeze / Unfreeze Track", Command::FreezeTrack),
+        ("Freeze and Flatten Track", Command::FlattenTrack),
     ] {
         let mut button = egui::Button::new(text);
         if let Some(label) = shortcut_label(command) {

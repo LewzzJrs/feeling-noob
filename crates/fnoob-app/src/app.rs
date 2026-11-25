@@ -948,6 +948,21 @@ impl App {
             | Command::DuplicateTime
             | Command::DeleteTime => self.time_command(command),
             Command::Consolidate => self.consolidate(),
+            Command::FreezeTrack => {
+                if let Some(id) = self.selection.track {
+                    self.freeze_track(id);
+                }
+            }
+            Command::FlattenTrack => {
+                let Some(id) = self.selection.track else {
+                    return;
+                };
+                let mut done = None;
+                self.edit(|p| done = edit::flatten_track(p, id));
+                if done.is_none() {
+                    self.message = Some("Freeze the track first, then flatten it.".into());
+                }
+            }
             Command::GroupTracks => {
                 let ids = self.title_selection();
                 let mut group = None;
@@ -1338,6 +1353,9 @@ impl App {
                 ui.separator();
                 self.menu_item(ui, "Group Tracks", Command::GroupTracks);
                 self.menu_item(ui, "Ungroup Tracks", Command::Ungroup);
+                ui.separator();
+                self.menu_item(ui, "Freeze / Unfreeze Track", Command::FreezeTrack);
+                self.menu_item(ui, "Freeze and Flatten Track", Command::FlattenTrack);
                 ui.separator();
                 self.menu_item(ui, "Split at Playhead", Command::SplitAtPlayhead);
                 self.menu_item(ui, "Repeat", Command::RepeatRegions);

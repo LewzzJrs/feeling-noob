@@ -15,7 +15,10 @@ pub struct BounceDialog {
 pub struct ActiveBounce {
     job: BounceJob,
     _plugins: Vec<Plugin>,
+    freeze: Option<(fnoob_core::model::Id, String)>,
 }
+
+const FREEZE_GAIN_DB: f32 = 3.010_3;
 
 impl App {
     pub(crate) fn open_bounce_dialog(&mut self) {
@@ -75,9 +78,121 @@ impl App {
                 self.bounce = Some(ActiveBounce {
                     job,
                     _plugins: plugins,
+                    freeze: None,
                 })
             }
             Err(e) => self.message = Some(format!("Bounce failed: {e}")),
+        }
+    }
+
+    pub(crate) fn freeze_track(&mut self, id: fnoob_core::model::Id) {
+        use fnoob_core::model::{SILENT_DB, TrackKind};
+        let Some(track) = self.project.track(id).cloned() else {
+            return;
+        };
+        if track.frozen.is_some() {
+            self.edit_track(id, |t| t.frozen = None);
+            self.message = Some(format!("{} is no longer frozen.", track.name));
+            return;
+        }
+        if track.kind == TrackKind::Group {
+            self.message = Some("Group tracks cannot be frozen; freeze their tracks.".into());
+            return;
+        }
+        if self.bounce.is_some() {
+            return;
+        }
+        let end = track
+            .regions
+            .iter()
+            .map(|r| r.end_tick())
+            .max()
+            .unwrap_or(0);
+        if end == 0 {
+            self.message = Some("This track has no clips to freeze.".into());
+            return;
+        }
+        if self.project_dir.is_none() && !self.save_as() {
+            self.message = Some(
+                "Frozen audio is kept in the project folder, so save the project first.".into(),
+            );
+            return;
+        }
+        let Some(dir) = self.project_dir.clone() else {
+            return;
+        };
+        let stem = format!("{} Freeze", crate::audio::file_stem_for(&track.name));
+        let rel = crate::audio::unique_audio_path(&dir, &stem, &std::collections::HashSet::new());
+        let rate = self.sample_rate();
+        let frames = self.timeline().tick_to_sample(end) + u64::from(rate) * TAIL_SECONDS;
+        let (map, processors, builtins, plugins) = self.bounce_plugins();
+        let mut project = self.project.clone();
+        project.loop_range.enabled = false;
+        project.master.volume_db = FREEZE_GAIN_DB;
+        for other in &mut project.tracks {
+            if other.id == id {
+                other.mute = false;
+                other.solo = false;
+                other.group = None;
+                other.output = fnoob_core::model::Output::Main;
+                other.strip.volume_db = 0.0;
+                other.strip.pan = 0.0;
+                for send in &mut other.strip.sends {
+                    send.level_db = SILENT_DB;
+                }
+                other.automation = Default::default();
+            } else {
+                other.mute = true;
+                other.solo = false;
+            }
+        }
+        let mut plan = RenderPlan::build(&project, rate, &self.pool, &map);
+        plan.metronome = false;
+        plan.count_in_beats = 0;
+        let request = BounceRequest {
+            plan: Box::new(plan),
+            sample_rate: rate,
+            start: 0,
+            frames,
+            path: dir.join(&rel),
+            format: RecordFormat::Float32,
+            plugins: processors,
+            builtins,
+        };
+        match start_bounce(request) {
+            Ok(job) => {
+                self.bounce = Some(ActiveBounce {
+                    job,
+                    _plugins: plugins,
+                    freeze: Some((id, rel)),
+                })
+            }
+            Err(e) => self.message = Some(format!("Freeze failed: {e}")),
+        }
+    }
+
+    fn finish_freeze(&mut self, id: fnoob_core::model::Id, rel: &str, path: &std::path::Path) {
+        let rate = self.project.sample_rate;
+        match fnoob_engine::decode::load_any(path, rate) {
+            Ok(data) => {
+                let (channels, frames) = (data.channels, data.frames);
+                let mut file = None;
+                self.edit(|p| {
+                    let added =
+                        fnoob_core::edit::add_audio_file(p, rel.to_owned(), channels, frames);
+                    if let Some(track) = p.track_mut(id) {
+                        track.frozen = Some(added);
+                    }
+                    file = Some(added);
+                });
+                if let Some(file) = file {
+                    self.pool.insert(file, std::sync::Arc::new(data));
+                }
+                self.sync_plan();
+                self.message =
+                    Some("Track frozen. Its devices are off until you unfreeze it.".into());
+            }
+            Err(e) => self.message = Some(format!("Freeze failed: {e}")),
         }
     }
 
@@ -148,8 +263,13 @@ impl App {
         };
         let progress = active.job.progress();
         let mut cancel = false;
+        let heading = if active.freeze.is_some() {
+            "Freezing..."
+        } else {
+            "Bouncing..."
+        };
         egui::Modal::new(egui::Id::unique("bounce_progress")).show(ctx, |ui| {
-            ui.heading("Bouncing...");
+            ui.heading(heading);
             ui.add(egui::ProgressBar::new(progress).show_percentage());
             cancel = ui.button("Cancel").clicked();
         });
@@ -161,6 +281,15 @@ impl App {
             && let Some(active) = self.bounce.take()
         {
             let outcome = active.job.finish();
+            if let Some((id, rel)) = active.freeze {
+                drop(outcome.engine);
+                match outcome.result {
+                    Ok(path) => self.finish_freeze(id, &rel, &path),
+                    Err(e) if e == "cancelled" => self.message = Some("Freeze cancelled.".into()),
+                    Err(e) => self.message = Some(format!("Freeze failed: {e}")),
+                }
+                return;
+            }
             self.message = Some(match outcome.result {
                 Ok(path) => format!("Bounced to {}", path.display()),
                 Err(e) if e == "cancelled" => "Bounce cancelled.".to_owned(),

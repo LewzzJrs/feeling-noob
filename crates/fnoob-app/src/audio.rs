@@ -40,7 +40,7 @@ pub fn file_stem_for(name: &str) -> String {
     }
 }
 
-fn unique_audio_path(dir: &Path, stem: &str, taken: &HashSet<String>) -> String {
+pub(crate) fn unique_audio_path(dir: &Path, stem: &str, taken: &HashSet<String>) -> String {
     (1..)
         .map(|n| format!("{AUDIO_DIR}/{stem}-{n:02}.wav"))
         .find(|rel| !taken.contains(rel) && !dir.join(rel).exists())

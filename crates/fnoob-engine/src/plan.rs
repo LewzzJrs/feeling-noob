@@ -232,9 +232,12 @@ fn audio_track_plans(
         .tracks
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.kind == TrackKind::Audio)
+        .filter(|(_, t)| t.kind == TrackKind::Audio || t.frozen.is_some())
         .map(|(index, track)| {
             let audible = project.is_track_audible(track);
+            if let Some(file) = track.frozen {
+                return frozen_plan(project, track, index, file, timeline, pool, plugins);
+            }
             let mut clips: Vec<Clip> = track
                 .regions
                 .iter()
@@ -283,6 +286,48 @@ fn audio_track_plans(
             }
         })
         .collect()
+}
+
+fn frozen_plan(
+    project: &Project,
+    track: &fnoob_core::model::Track,
+    index: usize,
+    file: Id,
+    timeline: Timeline,
+    pool: &AudioPool,
+    plugins: &PluginMap,
+) -> AudioTrackPlan {
+    let audible = project.is_track_audible(track);
+    let clips = pool
+        .get(&file)
+        .filter(|_| audible)
+        .map(|data| Clip {
+            start: 0,
+            end: data.frames,
+            offset: 0,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            data: Arc::clone(data),
+        })
+        .into_iter()
+        .collect();
+    let mut strip = member_strip(project, track, index, plugins);
+    strip.inserts = [None; MAX_INSERTS];
+    AudioTrackPlan {
+        id: track.id,
+        audible,
+        strip,
+        envelopes: Envelopes::new(&track.automation, timeline),
+        clips,
+        session: Session::default(),
+        cursor: 0,
+        input: AudioInput::default(),
+        monitor: false,
+        record: false,
+        left: vec![0.0; MAX_BLOCK],
+        right: vec![0.0; MAX_BLOCK],
+    }
 }
 
 fn group_ids(project: &Project) -> Vec<Id> {
@@ -336,7 +381,7 @@ fn track_plans(
         .tracks
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.kind == TrackKind::Instrument)
+        .filter(|(_, t)| t.kind == TrackKind::Instrument && t.frozen.is_none())
         .map(|(index, track)| {
             let instrument = match &track.instrument {
                 Some(Instrument::Vst3(slot)) => plugins.get(&slot.id).copied(),
@@ -500,6 +545,34 @@ mod tests {
             start_tick,
             length_tick,
         }
+    }
+
+    #[test]
+    fn frozen_tracks_play_their_frozen_audio() {
+        let mut p = Project::new("t", 48_000);
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        add_midi_region(&mut p, inst, 0, 960).unwrap();
+        let file = fnoob_core::edit::add_audio_file(&mut p, "f.wav".into(), 1, 100);
+        p.track_mut(inst).unwrap().frozen = Some(file);
+        let mut pool = AudioPool::new();
+        pool.insert(
+            file,
+            Arc::new(crate::audio_data::AudioData::from_samples(
+                1,
+                vec![0.25; 100],
+            )),
+        );
+        let plan = RenderPlan::with_audio(&p, 48_000, &pool);
+        assert!(plan.tracks.is_empty());
+        assert_eq!(plan.audio_tracks.len(), 1);
+        assert_eq!(plan.audio_tracks[0].clips[0].end, 100);
+        assert!(
+            plan.audio_tracks[0]
+                .strip
+                .inserts
+                .iter()
+                .all(Option::is_none)
+        );
     }
 
     #[test]

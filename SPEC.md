@@ -371,6 +371,12 @@ Phase 22 aligned the shortcuts with the common clip-based workstation layout on 
 | Rename | `Ctrl+R` |
 | Duplicate | `Ctrl+D` |
 | Split | `Ctrl+E` |
+| Consolidate MIDI clips or the time selection into one clip | `Ctrl+J` |
+| Crop clips to the time selection | `Ctrl+Shift+J` |
+| Reverse selected clips | `R` |
+| Create fades from the time selection over audio clip edges | `Ctrl+Alt+F` |
+| Group / ungroup tracks | `Ctrl+G` / `Ctrl+Shift+G` |
+| Freeze or unfreeze the selected track | `Ctrl+Alt+Shift+F` |
 | Quantize | `Ctrl+U` |
 | Narrow / widen grid | `Ctrl+1` / `Ctrl+2` |
 | Snap to grid | `Ctrl+4` |
@@ -423,7 +429,7 @@ Layout:
 
 - Menus: File, Edit, Create, Track, Transport, View (egui widgets, not native menus).
 - The ruler starts with an overview strip of the whole song; it shows every clip and a frame around the visible part, and a click or drag moves the view. A minutes:seconds ruler sits under the tracks, with W, Z and X zoom buttons next to it. Locator buttons (Set or Delete, previous, next) sit above the track headers.
-- Clicking a lane, a clip or the empty space sets the insert marker: a flashing line on the selected tracks (or all tracks) with triangles on both rulers. Dragging in empty lanes makes a time selection over one or more tracks; the status bar then shows its start, end, length and duration, and otherwise the insert marker position and time. `Ctrl+Shift+M` with a time selection makes a MIDI clip of that range on every selected MIDI track. With a time selection, cut, copy, duplicate and delete act on the parts of clips inside it on the selected tracks; paste puts them back at the insert marker and overwrites what is there. Right-clicking a lane opens the selection menu: cut, copy, duplicate, delete, zoom to and back, deactivate clips, loop selection, snap on/off, fixed grid (8 bars to 1/32), narrow and widen grid.
+- Clicking a lane, a clip or the empty space sets the insert marker: a flashing line on the selected tracks (or all tracks) with triangles on both rulers. Dragging in empty lanes makes a time selection over one or more tracks; the status bar then shows its start, end, length and duration, and otherwise the insert marker position and time. `Ctrl+Shift+M` with a time selection makes a MIDI clip of that range on every selected MIDI track. With a time selection, cut, copy, duplicate and delete act on the parts of clips inside it on the selected tracks; paste puts them back at the insert marker and overwrites what is there. Group tracks collect their member tracks: members play into the group's own channel (devices, volume, pan, sends) and the group plays to Main; muting or soloing the group mutes or solos its members. A group folds with the triangle in its header, and its lane shows its members' clips. Freezing renders a track with its instrument and devices into a WAV in the project folder and plays that file instead, with the devices off; unfreezing goes back, and Freeze and Flatten turns the track into an audio track holding the frozen file. Reversing an audio clip writes a reversed copy of its audio into the project. Right-clicking a lane opens the selection menu: cut, copy, duplicate, delete, zoom to and back, deactivate clips, loop selection, snap on/off, fixed grid (8 bars to 1/32), narrow and widen grid.
 - The ruler ends with two lanes. The time signature lane shows the signature at bar 1 and every change; right-click inserts a change at the nearest bar, and a marker's menu edits or deletes it. The song tempo lane shows tempo points joined by ramps, like an automation envelope: right-click adds a point, dragging a point moves it in time or changes its tempo, and a point's menu sets an exact tempo, turns its ramp off for a step, or deletes it.
 - Snap and grid size sit at the right end of the status bar. The control bar has Key and Scale; with Key on, the piano roll highlights scale notes and the root.
 - The Main column of the clip grid chooses the Main Out and Cue Out output pairs and the cue volume for browser previews.

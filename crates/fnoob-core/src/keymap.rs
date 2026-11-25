@@ -98,6 +98,8 @@ pub enum Command {
     CreateFade,
     GroupTracks,
     Ungroup,
+    FreezeTrack,
+    FlattenTrack,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -277,6 +279,15 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (plain(letter('R')), Command::Reverse),
     (ctrl_alt(letter('F')), Command::CreateFade),
     (ctrl(letter('G')), Command::GroupTracks),
+    (
+        KeyCombo {
+            key: letter('F'),
+            ctrl: true,
+            alt: true,
+            shift: true,
+        },
+        Command::FreezeTrack,
+    ),
     (ctrl_shift(letter('G')), Command::Ungroup),
     (ctrl(letter('C')), Command::Copy),
     (ctrl(letter('V')), Command::Paste),

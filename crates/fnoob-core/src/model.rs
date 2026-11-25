@@ -708,6 +708,8 @@ pub struct Track {
     pub group: Option<Id>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen: Option<Id>,
 }
 
 impl Track {

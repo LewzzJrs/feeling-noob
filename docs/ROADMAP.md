@@ -26,7 +26,7 @@ Features that are **not** in the MVP. Order within each group is a rough priorit
 | Whole audio files loaded into memory | Disk streaming | SPEC 5.5 |
 | Single-threaded graph | Parallel track processing | SPEC 5.3 |
 | Snapshot undo of the whole project | Change-based undo (less memory) | SPEC 4.6 |
-| Up to 8 return tracks, one send per return, output Main or none | Group tracks (buses), routing to other tracks, returns sending to returns | SPEC F4 |
+| Up to 8 return tracks, one send per return, output Main or none | Nested groups, routing to other tracks, returns sending to returns | SPEC F4 |
 | At most 4 inserts per strip | Unlimited slots | SPEC F4 |
 | VST3 processed in-process | Out-of-process plugin processing (full crash isolation) | SPEC 5.6 |
 | No plugin delay compensation (PDC) | Automatic PDC | SPEC 5.3 |
@@ -67,6 +67,8 @@ Done in Phase 22: shortcuts aligned with the common workstation layout on Window
 
 Done in Phase 23: time selection across tracks, a flashing insert marker, play from and move the insert marker, MIDI clips from a time selection, zoom to selection and back, fit the song, a minutes:seconds ruler, a song overview strip and locator buttons.
 
+Done in Phase 24: time selection edits (cut, copy, paste, duplicate, delete, and the same over time for all tracks, insert silence), a selection menu, finer fixed grids, consolidate for MIDI, crop, reverse, fades from a selection, group tracks with their own channel, and freeze, unfreeze, freeze and flatten.
+
 Not started, in rough priority order:
 
 - Audio warping and time stretch, clip tempo
@@ -76,9 +78,9 @@ Not started, in rough priority order:
 - Crossfades between overlapping regions, fade handles on region corners
 - Quantize strength and swing, groove templates
 - Rubber-band selection, draw mode and chance lane in the piano roll
-- Group tracks (buses) and nested groups, routing between tracks, sidechain inputs
+- Nested groups, routing between tracks, sidechain inputs
 - Crossfader and cue output
-- Freeze / bounce in place, consolidate
+- Consolidating audio clips into one audio file
 - CPU meter per track
 - Event list editor, project versions, MIDI output to hardware
 
