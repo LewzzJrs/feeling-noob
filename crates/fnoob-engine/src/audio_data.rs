@@ -25,6 +25,7 @@ pub enum AudioFileError {
     SampleRate { file: u32, project: u32 },
     Channels(u16),
     Empty,
+    Decode(String),
 }
 
 impl fmt::Display for AudioFileError {
@@ -37,6 +38,7 @@ impl fmt::Display for AudioFileError {
             ),
             Self::Channels(n) => write!(f, "{n} channels are not supported"),
             Self::Empty => write!(f, "the file has no audio"),
+            Self::Decode(e) => write!(f, "cannot read the audio file: {e}"),
         }
     }
 }
