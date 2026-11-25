@@ -854,33 +854,76 @@ pub fn delete_marker(project: &mut Project, id: Id) -> bool {
     project.markers.len() != before
 }
 
-pub fn duplicate_track(project: &mut Project, id: Id) -> Option<Id> {
-    let index = project.tracks.iter().position(|t| t.id == id)?;
-    let mut copy = project.tracks[index].clone();
-    copy.id = project.alloc_id();
-    copy.name = format!("{} copy", copy.name);
-    copy.record_enabled = false;
-    for region in &mut copy.regions {
+fn give_new_ids(project: &mut Project, track: &mut crate::model::Track) {
+    track.id = project.alloc_id();
+    track.record_enabled = false;
+    for region in &mut track.regions {
         region.id = project.alloc_id();
     }
-    for clip in copy.session.iter_mut().flatten() {
+    for clip in track.session.iter_mut().flatten() {
         clip.region.id = project.alloc_id();
     }
-    for lane in &mut copy.takes {
+    for lane in &mut track.takes {
         lane.id = project.alloc_id();
         for region in &mut lane.regions {
             region.id = project.alloc_id();
         }
     }
-    if let Some(Instrument::Vst3(slot)) = &mut copy.instrument {
+    if let Some(Instrument::Vst3(slot)) = &mut track.instrument {
         slot.id = project.alloc_id();
     }
-    for slot in &mut copy.strip.inserts {
+    for slot in &mut track.strip.inserts {
         slot.id = project.alloc_id();
     }
+}
+
+pub fn duplicate_track(project: &mut Project, id: Id) -> Option<Id> {
+    let index = project.tracks.iter().position(|t| t.id == id)?;
+    let mut copy = project.tracks[index].clone();
+    give_new_ids(project, &mut copy);
+    copy.name = format!("{} copy", copy.name);
     let new_id = copy.id;
     project.tracks.insert(index + 1, copy);
     Some(new_id)
+}
+
+pub fn copy_tracks(project: &Project, ids: &[Id]) -> Vec<crate::model::Track> {
+    project
+        .tracks
+        .iter()
+        .filter(|t| ids.contains(&t.id))
+        .cloned()
+        .collect()
+}
+
+pub fn paste_tracks(
+    project: &mut Project,
+    after: Option<Id>,
+    tracks: &[crate::model::Track],
+) -> Vec<Id> {
+    let index = after
+        .and_then(|id| project.tracks.iter().position(|t| t.id == id))
+        .map_or(project.tracks.len(), |i| i + 1);
+    let mut created = Vec::new();
+    for (offset, track) in tracks.iter().enumerate() {
+        let mut copy = track.clone();
+        give_new_ids(project, &mut copy);
+        for clip in copy
+            .regions
+            .iter()
+            .chain(copy.takes.iter().flat_map(|l| l.regions.iter()))
+        {
+            if let RegionContent::Audio { file_id, .. } = clip.content
+                && project.audio_file(file_id).is_none()
+            {
+                return created;
+            }
+        }
+        copy.session.truncate(project.scenes.len());
+        created.push(copy.id);
+        project.tracks.insert(index + offset, copy);
+    }
+    created
 }
 
 pub fn move_insert(inserts: &mut Vec<crate::model::PluginSlot>, from: usize, to: usize) -> bool {
@@ -1091,6 +1134,25 @@ mod tests {
 
     fn region(p: &Project, id: Id) -> &Region {
         p.find_region(id).unwrap().1
+    }
+
+    #[test]
+    fn tracks_can_be_cut_and_pasted() {
+        let mut p = Project::new("t", 48_000);
+        let a = add_track(&mut p, TrackKind::Instrument);
+        let b = add_track(&mut p, TrackKind::Audio);
+        add_midi_region(&mut p, a, 0, 3840).unwrap();
+        let copied = copy_tracks(&p, &[a]);
+        assert!(delete_track(&mut p, a));
+        let pasted = paste_tracks(&mut p, Some(b), &copied);
+        assert_eq!(pasted.len(), 1);
+        assert_eq!(p.tracks[1].id, pasted[0]);
+        assert_ne!(pasted[0], a);
+        assert_eq!(p.tracks[1].regions.len(), 1);
+        let again = paste_tracks(&mut p, None, &copied);
+        assert_eq!(p.tracks.last().unwrap().id, again[0]);
+        assert_ne!(p.tracks[1].regions[0].id, p.tracks[2].regions[0].id);
+        crate::io::validate(&p).unwrap();
     }
 
     #[test]
