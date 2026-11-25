@@ -205,6 +205,34 @@ pub fn consolidate_midi(project: &mut Project, track: Id, start: u64, end: u64) 
     Some(id)
 }
 
+pub fn place_recording(project: &mut Project, track: Id, id: Id, overdub: bool) -> Option<Id> {
+    let target = project.track_mut(track)?;
+    let index = target.regions.iter().position(|r| r.id == id)?;
+    let recorded = target.regions.remove(index);
+    let (start, end) = (recorded.start_tick, recorded.end_tick());
+    if overdub {
+        let (low, high) = target
+            .regions
+            .iter()
+            .filter(|r| r.start_tick < end && r.end_tick() > start)
+            .fold((start, end), |(lo, hi), r| {
+                (lo.min(r.start_tick), hi.max(r.end_tick()))
+            });
+        let merge = target
+            .regions
+            .iter()
+            .any(|r| r.start_tick < end && r.end_tick() > start);
+        target.regions.push(recorded);
+        if merge {
+            return consolidate_midi(project, track, low, high);
+        }
+        return Some(id);
+    }
+    takes::clear_range(project, track, start, end);
+    project.track_mut(track)?.regions.push(recorded);
+    Some(id)
+}
+
 pub fn crop(project: &mut Project, tracks: &[Id], start: u64, end: u64) -> usize {
     if end <= start {
         return 0;
@@ -402,6 +430,19 @@ mod tests {
             _ => panic!("expected MIDI"),
         }
         assert_eq!(spans(&p, b), vec![(1000, 2000)]);
+    }
+
+    #[test]
+    fn recording_replaces_or_merges() {
+        let (mut p, a, _) = setup();
+        let take = add_midi_region(&mut p, a, 3000, 2000).unwrap();
+        assert_eq!(place_recording(&mut p, a, take, false), Some(take));
+        assert_eq!(spans(&p, a), vec![(0, 3000), (3000, 5000)]);
+        let (mut p, a, _) = setup();
+        let take = add_midi_region(&mut p, a, 3000, 2000).unwrap();
+        let merged = place_recording(&mut p, a, take, true).unwrap();
+        assert_ne!(merged, take);
+        assert_eq!(spans(&p, a), vec![(0, 5000)]);
     }
 
     #[test]

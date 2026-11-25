@@ -59,7 +59,8 @@ impl App {
         let state = self.transport_state();
         let recording = self.audio.as_ref().is_some_and(|(_, e)| e.is_recording());
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().button_padding.x = 3.0;
             if hint(
                 ui.selectable_label(self.browser.open, "≡"),
                 &with_keys("Show or hide the browser.", Command::ToggleBrowser),
@@ -90,6 +91,16 @@ impl App {
                 "Tempo in beats per minute. Drag or double-click to type.",
             );
             self.live_edit(&tempo, |p| p.tempo_bpm = bpm);
+            for (label, step, text) in [
+                ("-", -1.0, "Tempo down by 1 BPM (Shift: 0.1)."),
+                ("+", 1.0, "Tempo up by 1 BPM (Shift: 0.1)."),
+            ] {
+                if hint(ui.small_button(label), text).clicked() {
+                    let scale = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
+                    let next = (self.project.tempo_bpm + step * scale).clamp(MIN_BPM, MAX_BPM);
+                    self.edit(|p| p.tempo_bpm = next);
+                }
+            }
             let mut numerator = self.project.time_signature.numerator;
             let num = hint(
                 ui.add(
@@ -124,16 +135,36 @@ impl App {
                 "Metronome.",
                 Command::ToggleMetronome,
             );
-            self.switch(
-                ui,
-                count_in,
-                "1 Bar In",
-                "Count-in: one bar of clicks before recording starts.",
-                Command::ToggleCountIn,
+            let bars = self.project.metronome.count_in_bars;
+            let current = if count_in { bars } else { 0 };
+            let label = |bars: u32| match bars {
+                0 => "In: off".to_owned(),
+                n => format!("In: {n}"),
+            };
+            let mut chosen = current;
+            let combo = egui::ComboBox::from_id_salt("count_in")
+                .width(52.0)
+                .selected_text(label(current))
+                .show_ui(ui, |ui| {
+                    for option in [0, 1, 2, 4] {
+                        ui.selectable_value(&mut chosen, option, label(option));
+                    }
+                });
+            hint(
+                combo.response,
+                "Count-in: bars of clicks before recording starts.",
             );
+            if chosen != current {
+                self.edit(|p| {
+                    p.metronome.count_in_enabled = chosen > 0;
+                    if chosen > 0 {
+                        p.metronome.count_in_bars = chosen;
+                    }
+                });
+            }
             let mut quantize = self.project.launch_quantize;
             let combo = egui::ComboBox::from_id_salt("launch_quantize")
-                .width(64.0)
+                .width(52.0)
                 .selected_text(quantize.label())
                 .show_ui(ui, |ui| {
                     for q in LaunchQuantize::ALL {
@@ -198,6 +229,37 @@ impl App {
                     self.run(Command::Record);
                 }
             });
+            let overdub = self.project.midi_overdub;
+            if hint(
+                ui.selectable_label(overdub, "+"),
+                "MIDI Arrangement Overdub: new MIDI recordings merge with the clips already there instead of replacing them.",
+            )
+            .clicked()
+            {
+                self.edit(|p| p.midi_overdub = !overdub);
+            }
+            if hint(
+                ui.selectable_label(self.automation_arm, "Auto"),
+                "Automation Arm: while playing, moving a track's volume or pan records it as automation.",
+            )
+            .clicked()
+            {
+                self.automation_arm = !self.automation_arm;
+            }
+            let overridden = self.project.tracks.iter().any(|t| t.automation_off);
+            if overridden
+                && hint(
+                ui.button("Re-enable"),
+                "Re-Enable Automation: tracks whose volume or pan you moved by hand follow their automation again.",
+            )
+            .clicked()
+            {
+                self.edit(|p| {
+                    for track in &mut p.tracks {
+                        track.automation_off = false;
+                    }
+                });
+            }
             if hint(
                 ui.button("Capture"),
                 &with_keys(
@@ -236,6 +298,7 @@ impl App {
                     ui.label(RichText::new(format!("CPU {:.0}%", self.cpu * 100.0)).monospace()),
                     "Audio processing load. Above 100% the sound breaks up.",
                 );
+
             }
             ui.separator();
             let grid = self.session.open;
@@ -295,7 +358,7 @@ impl App {
             });
         hint(root.response, "Root note of the scale.");
         let kind = egui::ComboBox::from_id_salt("scale_kind")
-            .width(96.0)
+            .width(72.0)
             .selected_text(scale.kind.label())
             .show_ui(ui, |ui| {
                 for kind in ScaleKind::ALL {
@@ -412,8 +475,9 @@ impl App {
                 match &self.audio {
                     Some((output, _)) => ui.label(
                         RichText::new(format!(
-                            "{}  |  In: {}  |  MIDI: {}",
+                            "{}  {:.1} kHz  |  In: {}  |  MIDI: {}",
                             output.device_name,
+                            f64::from(output.sample_rate) / 1000.0,
                             self.input
                                 .as_ref()
                                 .map_or("none", |i| i.device_name.as_str()),

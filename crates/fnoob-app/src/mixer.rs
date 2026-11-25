@@ -148,6 +148,33 @@ fn state(project: &Project, target: MixTarget) -> Option<MixState> {
     })
 }
 
+fn touch_automation(
+    project: &mut Project,
+    target: MixTarget,
+    write: Option<(Id, u64)>,
+    param: fnoob_core::model::AutomationParam,
+    value: f32,
+) {
+    let MixTarget::Track(id) = target else {
+        return;
+    };
+    match write {
+        Some((track, tick)) => {
+            fnoob_core::edit::add_automation_point(project, track, param, tick, value);
+            if let Some(t) = project.track_mut(track) {
+                t.automation_off = false;
+            }
+        }
+        None => {
+            if let Some(t) = project.track_mut(id)
+                && !t.automation.lane(param).is_empty()
+            {
+                t.automation_off = true;
+            }
+        }
+    }
+}
+
 fn set_volume(project: &mut Project, target: MixTarget, db: f32) {
     match target {
         MixTarget::Track(id) => {
@@ -308,7 +335,18 @@ impl App {
                 response,
                 "Volume in dB. Drag up or down; double-click to type a value.",
             );
-            self.live_edit(&response, |p| set_volume(p, target, from_fader(volume)));
+            let write = self.automation_write(target);
+            self.live_edit(&response, |p| {
+                let value = from_fader(volume);
+                set_volume(p, target, value);
+                touch_automation(
+                    p,
+                    target,
+                    write,
+                    fnoob_core::model::AutomationParam::Volume,
+                    value,
+                );
+            });
             if let Some(pan) = s.pan {
                 let mut value = pan * 50.0;
                 let response = ui.add(
@@ -318,7 +356,18 @@ impl App {
                         .custom_formatter(|v, _| pan_text(v)),
                 );
                 let response = hint(response, "Pan: drag left or right. C is the center.");
-                self.live_edit(&response, |p| set_pan(p, target, value / 50.0));
+                let write = self.automation_write(target);
+                self.live_edit(&response, |p| {
+                    let value = value / 50.0;
+                    set_pan(p, target, value);
+                    touch_automation(
+                        p,
+                        target,
+                        write,
+                        fnoob_core::model::AutomationParam::Pan,
+                        value,
+                    );
+                });
             }
         });
     }
@@ -395,7 +444,18 @@ impl App {
             if response.double_clicked() {
                 self.edit(|p| set_volume(p, target, 0.0));
             } else {
-                self.live_edit(&response, |p| set_volume(p, target, from_fader(volume)));
+                let write = self.automation_write(target);
+                self.live_edit(&response, |p| {
+                    let value = from_fader(volume);
+                    set_volume(p, target, value);
+                    touch_automation(
+                        p,
+                        target,
+                        write,
+                        fnoob_core::model::AutomationParam::Volume,
+                        value,
+                    );
+                });
             }
             let (meter, _) =
                 ui.allocate_exact_size(egui::vec2(6.0, fader_height), egui::Sense::hover());
@@ -411,11 +471,30 @@ impl App {
                     let response = knob(ui, &mut value, -50.0, 50.0, "Pan");
                     let text = format!("Pan {}. Drag up or down.", pan_text(f64::from(value)));
                     let response = hint(response, &text);
-                    self.live_edit(&response, |p| set_pan(p, target, value / 50.0));
+                    let write = self.automation_write(target);
+                    self.live_edit(&response, |p| {
+                        let value = value / 50.0;
+                        set_pan(p, target, value);
+                        touch_automation(
+                            p,
+                            target,
+                            write,
+                            fnoob_core::model::AutomationParam::Pan,
+                            value,
+                        );
+                    });
                 }
             });
         });
         self.mix_buttons(ui, target);
+    }
+
+    fn automation_write(&self, target: MixTarget) -> Option<(Id, u64)> {
+        let MixTarget::Track(id) = target else {
+            return None;
+        };
+        (self.automation_arm && self.transport_state() != fnoob_engine::TransportState::Stopped)
+            .then(|| (id, self.playhead_tick()))
     }
 
     pub(crate) fn track_io(&mut self, ui: &mut Ui, id: Id) {

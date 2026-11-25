@@ -73,6 +73,8 @@ Done in Phase 25: clip view panel with position and length Set buttons, MIDI cli
 
 Done in Phase 26: device title bars in the track colour with an on/off switch, a drop area after the chain, and default track names that follow the loaded instrument.
 
+Done in Phase 27: tempo step buttons, a count-in menu, MIDI arrangement overdub, automation arm that records volume and pan moves, re-enable automation after a manual override, and the sample rate in the status bar.
+
 Not started, in rough priority order:
 
 - Audio warping and time stretch, clip tempo

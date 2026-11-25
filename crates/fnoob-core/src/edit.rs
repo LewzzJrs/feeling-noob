@@ -30,6 +30,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         group: None,
         folded: false,
         frozen: None,
+        automation_off: false,
     });
     id
 }

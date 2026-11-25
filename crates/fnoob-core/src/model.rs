@@ -712,6 +712,8 @@ pub struct Track {
     pub folded: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen: Option<Id>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automation_off: bool,
 }
 
 impl Track {
@@ -778,6 +780,8 @@ pub struct Project {
     pub scenes: Vec<crate::session::Scene>,
     #[serde(default)]
     pub launch_quantize: crate::session::LaunchQuantize,
+    #[serde(default)]
+    pub midi_overdub: bool,
     pub tracks: Vec<Track>,
 }
 
@@ -865,6 +869,7 @@ impl Project {
             markers: Vec::new(),
             scenes: crate::session::default_scenes(),
             launch_quantize: crate::session::LaunchQuantize::default(),
+            midi_overdub: false,
             tracks: Vec::new(),
         }
     }

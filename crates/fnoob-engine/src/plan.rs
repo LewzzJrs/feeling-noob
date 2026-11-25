@@ -77,6 +77,14 @@ pub fn envelope_at(points: &[(u64, f32)], sample: u64, default: f32) -> f32 {
 }
 
 impl Envelopes {
+    fn for_track(track: &fnoob_core::model::Track, timeline: Timeline) -> Self {
+        if track.automation_off {
+            Self::default()
+        } else {
+            Self::new(&track.automation, timeline)
+        }
+    }
+
     fn new(automation: &Automation, timeline: Timeline) -> Self {
         let convert = |points: &[fnoob_core::model::AutomationPoint]| {
             points
@@ -274,7 +282,7 @@ fn audio_track_plans(
                 id: track.id,
                 audible,
                 strip: member_strip(project, track, index, plugins),
-                envelopes: Envelopes::new(&track.automation, timeline),
+                envelopes: Envelopes::for_track(track, timeline),
                 clips,
                 session: Session::build(track, timeline, pool),
                 cursor: 0,
@@ -318,7 +326,7 @@ fn frozen_plan(
         id: track.id,
         audible,
         strip,
-        envelopes: Envelopes::new(&track.automation, timeline),
+        envelopes: Envelopes::for_track(track, timeline),
         clips,
         session: Session::default(),
         cursor: 0,
@@ -364,7 +372,7 @@ fn group_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Ve
             id: track.id,
             audible: project.is_track_audible(track),
             strip: StripPlan::new(&track.strip, index, plugins, track.output == Output::Main),
-            envelopes: Envelopes::new(&track.automation, timeline),
+            envelopes: Envelopes::for_track(track, timeline),
             left: vec![0.0; MAX_BLOCK],
             right: vec![0.0; MAX_BLOCK],
         })
@@ -433,7 +441,7 @@ fn track_plans(
                 id: track.id,
                 audible,
                 strip: member_strip(project, track, index, plugins),
-                envelopes: Envelopes::new(&track.automation, timeline),
+                envelopes: Envelopes::for_track(track, timeline),
                 notes,
                 session: Session::build(track, timeline, pool),
                 synth: Synth::for_instrument(track.instrument.as_ref(), timeline.sample_rate, pool),
@@ -559,6 +567,30 @@ mod tests {
             start_tick,
             length_tick,
         }
+    }
+
+    #[test]
+    fn overridden_automation_is_ignored() {
+        let mut p = Project::new("t", 48_000);
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        fnoob_core::edit::add_automation_point(
+            &mut p,
+            inst,
+            fnoob_core::model::AutomationParam::Volume,
+            0,
+            -12.0,
+        );
+        assert!(
+            !RenderPlan::from_project(&p, 48_000).tracks[0]
+                .envelopes
+                .is_empty()
+        );
+        p.track_mut(inst).unwrap().automation_off = true;
+        assert!(
+            RenderPlan::from_project(&p, 48_000).tracks[0]
+                .envelopes
+                .is_empty()
+        );
     }
 
     #[test]

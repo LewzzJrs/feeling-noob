@@ -164,7 +164,11 @@ impl App {
             return;
         }
         let mut created = None;
-        self.edit(|p| created = edit::add_recorded_take(p, track, &notes, None, bar));
+        let overdub = self.project.midi_overdub;
+        self.edit(|p| {
+            created = edit::add_recorded_take(p, track, &notes, None, bar)
+                .and_then(|id| fnoob_core::range::place_recording(p, track, id, overdub));
+        });
         if let Some(id) = created {
             self.played.clear();
             self.selection.track = Some(track);
@@ -216,8 +220,10 @@ impl App {
         }
         let bar = ticks_per_bar(self.project.time_signature);
         let mut created = None;
+        let overdub = self.project.midi_overdub;
         self.edit(|p| {
-            created = edit::add_recorded_take(p, take.track, &take.notes, take.loop_range, bar);
+            created = edit::add_recorded_take(p, take.track, &take.notes, take.loop_range, bar)
+                .and_then(|id| fnoob_core::range::place_recording(p, take.track, id, overdub));
         });
         if let Some(id) = created {
             self.selection.track = Some(take.track);
