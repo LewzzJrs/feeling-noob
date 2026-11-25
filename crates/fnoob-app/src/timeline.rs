@@ -254,7 +254,12 @@ impl App {
     pub fn tracks_area(&mut self, ui: &mut egui::Ui) {
         let (area, area_response) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         let split = area.right() - HEADER_WIDTH;
-        let pinned_top = area.bottom() - (self.project.returns.len() + 1) as f32 * PINNED_ROW;
+        let shown_returns = if self.returns_visible {
+            self.project.returns.len()
+        } else {
+            0
+        };
+        let pinned_top = area.bottom() - (shown_returns + 1) as f32 * PINNED_ROW;
         let geometry = Geometry {
             ruler: Rect::from_min_max(area.min, Pos2::new(split, area.top() + RULER_HEIGHT)),
             lanes: Rect::from_min_max(
@@ -1467,6 +1472,7 @@ impl App {
             .project
             .returns
             .iter()
+            .take(if self.returns_visible { usize::MAX } else { 0 })
             .enumerate()
             .map(|(i, r)| {
                 (

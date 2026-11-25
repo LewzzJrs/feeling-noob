@@ -355,7 +355,7 @@ impl App {
         let Some(s) = state(&self.project, target) else {
             return;
         };
-        if let MixTarget::Track(id) = target {
+        if let (MixTarget::Track(id), true) = (target, self.sends_open) {
             let sends: Vec<f32> = (0..self.project.returns.len())
                 .map(|i| {
                     self.project

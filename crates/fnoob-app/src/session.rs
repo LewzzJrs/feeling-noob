@@ -155,13 +155,17 @@ impl App {
             .map(|t| (t.id, t.kind, t.name.clone(), t.color))
             .collect();
         let scenes = self.project.scenes.len();
-        let returns: Vec<String> = self
-            .project
-            .returns
-            .iter()
-            .map(|r| r.name.clone())
-            .collect();
-        let mixer = if self.mixer_open { IO_H + STRIP_H } else { 0.0 };
+        let returns: Vec<String> = if self.returns_visible {
+            self.project
+                .returns
+                .iter()
+                .map(|r| r.name.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let io_h = if self.io_open { IO_H } else { 0.0 };
+        let mixer = if self.mixer_open { io_h + STRIP_H } else { 0.0 };
         let right_w = returns.len() as f32 * CELL_W + SCENE_W;
         let width = (tracks.len() as f32 * CELL_W + SPACER_MIN + right_w).max(ui.available_width());
         let size = vec2(
@@ -529,22 +533,25 @@ impl App {
         } else {
             CELL_W
         };
-        let io = Rect::from_min_size(Pos2::new(x, top), vec2(width - 2.0, IO_H - 4.0));
-        painter.rect_filled(io, 2.0, ui.visuals().faint_bg_color);
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(io.shrink(3.0)));
-        child.set_clip_rect(io.intersect(ui.clip_rect()));
-        child.vertical(|ui| {
-            crate::ui_kit::compact(ui);
-            match target {
-                MixTarget::Track(id) => self.track_io(ui, id),
-                MixTarget::Return(_) => {
-                    ui.label(RichText::new("Audio To").small().weak());
-                    ui.label("Main");
+        let io_h = if self.io_open { IO_H } else { 0.0 };
+        if self.io_open {
+            let io = Rect::from_min_size(Pos2::new(x, top), vec2(width - 2.0, IO_H - 4.0));
+            painter.rect_filled(io, 2.0, ui.visuals().faint_bg_color);
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(io.shrink(3.0)));
+            child.set_clip_rect(io.intersect(ui.clip_rect()));
+            child.vertical(|ui| {
+                crate::ui_kit::compact(ui);
+                match target {
+                    MixTarget::Track(id) => self.track_io(ui, id),
+                    MixTarget::Return(_) => {
+                        ui.label(RichText::new("Audio To").small().weak());
+                        ui.label("Main");
+                    }
+                    MixTarget::Master => self.main_io(ui),
                 }
-                MixTarget::Master => self.main_io(ui),
-            }
-        });
-        let strip = Rect::from_min_size(Pos2::new(x, top + IO_H), vec2(width - 2.0, STRIP_H - 4.0));
+            });
+        }
+        let strip = Rect::from_min_size(Pos2::new(x, top + io_h), vec2(width - 2.0, STRIP_H - 4.0));
         painter.rect_filled(strip, 2.0, ui.visuals().faint_bg_color);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(strip.shrink(3.0)));
         child.set_clip_rect(strip.intersect(ui.clip_rect()));
@@ -750,6 +757,50 @@ impl App {
                         }
                     });
                 }
+            }
+        }
+    }
+
+    pub(crate) fn launch_selected_clip(&mut self) -> bool {
+        let Some((track, scene)) = self
+            .session
+            .selected
+            .and_then(|id| session::clip_position(&self.project, id))
+        else {
+            return false;
+        };
+        if self.rate_matches() {
+            self.send(EngineCommand::LaunchClip { track, slot: scene });
+        }
+        true
+    }
+
+    pub(crate) fn insert_midi_clip(&mut self) {
+        let Some(track) = self.selection.track.filter(|id| {
+            self.project
+                .track(*id)
+                .is_some_and(|t| t.kind == TrackKind::Instrument)
+        }) else {
+            self.message = Some("Select a MIDI track first.".into());
+            return;
+        };
+        let length = ticks_per_bar(self.project.time_signature);
+        if self.session.open {
+            let scene = (0..self.project.scenes.len())
+                .find(|&s| clip_at(&self.project, track, s).is_none());
+            let Some(scene) = scene else {
+                self.message = Some("This track has no empty slot. Insert a scene first.".into());
+                return;
+            };
+            self.apply_grid_action(GridAction::NewClip(track, scene));
+        } else {
+            let meter = self.project.meter();
+            let tick = meter.bar_floor(self.playhead_tick());
+            let mut created = None;
+            self.edit(|p| created = edit::add_midi_region(p, track, tick, length));
+            if let Some(id) = created {
+                self.selection.regions = vec![id];
+                self.open_editor(id);
             }
         }
     }

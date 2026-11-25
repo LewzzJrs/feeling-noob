@@ -146,6 +146,11 @@ pub struct App {
     pub(crate) browser: crate::browser::Browser,
     pub(crate) inspector: crate::inspector::Inspector,
     pub(crate) draw_mode: bool,
+    pub(crate) returns_visible: bool,
+    pub(crate) io_open: bool,
+    pub(crate) sends_open: bool,
+    pub(crate) insert_tick: u64,
+    quit_requested: bool,
     pub(crate) takes_open: HashSet<Id>,
     pub(crate) comp_drag: Option<(Id, usize, u64)>,
     pub(crate) tap_times: Vec<f64>,
@@ -234,6 +239,11 @@ impl App {
             browser: crate::browser::Browser::shown(),
             inspector: crate::inspector::Inspector::default(),
             draw_mode: false,
+            returns_visible: true,
+            io_open: true,
+            sends_open: true,
+            insert_tick: 0,
+            quit_requested: false,
             takes_open: HashSet::new(),
             comp_drag: None,
             tap_times: Vec::new(),
@@ -399,6 +409,9 @@ impl App {
 
     pub(crate) fn locate(&mut self, tick: u64) {
         self.stopped_tick = tick;
+        if self.transport_state() == TransportState::Stopped {
+            self.insert_tick = tick;
+        }
         let sample = self.timeline().tick_to_sample(tick);
         self.send(EngineCommand::Locate(sample));
     }
@@ -510,10 +523,125 @@ impl App {
         let grid = grid_ticks(self.project.snap.grid, self.project.time_signature) as i64;
         match command {
             Command::PlayStop => {
+                let start = self.insert_tick;
+                if self.transport_state() != TransportState::Stopped {
+                    self.send(EngineCommand::Stop);
+                    self.locate(start);
+                } else if self.rate_matches() {
+                    self.locate(start);
+                    self.send(EngineCommand::Play);
+                }
+            }
+            Command::ContinuePlay => {
                 if self.transport_state() != TransportState::Stopped {
                     self.send(EngineCommand::Stop);
                 } else if self.rate_matches() {
                     self.send(EngineCommand::Play);
+                }
+            }
+            Command::BackToArrangement => self.send(EngineCommand::BackToArrangement),
+            Command::ShowClipView => self.show_clip(),
+            Command::ShowDeviceView => self.show_devices(),
+            Command::ToggleReturns => self.returns_visible = !self.returns_visible,
+            Command::ToggleInOut => self.io_open = !self.io_open,
+            Command::ToggleSends => self.sends_open = !self.sends_open,
+            Command::OpenSettings => self.show_settings = true,
+            Command::Quit => self.quit_requested = true,
+            Command::QuantizeOff
+            | Command::QuantizeSixteenth
+            | Command::QuantizeEighth
+            | Command::QuantizeQuarter
+            | Command::QuantizeBar => {
+                use fnoob_core::session::LaunchQuantize as Q;
+                let quantize = match command {
+                    Command::QuantizeOff => Q::None,
+                    Command::QuantizeSixteenth => Q::Sixteenth,
+                    Command::QuantizeEighth => Q::Eighth,
+                    Command::QuantizeQuarter => Q::Quarter,
+                    _ => Q::Bar,
+                };
+                self.edit(|p| p.launch_quantize = quantize);
+            }
+            Command::NarrowGrid | Command::WidenGrid => {
+                let all = fnoob_core::model::Grid::ALL;
+                let index = all
+                    .iter()
+                    .position(|g| *g == self.project.snap.grid)
+                    .unwrap_or(0);
+                let next = if command == Command::NarrowGrid {
+                    (index + 1).min(all.len() - 1)
+                } else {
+                    index.saturating_sub(1)
+                };
+                self.edit(|p| p.snap.grid = all[next]);
+            }
+            Command::InsertMidiClip => self.insert_midi_clip(),
+            Command::LaunchSelected => {
+                self.launch_selected_clip();
+            }
+            Command::StopSelectedTrack => {
+                if let Some(track) = self.selection.track {
+                    self.send(EngineCommand::StopClips(Some(track)));
+                }
+            }
+            Command::TrackActivator(index) => {
+                if let Some(id) = self.project.tracks.get(usize::from(index)).map(|t| t.id) {
+                    self.edit_track(id, |t| t.mute = !t.mute);
+                }
+            }
+            Command::ShowTakeLanes => {
+                if let Some(track) = self.selection.track
+                    && !self.takes_open.remove(&track)
+                {
+                    self.takes_open.insert(track);
+                }
+            }
+            Command::SetLoopStart | Command::SetLoopEnd => {
+                let tick = self.playhead_tick();
+                let bar = ticks_per_bar(self.project.time_signature);
+                self.edit(|p| {
+                    let range = &mut p.loop_range;
+                    if command == Command::SetLoopStart {
+                        range.start_tick = tick;
+                        if range.end_tick <= tick {
+                            range.end_tick = tick + bar;
+                        }
+                    } else if tick > range.start_tick {
+                        range.end_tick = tick;
+                    }
+                });
+            }
+            Command::LoopShorter
+            | Command::LoopLonger
+            | Command::LoopHalve
+            | Command::LoopDouble => {
+                let bar = ticks_per_bar(self.project.time_signature);
+                self.edit(|p| {
+                    let range = &mut p.loop_range;
+                    let length = range.end_tick - range.start_tick;
+                    let new = match command {
+                        Command::LoopShorter => length.saturating_sub(bar).max(bar),
+                        Command::LoopLonger => length + bar,
+                        Command::LoopHalve => (length / 2).max(grid as u64),
+                        _ => length * 2,
+                    };
+                    range.end_tick = range.start_tick + new;
+                });
+            }
+            Command::MoveLeft | Command::MoveRight => {
+                let step = grid;
+                let delta = if command == Command::MoveLeft {
+                    -step
+                } else {
+                    step
+                };
+                if regions.is_empty() {
+                    let tick = (self.playhead_tick() as i64 + delta).max(0) as u64;
+                    self.locate(tick);
+                } else {
+                    self.edit(|p| {
+                        edit::nudge_regions(p, &regions, delta);
+                    });
                 }
             }
             Command::Record => {
@@ -1449,6 +1577,9 @@ impl eframe::App for App {
             }
         }
         self.info = crate::ui_kit::take_info(&ctx);
+        if std::mem::take(&mut self.quit_requested) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("control_bar").show(ui, |ui| self.control_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));

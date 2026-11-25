@@ -9,7 +9,18 @@ fn map_key(key: egui::Key) -> Option<Key> {
         egui::Key::Plus => Some(Key::Plus),
         egui::Key::Minus => Some(Key::Minus),
         egui::Key::Equals => Some(Key::Equals),
+        egui::Key::F1 => Some(Key::Function(1)),
+        egui::Key::F2 => Some(Key::Function(2)),
+        egui::Key::F3 => Some(Key::Function(3)),
+        egui::Key::F4 => Some(Key::Function(4)),
+        egui::Key::F5 => Some(Key::Function(5)),
+        egui::Key::F6 => Some(Key::Function(6)),
+        egui::Key::F7 => Some(Key::Function(7)),
+        egui::Key::F8 => Some(Key::Function(8)),
         egui::Key::F9 => Some(Key::Function(9)),
+        egui::Key::F10 => Some(Key::Function(10)),
+        egui::Key::F11 => Some(Key::Function(11)),
+        egui::Key::F12 => Some(Key::Function(12)),
         egui::Key::Num0 => Some(Key::Digit(0)),
         egui::Key::Num1 => Some(Key::Digit(1)),
         egui::Key::Num2 => Some(Key::Digit(2)),
@@ -48,8 +59,10 @@ fn repeat_allowed(command: Command) -> bool {
             | Command::NudgeRight
             | Command::ZoomIn
             | Command::ZoomOut
-            | Command::Rewind
-            | Command::Forward
+            | Command::MoveLeft
+            | Command::MoveRight
+            | Command::LoopShorter
+            | Command::LoopLonger
             | Command::SelectPreviousTrack
             | Command::SelectNextTrack
     )
