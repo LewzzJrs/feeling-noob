@@ -373,7 +373,8 @@ mod tests {
         assert_eq!(lookup(plain(Key::Function(9))), Some(Command::Record));
         assert_eq!(lookup(ctrl(letter('T'))), Some(Command::NewAudioTrack));
         assert_eq!(lookup(ctrl_shift(letter('T'))), Some(Command::NewMidiTrack));
-        assert_eq!(lookup(plain(letter('R'))), None);
+        assert_eq!(lookup(plain(letter('R'))), Some(Command::Reverse));
+        assert_eq!(lookup(plain(letter('Q'))), None);
     }
 
     #[test]
