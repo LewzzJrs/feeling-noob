@@ -110,7 +110,10 @@ pub enum UiAction {
         ticks: f32,
         pixels: f32,
     },
-    Zoom(f32),
+    Zoom {
+        factor: f32,
+        anchor: f32,
+    },
     DropFiles {
         paths: Vec<PathBuf>,
         track: Option<Id>,
@@ -291,10 +294,20 @@ impl App {
             offsets: self.track_offsets(),
         };
         let mut actions = Vec::new();
-        if area_response.hovered() {
-            let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+        if area_response.contains_pointer() {
+            let (scroll, zoom, pointer) = ui.input(|i| {
+                (
+                    i.smooth_scroll_delta,
+                    i.zoom_delta(),
+                    i.pointer.latest_pos(),
+                )
+            });
             if zoom != 1.0 {
-                actions.push(UiAction::Zoom(zoom));
+                let anchor = pointer.map_or(0.0, |p| (p.x - geometry.lanes.left()).max(0.0));
+                actions.push(UiAction::Zoom {
+                    factor: zoom,
+                    anchor,
+                });
             } else if scroll != Vec2::ZERO {
                 actions.push(UiAction::Scroll {
                     ticks: -scroll.x / geometry.pixels_per_tick,
@@ -1938,7 +1951,7 @@ impl App {
                 self.view.scroll_y =
                     (self.view.scroll_y + pixels).clamp(0.0, (content - LANE_HEIGHT).max(0.0));
             }
-            UiAction::Zoom(factor) => self.zoom(factor),
+            UiAction::Zoom { factor, anchor } => self.zoom_at(factor, anchor),
             UiAction::DropFiles { paths, track, tick } => {
                 let project = paths.iter().find_map(|p| {
                     if p.is_dir() && p.join(PROJECT_FILE).is_file() {
@@ -2008,6 +2021,12 @@ impl App {
     pub fn zoom(&mut self, factor: f32) {
         self.view.pixels_per_tick =
             (self.view.pixels_per_tick * factor).clamp(MIN_PIXELS_PER_TICK, MAX_PIXELS_PER_TICK);
+    }
+
+    fn zoom_at(&mut self, factor: f32, anchor: f32) {
+        let tick = self.view.scroll_tick + anchor / self.view.pixels_per_tick;
+        self.zoom(factor);
+        self.view.scroll_tick = (tick - anchor / self.view.pixels_per_tick).max(0.0);
     }
 
     fn update_region_drag(&mut self, pointer: Pos2) {

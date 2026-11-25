@@ -103,7 +103,10 @@ enum EditorAction {
         ticks: f32,
         pixels: f32,
     },
-    Zoom(f32),
+    Zoom {
+        factor: f32,
+        anchor: f32,
+    },
 }
 
 struct Layout {
@@ -338,10 +341,20 @@ impl App {
             scroll_y: self.editor.scroll_y,
         };
         let mut actions = Vec::new();
-        if response.hovered() {
-            let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+        if response.contains_pointer() {
+            let (scroll, zoom, pointer) = ui.input(|i| {
+                (
+                    i.smooth_scroll_delta,
+                    i.zoom_delta(),
+                    i.pointer.latest_pos(),
+                )
+            });
             if zoom != 1.0 {
-                actions.push(EditorAction::Zoom(zoom));
+                let anchor = pointer.map_or(0.0, |p| (p.x - layout.notes.left()).max(0.0));
+                actions.push(EditorAction::Zoom {
+                    factor: zoom,
+                    anchor,
+                });
             } else if scroll != Vec2::ZERO {
                 actions.push(EditorAction::Scroll {
                     ticks: -scroll.x / layout.pixels_per_tick,
@@ -876,9 +889,11 @@ impl App {
                 self.editor.scroll_tick = (self.editor.scroll_tick + ticks).max(0.0);
                 self.editor.scroll_y = (self.editor.scroll_y + pixels).clamp(0.0, 127.0 * ROW);
             }
-            EditorAction::Zoom(factor) => {
+            EditorAction::Zoom { factor, anchor } => {
+                let tick = self.editor.scroll_tick + anchor / self.editor.pixels_per_tick;
                 self.editor.pixels_per_tick = (self.editor.pixels_per_tick * factor)
                     .clamp(MIN_PIXELS_PER_TICK, MAX_PIXELS_PER_TICK);
+                self.editor.scroll_tick = (tick - anchor / self.editor.pixels_per_tick).max(0.0);
             }
         }
     }
