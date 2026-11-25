@@ -539,7 +539,7 @@ impl App {
                 let name = track
                     .instrument
                     .as_ref()
-                    .map_or("Basic Synth", fnoob_core::model::Instrument::label)
+                    .map_or("No Instrument", fnoob_core::model::Instrument::label)
                     .to_owned();
                 if hint(
                     ui.add(egui::Button::new(RichText::new(name).small()).truncate()),

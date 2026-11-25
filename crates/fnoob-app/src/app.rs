@@ -163,7 +163,7 @@ pub struct App {
     pub(crate) automation_arm: bool,
     pub(crate) selected_device: Option<(crate::plugins::Owner, usize)>,
     pub(crate) device_focus: bool,
-    pub(crate) device_clipboard: Option<fnoob_core::model::PluginSlot>,
+    pub(crate) device_clipboard: Option<crate::chain::DeviceClip>,
     pub(crate) chain_rect: Option<egui::Rect>,
     quit_requested: bool,
     pub(crate) takes_open: HashSet<Id>,

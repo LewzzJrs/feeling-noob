@@ -7,6 +7,13 @@ use fnoob_core::effects::BuiltinEffect;
 use fnoob_core::model::{Instrument, MAX_INSERTS, PluginSlot, Project, TrackKind};
 
 const CARD_W: f32 = 250.0;
+pub const INSTRUMENT: usize = usize::MAX;
+
+#[derive(Debug, Clone)]
+pub enum DeviceClip {
+    Effect(PluginSlot),
+    Instrument(Instrument),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChainTarget {
@@ -278,6 +285,10 @@ impl App {
             return false;
         };
         self.capture_plugin_states();
+        if let Some((Owner::Track(track), INSTRUMENT)) = selected {
+            self.instrument_command(track, command);
+            return true;
+        }
         let slot = selected.and_then(|(o, index)| {
             let inserts = match o {
                 Owner::Track(id) => self.project.track(id).map(|t| &t.strip.inserts),
@@ -290,7 +301,7 @@ impl App {
             Command::Copy => {
                 if let Some(slot) = slot {
                     self.system_clipboard = Some(slot.name.clone());
-                    self.device_clipboard = Some(slot);
+                    self.device_clipboard = Some(DeviceClip::Effect(slot));
                 }
             }
             Command::Cut | Command::Delete => {
@@ -299,7 +310,7 @@ impl App {
                 };
                 if command == Command::Cut {
                     self.system_clipboard = Some(slot.name.clone());
-                    self.device_clipboard = Some(slot);
+                    self.device_clipboard = Some(DeviceClip::Effect(slot));
                 }
                 let mut left = 0;
                 self.edit(|p| {
@@ -317,16 +328,75 @@ impl App {
                     self.insert_device(owner, index + 1, slot);
                 }
             }
-            _ => {
-                let Some(slot) = self.device_clipboard.clone() else {
-                    self.message = Some("Copy or cut a device first.".into());
-                    return true;
-                };
-                let at = index.map_or(usize::MAX, |i| i + 1);
-                self.insert_device(owner, at, slot);
-            }
+            _ => self.paste_device(owner, index.map_or(usize::MAX, |i| i + 1)),
         }
         true
+    }
+
+    fn paste_device(&mut self, owner: Owner, at: usize) {
+        match self.device_clipboard.clone() {
+            Some(DeviceClip::Effect(slot)) => self.insert_device(owner, at, slot),
+            Some(DeviceClip::Instrument(instrument)) => match owner {
+                Owner::Track(track) => self.place_instrument(track, instrument),
+                Owner::Return(_) => {
+                    self.message = Some("Instruments go on MIDI tracks.".into());
+                }
+            },
+            None => self.message = Some("Copy or cut a device first.".into()),
+        }
+    }
+
+    fn instrument_command(
+        &mut self,
+        track: fnoob_core::model::Id,
+        command: fnoob_core::keymap::Command,
+    ) {
+        use fnoob_core::keymap::Command;
+        let current = self.project.track(track).and_then(|t| t.instrument.clone());
+        match command {
+            Command::Copy | Command::Cut | Command::Delete => {
+                let Some(instrument) = current else {
+                    return;
+                };
+                if command != Command::Delete {
+                    self.system_clipboard = Some(instrument.label().to_owned());
+                    self.device_clipboard = Some(DeviceClip::Instrument(instrument.clone()));
+                }
+                if command != Command::Copy {
+                    let old = instrument.label().to_owned();
+                    self.edit(|p| {
+                        if let Some(t) = p.track_mut(track) {
+                            t.instrument = None;
+                            fnoob_core::edit::name_after_instrument(t, &old);
+                        }
+                    });
+                }
+            }
+            Command::Paste => self.paste_device(Owner::Track(track), 0),
+            _ => {}
+        }
+    }
+
+    fn place_instrument(&mut self, track: fnoob_core::model::Id, mut instrument: Instrument) {
+        if self.project.track(track).map(|t| t.kind) != Some(TrackKind::Instrument) {
+            self.message = Some("Instruments go on MIDI tracks.".into());
+            return;
+        }
+        self.capture_plugin_states();
+        self.edit(|p| {
+            if let Instrument::Vst3(slot) = &mut instrument {
+                slot.id = p.alloc_id();
+            }
+            if let Some(t) = p.track_mut(track) {
+                let old = t
+                    .instrument
+                    .as_ref()
+                    .map_or_else(String::new, |i| i.label().to_owned());
+                t.instrument = Some(instrument);
+                fnoob_core::edit::name_after_instrument(t, &old);
+            }
+        });
+        self.selected_device = Some((Owner::Track(track), INSTRUMENT));
     }
 
     fn insert_device(&mut self, owner: Owner, at: usize, slot: PluginSlot) {
@@ -347,12 +417,69 @@ impl App {
         }
     }
 
+    fn instrument_menu(&mut self, ui: &mut Ui, track: fnoob_core::model::Id) {
+        for choice in InstrumentChoice::BUILTIN {
+            if ui.button(choice.label()).clicked() {
+                self.set_instrument(track, &choice);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if let Some(entry) = self.plugin_choices(ui, true) {
+            self.set_instrument(track, &InstrumentChoice::Vst3(entry));
+            ui.close();
+        }
+    }
+
+    fn device_menu(
+        &self,
+        ui: &mut Ui,
+        commands: &[(&str, fnoob_core::keymap::Command)],
+    ) -> Option<fnoob_core::keymap::Command> {
+        use fnoob_core::keymap::{Command, shortcut_label};
+        let mut chosen = None;
+        for (text, command) in commands {
+            let mut button = egui::Button::new(*text);
+            if let Some(label) = shortcut_label(*command) {
+                button = button.shortcut_text(label);
+            }
+            let enabled = *command != Command::Paste || self.device_clipboard.is_some();
+            if ui.add_enabled(enabled, button).clicked() {
+                chosen = Some(*command);
+                ui.close();
+            }
+        }
+        chosen
+    }
+
     fn instrument_card(&mut self, ui: &mut Ui, track: fnoob_core::model::Id) {
-        let Some(instrument) = self
-            .project
-            .track(track)
-            .map(|t| t.instrument.clone().unwrap_or_default())
-        else {
+        use fnoob_core::keymap::Command;
+        let Some(instrument) = self.project.track(track).map(|t| t.instrument.clone()) else {
+            return;
+        };
+        let Some(instrument) = instrument else {
+            let mut chosen = None;
+            Self::card(ui, 200.0, |ui| {
+                ui.label(RichText::new("Drop an Instrument Here").weak());
+                ui.label(
+                    RichText::new("This track has no instrument, so it makes no sound.")
+                        .small()
+                        .weak(),
+                );
+                ui.menu_button("+ Instrument", |ui| self.instrument_menu(ui, track));
+                if self.device_clipboard.is_some()
+                    && ui
+                        .button("Paste")
+                        .on_hover_text("Paste the copied device")
+                        .clicked()
+                {
+                    chosen = Some(Command::Paste);
+                }
+            });
+            if let Some(command) = chosen {
+                self.device_focus = true;
+                self.instrument_command(track, command);
+            }
             return;
         };
         let width = if matches!(instrument, Instrument::DrumSampler(_)) {
@@ -361,22 +488,34 @@ impl App {
             CARD_W
         };
         let accent = self.accent(Owner::Track(track));
-        Self::card(ui, width, |ui| {
-            Self::title_bar(ui, instrument.label(), None, accent);
-            ui.horizontal(|ui| {
-                ui.menu_button("Change", |ui| {
-                    for choice in InstrumentChoice::BUILTIN {
-                        if ui.button(choice.label()).clicked() {
-                            self.set_instrument(track, &choice);
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    if let Some(entry) = self.plugin_choices(ui, true) {
-                        self.set_instrument(track, &InstrumentChoice::Vst3(entry));
-                        ui.close();
-                    }
+        let mut chosen = None;
+        let card = Self::card(ui, width, |ui| {
+            let (_, title) = Self::title_bar(ui, instrument.label(), None, accent);
+            if let Some(title) = title {
+                let title = crate::ui_kit::hint(
+                    title,
+                    "Instrument title: click to select it, then Delete, Ctrl+X, Ctrl+C or Ctrl+V. Right-click for more.",
+                );
+                if title.clicked() || title.secondary_clicked() {
+                    chosen = Some(None);
+                }
+                title.context_menu(|ui| {
+                    chosen = self
+                        .device_menu(
+                            ui,
+                            &[
+                                ("Cut", Command::Cut),
+                                ("Copy", Command::Copy),
+                                ("Paste", Command::Paste),
+                                ("Delete", Command::Delete),
+                            ],
+                        )
+                        .map(Some)
+                        .or(chosen);
                 });
+            }
+            ui.horizontal(|ui| {
+                ui.menu_button("Change", |ui| self.instrument_menu(ui, track));
             });
             ui.separator();
             match instrument {
@@ -386,6 +525,22 @@ impl App {
                 Instrument::Vst3(slot) => self.plugin_body(ui, &slot),
             }
         });
+        let owner = Owner::Track(track);
+        if self.selected_device == Some((owner, INSTRUMENT)) {
+            ui.painter().rect_stroke(
+                card.response.rect,
+                4.0,
+                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if let Some(command) = chosen {
+            self.selected_device = Some((owner, INSTRUMENT));
+            self.device_focus = true;
+            if let Some(command) = command {
+                self.run(command);
+            }
+        }
     }
 
     fn plugin_body(&mut self, ui: &mut Ui, slot: &PluginSlot) {
@@ -428,23 +583,18 @@ impl App {
                     chosen = Some(None);
                 }
                 title.context_menu(|ui| {
-                    use fnoob_core::keymap::{Command, shortcut_label};
-                    for (text, command) in [
-                        ("Cut", Command::Cut),
-                        ("Copy", Command::Copy),
-                        ("Paste", Command::Paste),
-                        ("Duplicate", Command::Duplicate),
-                        ("Delete", Command::Delete),
-                    ] {
-                        let mut button = egui::Button::new(text);
-                        if let Some(label) = shortcut_label(command) {
-                            button = button.shortcut_text(label);
-                        }
-                        let enabled = command != Command::Paste || self.device_clipboard.is_some();
-                        if ui.add_enabled(enabled, button).clicked() {
-                            chosen = Some(Some(command));
-                            ui.close();
-                        }
+                    use fnoob_core::keymap::Command;
+                    if let Some(command) = self.device_menu(
+                        ui,
+                        &[
+                            ("Cut", Command::Cut),
+                            ("Copy", Command::Copy),
+                            ("Paste", Command::Paste),
+                            ("Duplicate", Command::Duplicate),
+                            ("Delete", Command::Delete),
+                        ],
+                    ) {
+                        chosen = Some(Some(command));
                     }
                 });
             }

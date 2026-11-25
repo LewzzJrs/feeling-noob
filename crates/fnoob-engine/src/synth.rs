@@ -195,7 +195,12 @@ impl Synth {
             Some(Instrument::BasicSynth(params)) => Self::new(params, sample_rate),
             Some(Instrument::Sampler(params)) => Self::sampler(params, sample_rate, pool),
             Some(Instrument::DrumSampler(params)) => Self::drums(params, sample_rate, pool),
-            Some(Instrument::Vst3(_)) | None => Self::new(&SynthParams::default(), sample_rate),
+            Some(Instrument::Vst3(_)) => Self::new(&SynthParams::default(), sample_rate),
+            None => Self::sampler(
+                &fnoob_core::model::SamplerParams::default(),
+                sample_rate,
+                pool,
+            ),
         }
     }
 
@@ -418,6 +423,16 @@ mod tests {
         (from..from + frames)
             .map(|p| synth.next_frame(p).0)
             .collect()
+    }
+
+    #[test]
+    fn a_track_without_instrument_is_silent() {
+        let mut synth = Synth::for_instrument(None, 48_000, &AudioPool::new());
+        synth.note_on(60, 100, u64::MAX, true);
+        let loudest = (0..2000)
+            .map(|i| synth.next_frame(i))
+            .fold(0.0f32, |m, (l, r)| m.max(l.abs()).max(r.abs()));
+        assert_eq!(loudest, 0.0);
     }
 
     #[test]

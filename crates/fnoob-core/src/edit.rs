@@ -68,9 +68,10 @@ pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
 }
 
 pub fn name_after_instrument(track: &mut Track, old_label: &str) -> bool {
-    let Some(new_label) = track.instrument.as_ref().map(|i| i.label().to_owned()) else {
-        return false;
-    };
+    let new_label = track.instrument.as_ref().map_or_else(
+        || TrackKind::Instrument.default_name().to_owned(),
+        |i| i.label().to_owned(),
+    );
     let Some((number, rest)) = track.name.split_once(' ') else {
         return false;
     };
@@ -1225,6 +1226,9 @@ mod tests {
         track.instrument = Some(crate::model::Instrument::BasicSynth(Default::default()));
         assert!(name_after_instrument(track, "Sampler"));
         assert_eq!(track.name, "1 Basic Synth");
+        track.instrument = None;
+        assert!(name_after_instrument(track, "Basic Synth"));
+        assert_eq!(track.name, "1 MIDI");
         track.name = "Lead".into();
         assert!(!name_after_instrument(track, "Basic Synth"));
         assert_eq!(track.name, "Lead");
