@@ -432,6 +432,14 @@ impl App {
         self.selection.track == Some(id) || self.header_focus && self.selection.tracks.contains(&id)
     }
 
+    pub(crate) fn title_command(&mut self, id: Id, command: Command) {
+        if !(self.header_focus && self.is_title_selected(id)) {
+            self.session.selected = None;
+            self.focus_title(id, false, false);
+        }
+        self.run(command);
+    }
+
     pub(crate) fn focus_title(&mut self, id: Id, shift: bool, ctrl: bool) {
         let order: Vec<Id> = self.project.tracks.iter().map(|t| t.id).collect();
         if shift

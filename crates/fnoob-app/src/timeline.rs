@@ -58,6 +58,10 @@ pub enum UiAction {
         ctrl: bool,
     },
     OpenDevices,
+    TitleCommand {
+        id: Id,
+        command: fnoob_core::keymap::Command,
+    },
     ShowDevices,
     ToggleTakes(Id),
     Comp {
@@ -101,7 +105,6 @@ pub enum UiAction {
     DragEnd,
     ToggleLoop,
     Locate(u64),
-    StartRename(Id),
     Rename {
         id: Id,
         name: String,
@@ -160,12 +163,10 @@ pub enum UiAction {
         track: Option<Id>,
         tick: u64,
     },
-    DuplicateTrack(Id),
     MoveTrack {
         id: Id,
         delta: i64,
     },
-    DeleteTrack(Id),
     SetColor {
         id: Id,
         color: u8,
@@ -1487,10 +1488,10 @@ impl App {
                 actions.push(UiAction::ShowDevices);
             }
             name_response.context_menu(|ui| {
-                if ui.button("Rename").clicked() {
-                    actions.push(UiAction::StartRename(id));
-                    ui.close();
+                if let Some(command) = title_menu(ui) {
+                    actions.push(UiAction::TitleCommand { id, command });
                 }
+                ui.separator();
                 ui.menu_button("Color", |ui| {
                     ui.horizontal(|ui| {
                         for color in 0..fnoob_core::model::TRACK_COLORS {
@@ -1504,21 +1505,12 @@ impl App {
                         }
                     });
                 });
-                if ui.button("Duplicate").clicked() {
-                    actions.push(UiAction::DuplicateTrack(id));
-                    ui.close();
-                }
                 if ui.button("Move up").clicked() {
                     actions.push(UiAction::MoveTrack { id, delta: -1 });
                     ui.close();
                 }
                 if ui.button("Move down").clicked() {
                     actions.push(UiAction::MoveTrack { id, delta: 1 });
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Delete track").clicked() {
-                    actions.push(UiAction::DeleteTrack(id));
                     ui.close();
                 }
             });
@@ -1712,6 +1704,7 @@ impl App {
                     fnoob_core::takes::delete_take_lane(p, track, lane);
                 });
             }
+            UiAction::TitleCommand { id, command } => self.title_command(id, command),
             UiAction::OpenDevices => {
                 self.chain_target = crate::chain::ChainTarget::SelectedTrack;
                 self.show_devices();
@@ -1826,24 +1819,10 @@ impl App {
             UiAction::BrowserDrop { item, track, tick } => {
                 self.apply_browser_item(&item, track, tick);
             }
-            UiAction::DuplicateTrack(id) => {
-                self.selection.track = Some(id);
-                self.selection.regions.clear();
-                self.run(fnoob_core::keymap::Command::Duplicate);
-            }
             UiAction::MoveTrack { id, delta } => {
                 self.edit(|p| {
                     edit::move_track(p, id, delta);
                 });
-            }
-            UiAction::DeleteTrack(id) => {
-                self.edit(|p| {
-                    edit::delete_track(p, id);
-                });
-                if self.selection.track == Some(id) {
-                    self.selection.track = None;
-                    self.selection.regions.clear();
-                }
             }
             UiAction::SetColor { id, color } => self.edit_track(id, |t| t.color = color),
             UiAction::MuteRegion(region) => {
@@ -1955,11 +1934,6 @@ impl App {
             UiAction::DragEnd => self.finish_drag(),
             UiAction::ToggleLoop => self.edit(|p| p.loop_range.enabled = !p.loop_range.enabled),
             UiAction::Locate(tick) => self.locate(tick),
-            UiAction::StartRename(id) => {
-                if let Some(track) = self.project.track(id) {
-                    self.renaming = Some((id, track.name.clone()));
-                }
-            }
             UiAction::Rename { id, name } => {
                 let name = name.trim().to_owned();
                 if !name.is_empty() {
@@ -2217,6 +2191,29 @@ pub(crate) fn input_options(channels: u16) -> Vec<AudioInput> {
             channels: 2,
         });
     mono.chain(stereo).collect()
+}
+
+pub(crate) fn title_menu(ui: &mut egui::Ui) -> Option<fnoob_core::keymap::Command> {
+    use fnoob_core::keymap::{Command, shortcut_label};
+    let mut chosen = None;
+    for (text, command) in [
+        ("Cut", Command::Cut),
+        ("Copy", Command::Copy),
+        ("Paste", Command::Paste),
+        ("Duplicate", Command::Duplicate),
+        ("Delete", Command::Delete),
+        ("Rename", Command::Rename),
+    ] {
+        let mut button = egui::Button::new(text);
+        if let Some(label) = shortcut_label(command) {
+            button = button.shortcut_text(label);
+        }
+        if ui.add(button).clicked() {
+            chosen = Some(command);
+            ui.close();
+        }
+    }
+    chosen
 }
 
 #[cfg(test)]

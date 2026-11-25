@@ -50,6 +50,7 @@ enum GridAction {
     SelectTrack(Id),
     FocusTitle(Id, bool, bool),
     OpenDevices(Id),
+    TitleCommand(Id, fnoob_core::keymap::Command),
     RenameTrack(Id, String),
     CancelRename,
     Edit(Id),
@@ -202,6 +203,11 @@ impl App {
                 Color32::WHITE,
             );
             let header_response = ui.interact(header, base.with(("header", track)), Sense::click());
+            header_response.context_menu(|ui| {
+                if let Some(command) = crate::timeline::title_menu(ui) {
+                    actions.push(GridAction::TitleCommand(*track, command));
+                }
+            });
             if let Some((id, text)) = &mut self.renaming
                 && *id == *track
             {
@@ -700,6 +706,7 @@ impl App {
                 self.renaming = None;
                 self.session.renaming = None;
             }
+            GridAction::TitleCommand(track, command) => self.title_command(track, command),
             GridAction::OpenDevices(track) => {
                 self.session.selected = None;
                 self.focus_title(track, false, false);
