@@ -59,9 +59,11 @@ Done in Phase 17: Main Out and Cue Out output pairs with a cue volume (browser p
 
 Done in Phase 18: loop recording for audio. Every loop pass becomes a take lane under the track, the last pass goes into the track, and dragging over a take lane (or clicking a take) copies that part into the track (comping). Take lanes open and close from the track title and can be deleted.
 
+Done in Phase 19: tempo changes. A tempo lane under the ruler adds, edits and deletes tempo changes; regions, notes, the metronome, recording, bounce and plugin transport all follow the tempo map.
+
 Not started, in rough priority order:
 
-- Tempo and time signature changes (tempo map), tap tempo
+- Time signature changes during the song, tempo ramps
 - Audio warping and time stretch, clip tempo
 - MIDI tools: transpose, humanize, legato, chop, strum, arpeggiate, rhythm and chord generators
 - Scale mode: fold the piano roll to scale notes, scale-aware MIDI tools

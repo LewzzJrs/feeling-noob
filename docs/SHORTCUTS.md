@@ -55,6 +55,7 @@ Each entry: file, what was skipped, when it needs fixing.
 | S62 | `crates/fnoob-app/src/timeline.rs` (`draw_headers`) | Track headers have a fixed width and height; they cannot be resized or folded, and the output can only be Main or No Output. Return tracks cannot send to other returns. MIDI tracks have no monitor switch; live MIDI always plays on the armed or selected track. | With track groups and routing. |
 | S63 | `crates/fnoob-engine/src/processor.rs` (`write_outputs`) | Cue Out carries only browser previews; the metronome and solo cueing still go to Main. Scale mode only highlights rows; the piano roll cannot fold to scale notes. Sample tags match words in file names, not real metadata. | With cue solo and MIDI tools. |
 | S64 | `crates/fnoob-core/src/takes.rs`, `crates/fnoob-app/src/timeline.rs` (`draw_take_lanes`) | Take lanes are made only by loop recording of audio; MIDI loop recording still merges into one region. Take lanes show no waveform, and their regions cannot be moved or trimmed. Comping always snaps to the grid. | When take editing grows. |
+| S65 | `crates/fnoob-core/src/time.rs` (`Timeline`) | Tempo changes are steps (no ramps), at most 64 per song, and the time signature cannot change during the song. Clip launch quantize, count-in and Capture MIDI while stopped use the tempo at bar 1. Audio is not stretched when the tempo changes. | With warping and meter changes. |
 
 ## Fixed
 
