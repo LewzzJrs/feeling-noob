@@ -63,6 +63,8 @@ Done in Phase 19: tempo changes. A tempo lane under the ruler adds, edits and de
 
 Done in Phase 21: time signature changes during the song and tempo ramps. The tempo lane adds time signature changes at bar starts and lets a tempo change ramp from the previous tempo; bar lines, positions, bar and beat snapping, bar jumps and the metronome (beat length and accents) follow them.
 
+Done in Phase 22: shortcuts aligned with the common workstation layout on Windows (see `SPEC.md` section 6), a separate time signature lane, and song tempo points that ramp by default and can be dragged.
+
 Not started, in rough priority order:
 
 - Audio warping and time stretch, clip tempo

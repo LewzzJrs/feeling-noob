@@ -415,7 +415,7 @@ Layout:
 ```
 
 - Menus: File, Edit, Create, Track, Transport, View (egui widgets, not native menus).
-- A tempo lane at the bottom of the ruler shows the tempo and time signature at bar 1 and every change. Right-click adds a tempo change at the pointer or a time signature change at the nearest bar, edits or deletes them, and can make a tempo change ramp from the previous tempo.
+- The ruler ends with two lanes. The time signature lane shows the signature at bar 1 and every change; right-click inserts a change at the nearest bar, and a marker's menu edits or deletes it. The song tempo lane shows tempo points joined by ramps, like an automation envelope: right-click adds a point, dragging a point moves it in time or changes its tempo, and a point's menu sets an exact tempo, turns its ramp off for a step, or deletes it.
 - Snap and grid size sit at the right end of the status bar. The control bar has Key and Scale; with Key on, the piano roll highlights scale notes and the root.
 - The Main column of the clip grid chooses the Main Out and Cue Out output pairs and the cue volume for browser previews.
 - In the clip grid the mixer section sits under every column, with an empty drop area, then the return track columns, then Main, which holds the scene launch buttons. Each column has an I/O section (input, monitor, output) and a mixer strip (send knobs, fader with meter, pan knob, activator, solo, arm).
