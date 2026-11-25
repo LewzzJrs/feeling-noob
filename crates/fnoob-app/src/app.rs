@@ -137,6 +137,7 @@ pub struct App {
     pub(crate) history: History,
     pub(crate) selection: Selection,
     clipboard: Vec<Region>,
+    system_clipboard: Option<String>,
     track_clipboard: Vec<Track>,
     pub(crate) header_focus: bool,
     pub(crate) view: View,
@@ -227,6 +228,7 @@ impl App {
             history: History::default(),
             selection: Selection::default(),
             clipboard: Vec::new(),
+            system_clipboard: None,
             track_clipboard: Vec::new(),
             header_focus: false,
             view: View {
@@ -430,6 +432,18 @@ impl App {
 
     pub(crate) fn is_title_selected(&self, id: Id) -> bool {
         self.selection.track == Some(id) || self.header_focus && self.selection.tracks.contains(&id)
+    }
+
+    fn clip_names(&self) -> Option<String> {
+        let names: Vec<&str> = self.clipboard.iter().map(|r| r.name.as_str()).collect();
+        (!names.is_empty()).then(|| {
+            let text = names.join("\n");
+            if text.trim().is_empty() {
+                "clips".to_owned()
+            } else {
+                text
+            }
+        })
     }
 
     pub(crate) fn title_command(&mut self, id: Id, command: Command) {
@@ -852,6 +866,12 @@ impl App {
                     self.capture_plugin_states();
                     self.track_clipboard = edit::copy_tracks(&self.project, &ids);
                     self.clipboard.clear();
+                    let names: Vec<&str> = self
+                        .track_clipboard
+                        .iter()
+                        .map(|t| t.name.as_str())
+                        .collect();
+                    self.system_clipboard = Some(names.join("\n"));
                 }
                 if command != Command::Copy {
                     let index = self.project.tracks.iter().position(|t| t.id == track);
@@ -887,10 +907,12 @@ impl App {
             Command::Copy => {
                 self.clipboard = edit::copy_regions(&self.project, &regions);
                 self.track_clipboard.clear();
+                self.system_clipboard = self.clip_names();
             }
             Command::Cut => {
                 self.track_clipboard.clear();
                 self.clipboard = edit::copy_regions(&self.project, &regions);
+                self.system_clipboard = self.clip_names();
                 self.edit(|p| {
                     edit::delete_regions(p, &regions);
                 });
@@ -1703,6 +1725,9 @@ impl eframe::App for App {
             }
         }
         self.info = crate::ui_kit::take_info(&ctx);
+        if let Some(text) = self.system_clipboard.take() {
+            ctx.copy_text(text);
+        }
         if std::mem::take(&mut self.quit_requested) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }

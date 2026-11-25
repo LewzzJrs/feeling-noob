@@ -75,6 +75,16 @@ pub fn take_commands(ctx: &egui::Context) -> Vec<Command> {
     ctx.input_mut(|input| {
         let mut commands = Vec::new();
         input.events.retain(|event| {
+            let clipboard = match event {
+                egui::Event::Cut => Some(Command::Cut),
+                egui::Event::Copy => Some(Command::Copy),
+                egui::Event::Paste(_) | egui::Event::PasteImage(_) => Some(Command::Paste),
+                _ => None,
+            };
+            if let Some(command) = clipboard {
+                commands.push(command);
+                return false;
+            }
             let egui::Event::Key {
                 key,
                 pressed: true,
