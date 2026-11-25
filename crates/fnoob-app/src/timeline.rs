@@ -172,6 +172,7 @@ pub enum UiAction {
     DeleteRegion(Id),
     SplitRegion(Id),
     LocateMarker(u64),
+    SetInsert(u64),
     SetTempo {
         tick: u64,
         bpm: f64,
@@ -946,6 +947,17 @@ impl App {
     fn draw_lanes(&self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
         let painter = ui.painter_at(g.lanes);
         let visuals = ui.visuals().clone();
+        let background = ui.interact(
+            g.lanes,
+            ui.scope_id().with("lanes_background"),
+            Sense::click(),
+        );
+        if background.clicked()
+            && let Some(pos) = background.interact_pointer_pos()
+        {
+            actions.push(UiAction::ClearRegions);
+            actions.push(UiAction::SetInsert(self.snapped(g.tick(pos.x))));
+        }
         let meter = self.project.meter();
         let first_bar = meter.bar_at(g.tick(g.lanes.left())).0;
         let last_bar = meter.bar_at(g.tick(g.lanes.right())).0 + 1;
@@ -1012,10 +1024,8 @@ impl App {
             } else if lane_response.clicked() {
                 actions.push(UiAction::SelectTrack(track.id));
                 actions.push(UiAction::ClearRegions);
-                if let Some(pos) = lane_response.interact_pointer_pos()
-                    && self.transport_state() == fnoob_engine::TransportState::Stopped
-                {
-                    actions.push(UiAction::LocateMarker(self.snapped(g.tick(pos.x))));
+                if let Some(pos) = lane_response.interact_pointer_pos() {
+                    actions.push(UiAction::SetInsert(self.snapped(g.tick(pos.x))));
                 }
             }
             let audible = self.project.is_track_audible(track);
@@ -1145,6 +1155,9 @@ impl App {
                         id: region.id,
                         toggle,
                     });
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        actions.push(UiAction::SetInsert(self.snapped(g.tick(pos.x))));
+                    }
                 }
                 if response.drag_stopped() {
                     actions.push(UiAction::DragEnd);
@@ -1844,6 +1857,10 @@ impl App {
                 });
             }
             UiAction::LocateMarker(tick) => self.locate(tick),
+            UiAction::SetInsert(tick) => {
+                self.locate(tick);
+                self.insert_tick = tick;
+            }
             UiAction::SetTempo { tick, bpm } => {
                 let mut added = false;
                 self.edit(|p| added = edit::set_tempo_change(p, tick, bpm));
