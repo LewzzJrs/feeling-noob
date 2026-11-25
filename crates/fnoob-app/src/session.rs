@@ -50,6 +50,8 @@ enum GridAction {
     SelectTrack(Id),
     FocusTitle(Id, bool, bool),
     OpenDevices(Id),
+    RenameTrack(Id, String),
+    CancelRename,
     Edit(Id),
     NewClip(Id, usize),
     Move(ClipDrag, Id, usize),
@@ -200,7 +202,15 @@ impl App {
                 Color32::WHITE,
             );
             let header_response = ui.interact(header, base.with(("header", track)), Sense::click());
-            if header_response.double_clicked() {
+            if let Some((id, text)) = &mut self.renaming
+                && *id == *track
+            {
+                match crate::ui_kit::rename_field(ui, header.shrink(2.0), text) {
+                    Some(true) => actions.push(GridAction::RenameTrack(*track, text.clone())),
+                    Some(false) => actions.push(GridAction::CancelRename),
+                    None => {}
+                }
+            } else if header_response.double_clicked() {
                 actions.push(GridAction::OpenDevices(*track));
             } else if header_response.clicked() {
                 let modifiers = ui.input(|i| i.modifiers);
@@ -450,10 +460,10 @@ impl App {
             if let Some((index, text)) = &mut self.session.renaming
                 && *index == scene
             {
-                let response = ui.put(cell, egui::TextEdit::singleline(text));
-                response.request_focus();
-                if response.lost_focus() {
-                    actions.push(GridAction::RenameScene(scene, text.clone()));
+                match crate::ui_kit::rename_field(ui, cell, text) {
+                    Some(true) => actions.push(GridAction::RenameScene(scene, text.clone())),
+                    Some(false) => actions.push(GridAction::CancelRename),
+                    None => {}
                 }
                 continue;
             }
@@ -678,6 +688,17 @@ impl App {
             GridAction::FocusTitle(track, shift, ctrl) => {
                 self.session.selected = None;
                 self.focus_title(track, shift, ctrl);
+            }
+            GridAction::RenameTrack(track, name) => {
+                self.renaming = None;
+                let name = name.trim().to_owned();
+                if !name.is_empty() {
+                    self.edit_track(track, |t| t.name = name);
+                }
+            }
+            GridAction::CancelRename => {
+                self.renaming = None;
+                self.session.renaming = None;
             }
             GridAction::OpenDevices(track) => {
                 self.session.selected = None;

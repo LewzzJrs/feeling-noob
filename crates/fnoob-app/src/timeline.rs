@@ -1432,18 +1432,18 @@ impl App {
             );
             match &mut renaming {
                 Some((rid, text)) if *rid == id => {
-                    let edit = ui.put(
-                        name_rect.shrink(4.0).intersect(g.headers),
-                        egui::TextEdit::singleline(text),
-                    );
-                    edit.request_focus();
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        actions.push(UiAction::CancelRename);
-                    } else if edit.lost_focus() {
-                        actions.push(UiAction::Rename {
+                    let field = Rect::from_min_size(
+                        name_rect.left_top() + Vec2::new(4.0, 2.0),
+                        Vec2::new(name_rect.width() - 8.0, 20.0),
+                    )
+                    .intersect(g.headers);
+                    match crate::ui_kit::rename_field(ui, field, text) {
+                        Some(false) => actions.push(UiAction::CancelRename),
+                        Some(true) => actions.push(UiAction::Rename {
                             id,
                             name: text.clone(),
-                        });
+                        }),
+                        None => {}
                     }
                 }
                 _ => {

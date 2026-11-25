@@ -106,3 +106,25 @@ pub fn knob(ui: &mut Ui, value: &mut f32, min: f32, max: f32, label: &str) -> Re
     );
     response
 }
+
+pub fn rename_field(ui: &mut egui::Ui, rect: egui::Rect, text: &mut String) -> Option<bool> {
+    let edit = ui.put(rect, egui::TextEdit::singleline(text));
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        return Some(false);
+    }
+    if edit.lost_focus() {
+        return Some(true);
+    }
+    if !edit.has_focus() {
+        edit.request_focus();
+        let mut state = egui::TextEdit::load_state(ui.ctx(), edit.id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(text.chars().count()),
+            )));
+        state.store(ui.ctx(), edit.id);
+    }
+    None
+}
