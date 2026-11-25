@@ -319,7 +319,7 @@ Autosave uses the same steps into `autosave\project.json`, without backups.
 - Input and output are two separate streams. Input reaches the output thread through `rtrb` with a fixed safety buffer. Recording latency compensation: the region is shifted back by the input + output latency reported by the streams. Accuracy is measured in Phase 5.
 
 ### 5.5 Audio files
-- Import and recording are WAV only (`hound`). Files whose sample rate differs from the project are rejected with a message.
+- Import reads WAV, MP3, FLAC, OGG/Vorbis, AIFF and AAC/M4A (`symphonia`). Files in another format or at another sample rate are decoded, resampled to the project rate (`rubato`) and saved into the project folder as 32-bit float WAV; matching WAV files are copied as they are. Recording writes WAV only.
 - Whole files are loaded into memory (f32) when the plan is built and shared between plans with `Arc`. Disk streaming is on the roadmap.
 
 ### 5.6 VST3 hosting
@@ -426,11 +426,13 @@ Project rule: every new dependency is justified before it is added. Each one is 
 | `rfd` | 3 | Native Windows Open/Save dialogs. |
 | `midir` | 4 | MIDI input. |
 | `hound` | 5 | WAV read/write. |
+| `symphonia` | 20 | Decoding MP3, FLAC, OGG/Vorbis, AIFF and AAC/M4A on import (pure Rust, MPL-2.0). |
+| `rubato` | 20 | High-quality resampling of imported audio to the project sample rate (pure Rust, MIT). |
 | `base64` | 6 | Plugin state in JSON. |
 | `vst3` | 6 | VST3 bindings. The host itself is our own code in `fnoob-platform`. |
 | `windows-sys` | 6 | HWND for plugin editors, `LoadLibraryW`. |
 
-Deliberately **not** used in the MVP: `tokio` (no async needed), `uuid` (replaced by a counter), `symphonia` (WAV only), `basedrop` (old plans are dropped on the UI thread via `rtrb`).
+Deliberately **not** used in the MVP: `tokio` (no async needed), `uuid` (replaced by a counter), `basedrop` (old plans are dropped on the UI thread via `rtrb`).
 
 ---
 
