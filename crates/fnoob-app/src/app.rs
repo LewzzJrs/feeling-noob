@@ -161,6 +161,10 @@ pub struct App {
     pub(crate) zoom_history: crate::arrange::ZoomHistory,
     pub(crate) lanes_width: f32,
     pub(crate) automation_arm: bool,
+    pub(crate) selected_device: Option<(crate::plugins::Owner, usize)>,
+    pub(crate) device_focus: bool,
+    pub(crate) device_clipboard: Option<fnoob_core::model::PluginSlot>,
+    pub(crate) chain_rect: Option<egui::Rect>,
     quit_requested: bool,
     pub(crate) takes_open: HashSet<Id>,
     pub(crate) comp_drag: Option<(Id, usize, u64)>,
@@ -263,6 +267,10 @@ impl App {
             zoom_history: crate::arrange::ZoomHistory::default(),
             lanes_width: 800.0,
             automation_arm: false,
+            selected_device: None,
+            device_focus: false,
+            device_clipboard: None,
+            chain_rect: None,
             quit_requested: false,
             takes_open: HashSet::new(),
             comp_drag: None,
@@ -605,6 +613,9 @@ impl App {
     }
 
     pub(crate) fn run(&mut self, command: Command) {
+        if self.device_command(command) {
+            return;
+        }
         if self.focus == Focus::Editor && self.editor_command(command) {
             return;
         }
@@ -1857,6 +1868,9 @@ impl App {
             }
         });
         if let Some(pos) = pressed {
+            self.device_focus = self.devices_open
+                && self.detail_devices
+                && self.chain_rect.is_some_and(|r| r.contains(pos));
             self.focus = match self.editor_rect {
                 Some(rect) if rect.contains(pos) => Focus::Editor,
                 _ => Focus::Tracks,

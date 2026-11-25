@@ -128,6 +128,7 @@ impl App {
             })
             .inner
             .response;
+        self.chain_rect = Some(response.rect);
         let area = ui.interact(
             response.rect,
             ui.scope_id().with("chain_drop"),
@@ -179,8 +180,14 @@ impl App {
         }
     }
 
-    fn title_bar(ui: &mut Ui, name: &str, on: Option<bool>, accent: egui::Color32) -> bool {
+    fn title_bar(
+        ui: &mut Ui,
+        name: &str,
+        on: Option<bool>,
+        accent: egui::Color32,
+    ) -> (bool, Option<egui::Response>) {
         let mut toggled = false;
+        let mut title = None;
         let fill = if on == Some(false) {
             accent.gamma_multiply(0.35)
         } else {
@@ -215,21 +222,129 @@ impl App {
                             toggled = true;
                         }
                     }
-                    ui.label(RichText::new(name).strong().color(egui::Color32::BLACK));
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 16.0),
+                        egui::Sense::click(),
+                    );
+                    ui.painter_at(rect).text(
+                        rect.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        name,
+                        egui::FontId::proportional(13.5),
+                        egui::Color32::BLACK,
+                    );
+                    title = Some(response);
                 });
             });
-        toggled
+        (toggled, title)
     }
 
-    fn card<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-        egui::Frame::group(ui.style())
-            .show(ui, |ui| {
-                ui.spacing_mut().slider_width = 110.0;
-                ui.set_min_width(width);
-                ui.set_max_width(width.max(CARD_W));
-                ui.vertical(add).inner
-            })
-            .inner
+    fn card<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.spacing_mut().slider_width = 110.0;
+            ui.set_min_width(width);
+            ui.set_max_width(width.max(CARD_W));
+            ui.vertical(add).inner
+        })
+    }
+
+    pub(crate) fn chain_owner(&self) -> Option<Owner> {
+        match self.chain_target {
+            ChainTarget::Return(index) => {
+                (index < self.project.returns.len()).then_some(Owner::Return(index))
+            }
+            ChainTarget::SelectedTrack => self.selection.track.map(Owner::Track),
+        }
+    }
+
+    pub(crate) fn device_command(&mut self, command: fnoob_core::keymap::Command) -> bool {
+        use fnoob_core::keymap::Command;
+        if !self.device_focus
+            || !matches!(
+                command,
+                Command::Cut
+                    | Command::Copy
+                    | Command::Paste
+                    | Command::Duplicate
+                    | Command::Delete
+            )
+        {
+            return false;
+        }
+        let selected = self
+            .selected_device
+            .filter(|(owner, _)| Some(*owner) == self.chain_owner());
+        let Some(owner) = selected.map(|(o, _)| o).or_else(|| self.chain_owner()) else {
+            return false;
+        };
+        self.capture_plugin_states();
+        let slot = selected.and_then(|(o, index)| {
+            let inserts = match o {
+                Owner::Track(id) => self.project.track(id).map(|t| &t.strip.inserts),
+                Owner::Return(i) => self.project.returns.get(i).map(|r| &r.inserts),
+            };
+            inserts.and_then(|i| i.get(index)).cloned()
+        });
+        let index = selected.map(|(_, i)| i);
+        match command {
+            Command::Copy => {
+                if let Some(slot) = slot {
+                    self.system_clipboard = Some(slot.name.clone());
+                    self.device_clipboard = Some(slot);
+                }
+            }
+            Command::Cut | Command::Delete => {
+                let (Some(slot), Some(index)) = (slot, index) else {
+                    return true;
+                };
+                if command == Command::Cut {
+                    self.system_clipboard = Some(slot.name.clone());
+                    self.device_clipboard = Some(slot);
+                }
+                let mut left = 0;
+                self.edit(|p| {
+                    if let Some(inserts) = inserts_mut(p, owner) {
+                        if index < inserts.len() {
+                            inserts.remove(index);
+                        }
+                        left = inserts.len();
+                    }
+                });
+                self.selected_device = (left > 0).then(|| (owner, index.min(left - 1)));
+            }
+            Command::Duplicate => {
+                if let (Some(slot), Some(index)) = (slot, index) {
+                    self.insert_device(owner, index + 1, slot);
+                }
+            }
+            _ => {
+                let Some(slot) = self.device_clipboard.clone() else {
+                    self.message = Some("Copy or cut a device first.".into());
+                    return true;
+                };
+                let at = index.map_or(usize::MAX, |i| i + 1);
+                self.insert_device(owner, at, slot);
+            }
+        }
+        true
+    }
+
+    fn insert_device(&mut self, owner: Owner, at: usize, slot: PluginSlot) {
+        let mut placed = None;
+        self.edit(|p| {
+            let id = p.alloc_id();
+            if let Some(inserts) = inserts_mut(p, owner)
+                && inserts.len() < MAX_INSERTS
+            {
+                let at = at.min(inserts.len());
+                inserts.insert(at, PluginSlot { id, ..slot });
+                placed = Some(at);
+            }
+        });
+        match placed {
+            Some(at) => self.selected_device = Some((owner, at)),
+            None => self.message = Some("All insert slots are full.".into()),
+        }
     }
 
     fn instrument_card(&mut self, ui: &mut Ui, track: fnoob_core::model::Id) {
@@ -298,9 +413,40 @@ impl App {
         slot: &PluginSlot,
     ) {
         let accent = self.accent(owner);
-        Self::card(ui, CARD_W, |ui| {
-            if Self::title_bar(ui, &slot.name, Some(!slot.bypass), accent) {
+        let mut chosen = None;
+        let card = Self::card(ui, CARD_W, |ui| {
+            let (toggled, title) = Self::title_bar(ui, &slot.name, Some(!slot.bypass), accent);
+            if toggled {
                 self.toggle_bypass(owner, index);
+            }
+            if let Some(title) = title {
+                let title = crate::ui_kit::hint(
+                    title,
+                    "Device title: click to select it, then Delete, Ctrl+X, Ctrl+C, Ctrl+V or Ctrl+D. Right-click for more.",
+                );
+                if title.clicked() || title.secondary_clicked() {
+                    chosen = Some(None);
+                }
+                title.context_menu(|ui| {
+                    use fnoob_core::keymap::{Command, shortcut_label};
+                    for (text, command) in [
+                        ("Cut", Command::Cut),
+                        ("Copy", Command::Copy),
+                        ("Paste", Command::Paste),
+                        ("Duplicate", Command::Duplicate),
+                        ("Delete", Command::Delete),
+                    ] {
+                        let mut button = egui::Button::new(text);
+                        if let Some(label) = shortcut_label(command) {
+                            button = button.shortcut_text(label);
+                        }
+                        let enabled = command != Command::Paste || self.device_clipboard.is_some();
+                        if ui.add_enabled(enabled, button).clicked() {
+                            chosen = Some(Some(command));
+                            ui.close();
+                        }
+                    }
+                });
             }
             ui.horizontal(|ui| {
                 if ui
@@ -351,6 +497,21 @@ impl App {
                 None => self.plugin_body(ui, slot),
             }
         });
+        if self.selected_device == Some((owner, index)) {
+            ui.painter().rect_stroke(
+                card.response.rect,
+                4.0,
+                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if let Some(command) = chosen {
+            self.selected_device = Some((owner, index));
+            self.device_focus = true;
+            if let Some(command) = command {
+                self.run(command);
+            }
+        }
     }
 
     fn add_card(&mut self, ui: &mut Ui, owner: Owner, index: usize) {
