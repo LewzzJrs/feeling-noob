@@ -20,8 +20,9 @@ type TakeRows = (usize, Id, u8, Vec<(String, Vec<TakeRegion>)>);
 const NAME_WIDTH: f32 = 116.0;
 const IO_WIDTH: f32 = 96.0;
 pub const LOOP_ROW: f32 = 12.0;
-pub const RULER_HEIGHT: f32 = 50.0;
+pub const RULER_HEIGHT: f32 = 64.0;
 const TEMPO_ROW: f32 = 16.0;
+const METER_ROW: f32 = 14.0;
 pub const LANE_HEIGHT: f32 = 60.0;
 pub const MIN_PIXELS_PER_TICK: f32 = 0.002;
 pub const MAX_PIXELS_PER_TICK: f32 = 0.5;
@@ -168,6 +169,15 @@ pub enum UiAction {
         bpm: f64,
     },
     DeleteTempo(u64),
+    AddTempo {
+        tick: u64,
+        bpm: f64,
+    },
+    MoveTempo {
+        from: u64,
+        to: u64,
+        bpm: f64,
+    },
     SetTempoRamp {
         tick: u64,
         ramp: bool,
@@ -552,10 +562,14 @@ impl App {
         let loop_row = Rect::from_min_size(g.ruler.min, Vec2::new(g.ruler.width(), LOOP_ROW));
         let bar_row = Rect::from_min_max(
             Pos2::new(g.ruler.left(), loop_row.bottom()),
+            Pos2::new(g.ruler.right(), g.ruler.bottom() - TEMPO_ROW - METER_ROW),
+        );
+        let meter_row = Rect::from_min_max(
+            Pos2::new(g.ruler.left(), bar_row.bottom()),
             Pos2::new(g.ruler.right(), g.ruler.bottom() - TEMPO_ROW),
         );
         let tempo_row =
-            Rect::from_min_max(Pos2::new(g.ruler.left(), bar_row.bottom()), g.ruler.max);
+            Rect::from_min_max(Pos2::new(g.ruler.left(), meter_row.bottom()), g.ruler.max);
         let range = self.project.loop_range;
         let loop_rect = Rect::from_x_y_ranges(
             g.x(range.start_tick)..=g.x(range.end_tick),
@@ -672,10 +686,11 @@ impl App {
                 }
             });
         }
+        self.draw_meter_row(ui, g, meter_row, actions);
         self.draw_tempo_row(ui, g, tempo_row, actions);
     }
 
-    fn draw_tempo_row(
+    fn draw_meter_row(
         &self,
         ui: &mut egui::Ui,
         g: &Geometry,
@@ -683,26 +698,17 @@ impl App {
         actions: &mut Vec<UiAction>,
     ) {
         let painter = ui.painter_at(row);
-        painter.rect_filled(row, 0.0, ui.visuals().extreme_bg_color);
+        painter.rect_filled(row, 0.0, ui.visuals().faint_bg_color);
         let response = crate::ui_kit::hint(
-            ui.interact(row, ui.scope_id().with("tempo_row"), Sense::click()),
-            "Tempo lane: right-click to add a tempo change. Right-click a tempo to change or delete it.",
+            ui.interact(row, ui.scope_id().with("meter_row"), Sense::click()),
+            "Time signature lane: right-click to insert a time signature change at a bar.",
         );
-        let timeline = self.timeline();
         response.context_menu(|ui| {
             if let Some(pos) = ui
                 .ctx()
                 .pointer_interact_pos()
                 .or(response.interact_pointer_pos())
             {
-                let tick = self.snapped(g.tick(pos.x));
-                if ui.button("Add Tempo Change Here").clicked() {
-                    actions.push(UiAction::SetTempo {
-                        tick,
-                        bpm: timeline.bpm_at_tick(tick),
-                    });
-                    ui.close();
-                }
                 let meter = self.project.meter();
                 let (bar, start, ts) = meter.bar_at(g.tick(pos.x));
                 let bar = if g.tick(pos.x) - start > ticks_per_bar(ts) / 2 {
@@ -712,7 +718,7 @@ impl App {
                 };
                 if bar > 0
                     && ui
-                        .button(format!("Add Time Signature Change at Bar {}", bar + 1))
+                        .button(format!("Insert Time Signature Change at Bar {}", bar + 1))
                         .clicked()
                 {
                     actions.push(UiAction::SetMeter {
@@ -779,6 +785,38 @@ impl App {
                 }
             });
         }
+    }
+
+    fn draw_tempo_row(
+        &self,
+        ui: &mut egui::Ui,
+        g: &Geometry,
+        row: Rect,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let painter = ui.painter_at(row);
+        painter.rect_filled(row, 0.0, ui.visuals().extreme_bg_color);
+        let response = crate::ui_kit::hint(
+            ui.interact(row, ui.scope_id().with("tempo_row"), Sense::click()),
+            "Song tempo: right-click to add a point. Drag a point sideways to move it, up or down to change the tempo.",
+        );
+        let timeline = self.timeline();
+        response.context_menu(|ui| {
+            if let Some(pos) = ui
+                .ctx()
+                .pointer_interact_pos()
+                .or(response.interact_pointer_pos())
+            {
+                let tick = self.snapped(g.tick(pos.x));
+                if ui.button("Add Tempo Point Here").clicked() {
+                    actions.push(UiAction::AddTempo {
+                        tick,
+                        bpm: timeline.bpm_at_tick(tick),
+                    });
+                    ui.close();
+                }
+            }
+        });
         let mut points = vec![(0, self.project.tempo_bpm, false)];
         points.extend(
             self.project
@@ -822,9 +860,43 @@ impl App {
                 .interact(
                     flag.intersect(row),
                     ui.scope_id().with(("tempo", tick)),
-                    Sense::click(),
+                    Sense::click_and_drag(),
                 )
-                .on_hover_text("Tempo change. Right-click to edit or delete.");
+                .on_hover_text("Tempo point. Drag to move or change it. Right-click for more.");
+            if flag_response.dragged()
+                && let (Some(origin), Some(now)) = (
+                    ui.input(|i| i.pointer.press_origin()),
+                    flag_response.interact_pointer_pos(),
+                )
+            {
+                let new_tick = self.snapped(g.tick(x + (now.x - origin.x))).max(1);
+                let new_bpm = (bpm - f64::from(now.y - origin.y) * 0.5)
+                    .clamp(fnoob_core::time::MIN_BPM, fnoob_core::time::MAX_BPM);
+                let ghost = Rect::from_min_size(
+                    Pos2::new(g.x(new_tick), row.top() + 1.0),
+                    Vec2::new(46.0, row.height() - 2.0),
+                );
+                painter.rect_stroke(
+                    ghost,
+                    CornerRadius::same(2),
+                    Stroke::new(1.5, Color32::WHITE),
+                    StrokeKind::Inside,
+                );
+                painter.text(
+                    ghost.left_center() + Vec2::new(3.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    format!("{new_bpm:.1}"),
+                    FontId::proportional(10.0),
+                    Color32::WHITE,
+                );
+                if flag_response.drag_stopped() {
+                    actions.push(UiAction::MoveTempo {
+                        from: tick,
+                        to: new_tick,
+                        bpm: new_bpm,
+                    });
+                }
+            }
             flag_response.context_menu(|ui| {
                 let mut value = bpm;
                 if ui
@@ -1753,6 +1825,26 @@ impl App {
             }
             UiAction::DeleteTempo(tick) => self.edit(|p| {
                 edit::delete_tempo_change(p, tick);
+            }),
+            UiAction::AddTempo { tick, bpm } => {
+                let mut added = false;
+                self.edit(|p| {
+                    added = edit::set_tempo_change(p, tick, bpm);
+                    edit::set_tempo_ramp(p, tick, true);
+                });
+                if !added {
+                    self.message = Some("A song can have at most 64 tempo changes.".into());
+                }
+            }
+            UiAction::MoveTempo { from, to, bpm } => self.edit(|p| {
+                let ramp = p
+                    .tempo_changes
+                    .iter()
+                    .find(|c| c.tick == from)
+                    .is_some_and(|c| c.ramp);
+                edit::delete_tempo_change(p, from);
+                edit::set_tempo_change(p, to, bpm);
+                edit::set_tempo_ramp(p, to, ramp);
             }),
             UiAction::SetTempoRamp { tick, ramp } => self.edit(|p| {
                 edit::set_tempo_ramp(p, tick, ramp);
