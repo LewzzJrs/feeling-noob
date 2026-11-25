@@ -140,6 +140,15 @@ fn process_does_not_allocate() {
     project.tempo_bpm = 97.0;
     fnoob_core::edit::set_tempo_change(&mut project, 1920, 140.0);
     fnoob_core::edit::set_tempo_change(&mut project, 7680, 80.0);
+    fnoob_core::edit::set_tempo_ramp(&mut project, 7680, true);
+    fnoob_core::edit::set_meter_change(
+        &mut project,
+        3,
+        fnoob_core::model::TimeSignature {
+            numerator: 7,
+            denominator: 8,
+        },
+    );
     let commands = [
         Command::SetMidiInput(midi_rx),
         Command::SetAudioInput {

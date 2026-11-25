@@ -337,6 +337,7 @@ pub struct Processor {
     count_in: CountIn,
     position: u64,
     next_beat: u64,
+    next_downbeat: bool,
     next_beat_sample: u64,
     rng: u64,
     played: Producer<Played>,
@@ -399,6 +400,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         },
         position: 0,
         next_beat: 0,
+        next_downbeat: true,
         next_beat_sample: 0,
         rng: 0x9E37_79B9_7F4A_7C15,
         sample_rate,
@@ -418,20 +420,24 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
 }
 
 impl Processor {
-    fn beat_sample(&self, beat: u64) -> u64 {
-        self.plan
-            .timeline
-            .tick_to_sample(beat * self.plan.ticks_per_beat)
+    fn schedule_beat(&mut self, from_tick: u64, min_sample: u64) {
+        let mut tick = from_tick;
+        loop {
+            let (beat, downbeat) = self.plan.meter.next_beat(tick);
+            let sample = self.plan.timeline.tick_to_sample(beat);
+            if sample >= min_sample {
+                self.next_beat = beat;
+                self.next_downbeat = downbeat;
+                self.next_beat_sample = sample;
+                return;
+            }
+            tick = beat + 1;
+        }
     }
 
     fn resync(&mut self) {
         let tick = self.plan.timeline.sample_to_tick(self.position);
-        let mut beat = tick / self.plan.ticks_per_beat;
-        while self.beat_sample(beat) < self.position {
-            beat += 1;
-        }
-        self.next_beat = beat;
-        self.next_beat_sample = self.beat_sample(beat);
+        self.schedule_beat(tick, self.position);
         let position = self.position;
         for track in &mut self.plan.tracks {
             track.cursor = track.notes.partition_point(|n| n.start < position);
@@ -860,11 +866,9 @@ impl Processor {
         }
         if self.position == self.next_beat_sample {
             if self.plan.metronome {
-                self.metronome
-                    .trigger(self.next_beat.is_multiple_of(self.plan.beats_per_bar));
+                self.metronome.trigger(self.next_downbeat);
             }
-            self.next_beat += 1;
-            self.next_beat_sample = self.beat_sample(self.next_beat);
+            self.schedule_beat(self.next_beat + 1, self.position + 1);
         }
         self.send_due_offs();
         let (position, frame) = (self.position, self.frame);
@@ -1823,6 +1827,34 @@ mod tests {
         assert_eq!(onsets(&out), vec![0, BEAT, 2 * BEAT, 4 * BEAT, 6 * BEAT]);
         let tick = p.plan.timeline.sample_to_tick(p.position);
         assert_eq!(p.plan.timeline.bpm_at_tick(tick), 60.0);
+    }
+
+    #[test]
+    fn clicks_follow_meter_changes() {
+        let mut project = metronome_only();
+        fnoob_core::edit::set_meter_change(
+            &mut project,
+            2,
+            fnoob_core::model::TimeSignature {
+                numerator: 6,
+                denominator: 8,
+            },
+        );
+        let (mut p, mut h) = create(SR, 1, plan(&project));
+        h.send(Command::Play).unwrap();
+        let out = render(&mut p, 5 * BEAT + 100);
+        assert_eq!(
+            onsets(&out),
+            vec![
+                0,
+                BEAT,
+                2 * BEAT,
+                3 * BEAT,
+                4 * BEAT,
+                9 * BEAT / 2,
+                5 * BEAT
+            ]
+        );
     }
 
     #[test]
