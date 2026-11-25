@@ -138,6 +138,8 @@ fn process_does_not_allocate() {
     let (mut midi_tx, midi_rx) = midi_channel();
     let mut out = vec![0.0f32; 1024];
     project.tempo_bpm = 97.0;
+    fnoob_core::edit::set_tempo_change(&mut project, 1920, 140.0);
+    fnoob_core::edit::set_tempo_change(&mut project, 7680, 80.0);
     let commands = [
         Command::SetMidiInput(midi_rx),
         Command::SetAudioInput {

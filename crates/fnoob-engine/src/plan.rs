@@ -115,6 +115,8 @@ pub struct AudioTrackPlan {
 pub struct RenderPlan {
     pub samples_per_tick: f64,
     pub samples_per_beat: f64,
+    pub timeline: Timeline,
+    pub ticks_per_beat: u64,
     pub beats_per_bar: u64,
     pub tempo: f64,
     pub numerator: i32,
@@ -345,10 +347,7 @@ impl RenderPlan {
         pool: &AudioPool,
         plugins: &PluginMap,
     ) -> Self {
-        let timeline = Timeline {
-            sample_rate,
-            bpm: project.tempo_bpm,
-        };
+        let timeline = project.timeline(sample_rate);
         let samples_per_tick = timeline.samples_per_tick();
         let ts = project.time_signature;
         let beats_per_bar = u64::from(ts.numerator.max(1));
@@ -356,6 +355,8 @@ impl RenderPlan {
         Self {
             samples_per_tick,
             samples_per_beat: ticks_per_beat(ts) as f64 * samples_per_tick,
+            timeline,
+            ticks_per_beat: ticks_per_beat(ts).max(1),
             beats_per_bar,
             tempo: project.tempo_bpm,
             numerator: ts.numerator as i32,

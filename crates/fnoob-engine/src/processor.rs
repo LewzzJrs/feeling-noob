@@ -9,7 +9,7 @@ use crate::session::{Session, SessionStatus};
 use fnoob_core::capture::Played;
 use fnoob_core::effects::BuiltinEffect;
 use fnoob_core::model::{Id, MAX_RETURNS};
-use fnoob_core::time::{beat_start_sample, first_beat_at_or_after};
+use fnoob_core::time::beat_start_sample;
 use fnoob_platform::plugin::{PluginProcessor, Transport};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::fmt;
@@ -418,10 +418,20 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
 }
 
 impl Processor {
+    fn beat_sample(&self, beat: u64) -> u64 {
+        self.plan
+            .timeline
+            .tick_to_sample(beat * self.plan.ticks_per_beat)
+    }
+
     fn resync(&mut self) {
-        let spb = self.plan.samples_per_beat;
-        self.next_beat = first_beat_at_or_after(self.position, spb);
-        self.next_beat_sample = beat_start_sample(self.next_beat, spb);
+        let tick = self.plan.timeline.sample_to_tick(self.position);
+        let mut beat = tick / self.plan.ticks_per_beat;
+        while self.beat_sample(beat) < self.position {
+            beat += 1;
+        }
+        self.next_beat = beat;
+        self.next_beat_sample = self.beat_sample(beat);
         let position = self.position;
         for track in &mut self.plan.tracks {
             track.cursor = track.notes.partition_point(|n| n.start < position);
@@ -572,9 +582,9 @@ impl Processor {
     }
 
     fn set_plan(&mut self, mut plan: Box<RenderPlan>) {
-        if plan.samples_per_tick != self.plan.samples_per_tick {
-            let tick = self.position as f64 / self.plan.samples_per_tick;
-            self.position = (tick * plan.samples_per_tick).round() as u64;
+        if plan.timeline != self.plan.timeline {
+            let tick = self.plan.timeline.sample_to_tick_f64(self.position as f64);
+            self.position = plan.timeline.tick_to_sample_f64(tick).round() as u64;
         }
         for track in &mut plan.tracks {
             if track.audible
@@ -854,7 +864,7 @@ impl Processor {
                     .trigger(self.next_beat.is_multiple_of(self.plan.beats_per_bar));
             }
             self.next_beat += 1;
-            self.next_beat_sample = beat_start_sample(self.next_beat, self.plan.samples_per_beat);
+            self.next_beat_sample = self.beat_sample(self.next_beat);
         }
         self.send_due_offs();
         let (position, frame) = (self.position, self.frame);
@@ -968,10 +978,13 @@ impl Processor {
         Transport {
             playing,
             position,
-            tempo: self.plan.tempo,
+            tempo: self
+                .plan
+                .timeline
+                .bpm_at_tick(self.plan.timeline.sample_to_tick(position)),
             numerator: self.plan.numerator,
             denominator: self.plan.denominator,
-            quarter_notes: position as f64 / self.plan.samples_per_tick / 960.0,
+            quarter_notes: self.plan.timeline.sample_to_tick_f64(position as f64) / 960.0,
         }
     }
 
@@ -1798,6 +1811,18 @@ mod tests {
         let mut mono = [0.0f32; 1];
         write_outputs(&mut mono, (0.5, 0.5), (0.0, 0.0), far);
         assert_eq!(mono, [0.5]);
+    }
+
+    #[test]
+    fn clicks_follow_tempo_changes() {
+        let mut project = metronome_only();
+        fnoob_core::edit::set_tempo_change(&mut project, 1920, 60.0);
+        let (mut p, mut h) = create(SR, 1, plan(&project));
+        h.send(Command::Play).unwrap();
+        let out = render(&mut p, 6 * BEAT + 100);
+        assert_eq!(onsets(&out), vec![0, BEAT, 2 * BEAT, 4 * BEAT, 6 * BEAT]);
+        let tick = p.plan.timeline.sample_to_tick(p.position);
+        assert_eq!(p.plan.timeline.bpm_at_tick(tick), 60.0);
     }
 
     #[test]
