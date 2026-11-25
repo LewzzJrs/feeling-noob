@@ -948,6 +948,43 @@ impl App {
             | Command::DuplicateTime
             | Command::DeleteTime => self.time_command(command),
             Command::Consolidate => self.consolidate(),
+            Command::GroupTracks => {
+                let ids = self.title_selection();
+                let mut group = None;
+                self.edit(|p| group = edit::group_tracks(p, &ids));
+                match group {
+                    Some(id) => {
+                        self.selection.track = Some(id);
+                        self.selection.tracks = vec![id];
+                        self.header_focus = true;
+                    }
+                    None => {
+                        self.message = Some(
+                            "Select tracks that are not in a group yet, then group them.".into(),
+                        );
+                    }
+                }
+            }
+            Command::Ungroup => {
+                let group = self.selection.track.and_then(|id| {
+                    let track = self.project.track(id)?;
+                    if track.kind == TrackKind::Group {
+                        Some(id)
+                    } else {
+                        track.group
+                    }
+                });
+                match group {
+                    Some(id) => {
+                        self.edit(|p| {
+                            edit::ungroup(p, id);
+                        });
+                        self.selection.track = None;
+                        self.selection.tracks.clear();
+                    }
+                    None => self.message = Some("Select a group track to ungroup it.".into()),
+                }
+            }
             Command::Crop => self.crop_selection(),
             Command::Reverse => self.reverse_clips(),
             Command::CreateFade => self.fade_selection(),
@@ -1298,6 +1335,9 @@ impl App {
                 self.menu_item(ui, "Crop Clip(s)", Command::Crop);
                 self.menu_item(ui, "Reverse Clip(s)", Command::Reverse);
                 self.menu_item(ui, "Create Fade", Command::CreateFade);
+                ui.separator();
+                self.menu_item(ui, "Group Tracks", Command::GroupTracks);
+                self.menu_item(ui, "Ungroup Tracks", Command::Ungroup);
                 ui.separator();
                 self.menu_item(ui, "Split at Playhead", Command::SplitAtPlayhead);
                 self.menu_item(ui, "Repeat", Command::RepeatRegions);

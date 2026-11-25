@@ -111,6 +111,7 @@ pub struct Snap {
 pub enum TrackKind {
     Audio,
     Instrument,
+    Group,
 }
 
 impl TrackKind {
@@ -118,6 +119,7 @@ impl TrackKind {
         match self {
             TrackKind::Audio => "Audio",
             TrackKind::Instrument => "MIDI",
+            TrackKind::Group => "Group",
         }
     }
 }
@@ -702,6 +704,10 @@ pub struct Track {
     pub session: Vec<Option<crate::session::SessionClip>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<crate::takes::TakeLane>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Id>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folded: bool,
 }
 
 impl Track {
@@ -728,7 +734,7 @@ impl Track {
                 Some(Instrument::Vst3(_) | Instrument::Sampler(_) | Instrument::DrumSampler(_)),
             ) => None,
             (TrackKind::Instrument, None) => Some(SynthParams::default()),
-            (TrackKind::Audio, _) => None,
+            (TrackKind::Audio | TrackKind::Group, _) => None,
         }
     }
 }
@@ -888,7 +894,29 @@ impl Project {
     }
 
     pub fn is_track_audible(&self, track: &Track) -> bool {
-        !track.mute && (track.solo || !self.any_solo())
+        let group = track.group.and_then(|g| self.track(g));
+        if track.mute || group.is_some_and(|g| g.mute) {
+            return false;
+        }
+        !self.any_solo()
+            || track.solo
+            || group.is_some_and(|g| g.solo)
+            || (track.kind == TrackKind::Group
+                && self
+                    .tracks
+                    .iter()
+                    .any(|t| t.group == Some(track.id) && t.solo))
+    }
+
+    pub fn group_members(&self, group: Id) -> impl Iterator<Item = &Track> {
+        self.tracks.iter().filter(move |t| t.group == Some(group))
+    }
+
+    pub fn is_folded_away(&self, track: &Track) -> bool {
+        track
+            .group
+            .and_then(|g| self.track(g))
+            .is_some_and(|g| g.folded)
     }
 
     pub fn end_tick(&self) -> u64 {

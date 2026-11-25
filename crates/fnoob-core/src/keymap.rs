@@ -96,6 +96,8 @@ pub enum Command {
     Crop,
     Reverse,
     CreateFade,
+    GroupTracks,
+    Ungroup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -274,6 +276,8 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (ctrl_shift(letter('J')), Command::Crop),
     (plain(letter('R')), Command::Reverse),
     (ctrl_alt(letter('F')), Command::CreateFade),
+    (ctrl(letter('G')), Command::GroupTracks),
+    (ctrl_shift(letter('G')), Command::Ungroup),
     (ctrl(letter('C')), Command::Copy),
     (ctrl(letter('V')), Command::Paste),
     (ctrl(letter('A')), Command::SelectAll),

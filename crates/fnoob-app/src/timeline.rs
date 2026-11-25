@@ -188,6 +188,7 @@ pub enum UiAction {
     ToggleMarkerAt(u64),
     Run(fnoob_core::keymap::Command),
     SetGrid(fnoob_core::model::Grid),
+    ToggleFold(Id),
     SetTempo {
         tick: u64,
         bpm: f64,
@@ -425,6 +426,10 @@ impl App {
         let mut offsets = vec![0.0];
         let mut total = 0.0;
         for track in &self.project.tracks {
+            if self.project.is_folded_away(track) {
+                offsets.push(total);
+                continue;
+            }
             total += LANE_HEIGHT;
             if self.takes_open.contains(&track.id) {
                 total += track.takes.len() as f32 * TAKE_H;
@@ -441,7 +446,11 @@ impl App {
             .tracks
             .iter()
             .enumerate()
-            .filter(|(_, t)| self.takes_open.contains(&t.id) && !t.takes.is_empty())
+            .filter(|(_, t)| {
+                self.takes_open.contains(&t.id)
+                    && !t.takes.is_empty()
+                    && !self.project.is_folded_away(t)
+            })
             .map(|(i, t)| {
                 let takes = t
                     .takes
@@ -1023,6 +1032,9 @@ impl App {
             painter.rect_filled(shade, 0.0, LOOP_ON.gamma_multiply(0.08));
         }
         for (index, track) in self.project.tracks.iter().enumerate() {
+            if self.project.is_folded_away(track) {
+                continue;
+            }
             let top = g.lane_top(index);
             let lane = Rect::from_x_y_ranges(g.lanes.x_range(), top..=top + LANE_HEIGHT);
             if lane.bottom() < g.lanes.top() || lane.top() > g.lanes.bottom() {
@@ -1076,6 +1088,23 @@ impl App {
                 actions.push(UiAction::ClearRegions);
                 if let Some(pos) = lane_response.interact_pointer_pos() {
                     actions.push(UiAction::SetInsert(self.snapped(g.tick(pos.x))));
+                }
+            }
+            if track.kind == TrackKind::Group {
+                let tint = track_color(track.color).gamma_multiply(0.35);
+                for region in self
+                    .project
+                    .group_members(track.id)
+                    .flat_map(|t| t.regions.iter())
+                {
+                    let rect = Rect::from_x_y_ranges(
+                        g.x(region.start_tick)
+                            ..=g.x(region.end_tick()).max(g.x(region.start_tick) + 2.0),
+                        lane.top() + 8.0..=lane.bottom() - 8.0,
+                    );
+                    if rect.right() >= g.lanes.left() && rect.left() <= g.lanes.right() {
+                        painter.rect_filled(rect, CornerRadius::same(2), tint);
+                    }
                 }
             }
             let audible = self.project.is_track_audible(track);
@@ -1433,9 +1462,14 @@ impl App {
             .tracks
             .iter()
             .enumerate()
+            .filter(|(_, t)| !self.project.is_folded_away(t))
             .map(|(i, t)| (i, t.id, t.name.clone(), t.color, t.mute))
             .collect();
         for (index, id, name, color, muted) in rows {
+            let (is_group, folded, member_of) =
+                self.project.track(id).map_or((false, false, None), |t| {
+                    (t.kind == TrackKind::Group, t.folded, t.group)
+                });
             let top = g.lane_top(index);
             let row = Rect::from_x_y_ranges(g.headers.x_range(), top..=top + LANE_HEIGHT);
             if row.bottom() < g.headers.top() || row.top() > g.headers.bottom() {
@@ -1448,10 +1482,47 @@ impl App {
                 ui.visuals().faint_bg_color
             };
             painter.rect_filled(row.shrink2(Vec2::new(0.0, 1.0)), 0.0, fill);
+            let indent = if is_group {
+                18.0
+            } else if member_of.is_some() {
+                10.0
+            } else {
+                0.0
+            };
             let name_rect = Rect::from_min_size(
-                row.min + Vec2::new(2.0, 2.0),
-                Vec2::new(NAME_WIDTH, LANE_HEIGHT - 4.0),
+                row.min + Vec2::new(2.0 + indent, 2.0),
+                Vec2::new(NAME_WIDTH - indent, LANE_HEIGHT - 4.0),
             );
+            if let Some(group_color) = member_of
+                .and_then(|g| self.project.track(g))
+                .map(|g| track_color(g.color))
+            {
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        row.min + Vec2::new(2.0, 2.0),
+                        Vec2::new(6.0, LANE_HEIGHT - 4.0),
+                    ),
+                    CornerRadius::same(1),
+                    group_color,
+                );
+            }
+            if is_group {
+                let fold_rect =
+                    Rect::from_min_size(row.min + Vec2::new(2.0, 2.0), Vec2::new(16.0, 20.0));
+                let fold = ui
+                    .put(
+                        fold_rect.intersect(g.headers),
+                        egui::Button::new(if folded { "▸" } else { "▾" }).frame(false),
+                    )
+                    .on_hover_text(if folded {
+                        "Unfold the group to show its tracks"
+                    } else {
+                        "Fold the group to hide its tracks"
+                    });
+                if fold.clicked() {
+                    actions.push(UiAction::ToggleFold(id));
+                }
+            }
             let block = track_color(color);
             painter.rect_filled(
                 name_rect,
@@ -1925,6 +1996,7 @@ impl App {
             }
             UiAction::Run(command) => self.run(command),
             UiAction::SetGrid(grid) => self.edit(|p| p.snap.grid = grid),
+            UiAction::ToggleFold(id) => self.edit_track(id, |t| t.folded = !t.folded),
             UiAction::SetTempo { tick, bpm } => {
                 let mut added = false;
                 self.edit(|p| added = edit::set_tempo_change(p, tick, bpm));
@@ -2630,6 +2702,9 @@ impl App {
         let fill = ui.visuals().selection.bg_fill.gamma_multiply(0.35);
         let (left, right) = (g.x(selection.start), g.x(selection.end));
         for (index, track) in self.project.tracks.iter().enumerate() {
+            if self.project.is_folded_away(track) {
+                continue;
+            }
             if selection.tracks.contains(&track.id) {
                 let top = g.lane_top(index);
                 painter.rect_filled(
@@ -2670,6 +2745,9 @@ impl App {
         }
         let marked = self.title_selection();
         for (index, track) in self.project.tracks.iter().enumerate() {
+            if self.project.is_folded_away(track) {
+                continue;
+            }
             if marked.is_empty() || marked.contains(&track.id) {
                 let top = g.lane_top(index);
                 painter.vline(x, top..=top + LANE_HEIGHT, Stroke::new(1.5, color));
@@ -2963,6 +3041,8 @@ pub(crate) fn title_menu(ui: &mut egui::Ui) -> Option<fnoob_core::keymap::Comman
         ("Duplicate", Command::Duplicate),
         ("Delete", Command::Delete),
         ("Rename", Command::Rename),
+        ("Group Tracks", Command::GroupTracks),
+        ("Ungroup Tracks", Command::Ungroup),
     ] {
         let mut button = egui::Button::new(text);
         if let Some(label) = shortcut_label(command) {

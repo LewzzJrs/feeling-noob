@@ -131,6 +131,7 @@ pub struct RenderPlan {
     pub audio_tracks: Vec<AudioTrackPlan>,
     pub records_audio: bool,
     pub returns: Vec<ReturnPlan>,
+    pub groups: Vec<GroupPlan>,
     pub master: f32,
 }
 
@@ -158,8 +159,21 @@ pub struct StripPlan {
     pub sends: [f32; MAX_RETURNS],
     pub pre_fader: [bool; MAX_RETURNS],
     pub to_main: bool,
+    pub group: Option<usize>,
     pub meter: usize,
     pub inserts: Inserts,
+}
+
+pub const MAX_GROUPS: usize = 16;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupPlan {
+    pub id: Id,
+    pub audible: bool,
+    pub strip: StripPlan,
+    pub envelopes: Envelopes,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
 }
 
 fn inserts(slots: &[PluginSlot], plugins: &PluginMap) -> Inserts {
@@ -182,6 +196,7 @@ impl StripPlan {
             sends: std::array::from_fn(|i| db_to_gain(strip.send_at(i).level_db)),
             pre_fader: std::array::from_fn(|i| strip.send_at(i).pre_fader),
             to_main,
+            group: None,
             meter: if meter < TRACK_METERS {
                 meter
             } else {
@@ -255,7 +270,7 @@ fn audio_track_plans(
             AudioTrackPlan {
                 id: track.id,
                 audible,
-                strip: StripPlan::new(&track.strip, index, plugins, track.output == Output::Main),
+                strip: member_strip(project, track, index, plugins),
                 envelopes: Envelopes::new(&track.automation, timeline),
                 clips,
                 session: Session::build(track, timeline, pool),
@@ -266,6 +281,47 @@ fn audio_track_plans(
                 left: vec![0.0; MAX_BLOCK],
                 right: vec![0.0; MAX_BLOCK],
             }
+        })
+        .collect()
+}
+
+fn group_ids(project: &Project) -> Vec<Id> {
+    project
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Group)
+        .map(|t| t.id)
+        .take(MAX_GROUPS)
+        .collect()
+}
+
+fn member_strip(
+    project: &Project,
+    track: &fnoob_core::model::Track,
+    index: usize,
+    plugins: &PluginMap,
+) -> StripPlan {
+    let mut strip = StripPlan::new(&track.strip, index, plugins, track.output == Output::Main);
+    strip.group = track
+        .group
+        .and_then(|g| group_ids(project).iter().position(|id| *id == g));
+    strip
+}
+
+fn group_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Vec<GroupPlan> {
+    let ids = group_ids(project);
+    project
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| ids.contains(&t.id))
+        .map(|(index, track)| GroupPlan {
+            id: track.id,
+            audible: project.is_track_audible(track),
+            strip: StripPlan::new(&track.strip, index, plugins, track.output == Output::Main),
+            envelopes: Envelopes::new(&track.automation, timeline),
+            left: vec![0.0; MAX_BLOCK],
+            right: vec![0.0; MAX_BLOCK],
         })
         .collect()
 }
@@ -317,7 +373,7 @@ fn track_plans(
             TrackPlan {
                 id: track.id,
                 audible,
-                strip: StripPlan::new(&track.strip, index, plugins, track.output == Output::Main),
+                strip: member_strip(project, track, index, plugins),
                 envelopes: Envelopes::new(&track.automation, timeline),
                 notes,
                 session: Session::build(track, timeline, pool),
@@ -394,6 +450,7 @@ impl RenderPlan {
             ),
             tracks: track_plans(project, timeline, pool, plugins),
             audio_tracks: audio_track_plans(project, timeline, pool, plugins),
+            groups: group_plans(project, timeline, plugins),
             returns: project
                 .returns
                 .iter()

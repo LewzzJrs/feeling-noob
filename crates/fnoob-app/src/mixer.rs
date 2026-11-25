@@ -472,6 +472,10 @@ impl App {
                     self.show_devices();
                 }
             }
+            TrackKind::Group => {
+                let count = self.project.group_members(id).count();
+                ui.label(RichText::new(format!("{count} tracks")).small().weak());
+            }
         }
         let mut chosen = output;
         let combo = egui::ComboBox::from_id_salt(("io_output", id))

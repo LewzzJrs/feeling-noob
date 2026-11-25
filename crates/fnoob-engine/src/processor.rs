@@ -2,8 +2,8 @@ use crate::audio_data::AudioData;
 use crate::effects::BuiltinProcessor;
 use crate::metronome::Metronome;
 use crate::plan::{
-    AudioTrackPlan, Inserts, MASTER_METER, MAX_BLOCK, MAX_PLUGINS, METER_SLOTS, NO_OFF, RenderPlan,
-    StripPlan, TRACK_METERS, TrackPlan,
+    AudioTrackPlan, Inserts, MASTER_METER, MAX_BLOCK, MAX_GROUPS, MAX_PLUGINS, METER_SLOTS, NO_OFF,
+    RenderPlan, StripPlan, TRACK_METERS, TrackPlan,
 };
 use crate::session::{Session, SessionStatus};
 use fnoob_core::capture::Played;
@@ -1114,6 +1114,39 @@ impl Processor {
                 self.return_left[index][f] = *left;
                 self.return_right[index][f] = *right;
             }
+            for (group, (left, right)) in self.plan.groups.iter_mut().zip(mix.groups.iter()) {
+                group.left[f] = *left;
+                group.right[f] = *right;
+            }
+        }
+        for group in &mut self.plan.groups {
+            if group.audible {
+                run_inserts(
+                    &mut self.plugins,
+                    &group.strip.inserts,
+                    &mut group.left[..frames],
+                    &mut group.right[..frames],
+                    &transport,
+                );
+            }
+        }
+        if !self.plan.groups.is_empty() {
+            for f in 0..frames {
+                let mut mix = Mix::default();
+                let position = self.positions[f];
+                for group in &self.plan.groups {
+                    if group.audible {
+                        let strip = group.strip.at(&group.envelopes, position);
+                        mix.add(&strip, group.left[f], group.right[f], &mut self.peaks);
+                    }
+                }
+                self.main_left[f] += mix.main.0;
+                self.main_right[f] += mix.main.1;
+                for (index, (left, right)) in mix.returns.iter().enumerate() {
+                    self.return_left[index][f] += *left;
+                    self.return_right[index][f] += *right;
+                }
+            }
         }
         let count = self.plan.returns.len().min(MAX_RETURNS);
         for index in 0..count {
@@ -1245,12 +1278,16 @@ fn run_inserts(
 struct Mix {
     main: (f32, f32),
     returns: [(f32, f32); MAX_RETURNS],
+    groups: [(f32, f32); MAX_GROUPS],
 }
 
 impl Mix {
     fn add(&mut self, strip: &StripPlan, left: f32, right: f32, peaks: &mut [f32]) {
         let post = (left * strip.left, right * strip.right);
-        if strip.to_main {
+        if let Some(group) = strip.group.and_then(|g| self.groups.get_mut(g)) {
+            group.0 += post.0;
+            group.1 += post.1;
+        } else if strip.to_main {
             self.main.0 += post.0;
             self.main.1 += post.1;
         }
@@ -1994,6 +2031,20 @@ mod tests {
         assert!((frame[0] - 0.5 * 0.501_187).abs() < 1e-5);
         assert!(frame[1].abs() < 1e-6);
         project.track_mut(track).unwrap().strip.volume_db = SILENT_DB;
+        assert_eq!(first_frame(&project).0, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn group_tracks_carry_their_members() {
+        let (mut project, track, _) = mixer_project();
+        let group = fnoob_core::edit::group_tracks(&mut project, &[track]).unwrap();
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        let (frame, _) = first_frame(&project);
+        assert_close(&frame, &[0.5 * c * c, 0.5 * c * c]);
+        project.track_mut(group).unwrap().strip.pan = -1.0;
+        let (frame, _) = first_frame(&project);
+        assert_close(&frame, &[0.5 * c, 0.0]);
+        project.track_mut(group).unwrap().mute = true;
         assert_eq!(first_frame(&project).0, [0.0, 0.0]);
     }
 

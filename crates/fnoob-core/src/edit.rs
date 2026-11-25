@@ -27,8 +27,64 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         regions: Vec::new(),
         session: Vec::new(),
         takes: Vec::new(),
+        group: None,
+        folded: false,
     });
     id
+}
+
+pub fn group_tracks(project: &mut Project, ids: &[Id]) -> Option<Id> {
+    let members: Vec<Id> = project
+        .tracks
+        .iter()
+        .filter(|t| ids.contains(&t.id) && t.kind != TrackKind::Group && t.group.is_none())
+        .map(|t| t.id)
+        .collect();
+    let first = project
+        .tracks
+        .iter()
+        .position(|t| members.contains(&t.id))?;
+    let number = project
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Group)
+        .count()
+        + 1;
+    let group = add_track(project, TrackKind::Group);
+    let mut track = project.tracks.pop()?;
+    track.name = format!("{number} Group");
+    track.color = project.tracks[first].color;
+    let mut moved: Vec<Track> = Vec::new();
+    project.tracks.retain(|t| {
+        if members.contains(&t.id) {
+            moved.push(t.clone());
+            false
+        } else {
+            true
+        }
+    });
+    for member in &mut moved {
+        member.group = Some(group);
+    }
+    let at = first.min(project.tracks.len());
+    project.tracks.insert(at, track);
+    for (offset, member) in moved.into_iter().enumerate() {
+        project.tracks.insert(at + 1 + offset, member);
+    }
+    Some(group)
+}
+
+pub fn ungroup(project: &mut Project, group: Id) -> bool {
+    if project.track(group).map(|t| t.kind) != Some(TrackKind::Group) {
+        return false;
+    }
+    for track in &mut project.tracks {
+        if track.group == Some(group) {
+            track.group = None;
+        }
+    }
+    project.tracks.retain(|t| t.id != group);
+    true
 }
 
 pub fn add_return(
@@ -95,6 +151,11 @@ pub fn default_set(project: &mut Project) {
 }
 
 pub fn delete_track(project: &mut Project, track_id: Id) -> bool {
+    for track in &mut project.tracks {
+        if track.group == Some(track_id) {
+            track.group = None;
+        }
+    }
     let before = project.tracks.len();
     project.tracks.retain(|t| t.id != track_id);
     project.tracks.len() != before
@@ -990,6 +1051,27 @@ mod tests {
 
     fn notes(p: &Project, id: Id) -> Vec<Note> {
         region(p, id).notes().to_vec()
+    }
+
+    #[test]
+    fn grouping_moves_members_under_the_group() {
+        let mut p = Project::new("t", 48_000);
+        let a = add_track(&mut p, TrackKind::Instrument);
+        let b = add_track(&mut p, TrackKind::Audio);
+        let c = add_track(&mut p, TrackKind::Audio);
+        let group = group_tracks(&mut p, &[a, c]).unwrap();
+        let order: Vec<Id> = p.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(order, vec![group, a, c, b]);
+        assert_eq!(p.track(c).unwrap().group, Some(group));
+        assert_eq!(p.track(b).unwrap().group, None);
+        assert_eq!(p.track(group).unwrap().name, "1 Group");
+        assert!(group_tracks(&mut p, &[a]).is_none());
+        p.track_mut(group).unwrap().mute = true;
+        assert!(!p.is_track_audible(p.track(a).unwrap()));
+        assert!(p.is_track_audible(p.track(b).unwrap()));
+        assert!(ungroup(&mut p, group));
+        assert_eq!(p.tracks.len(), 3);
+        assert!(p.tracks.iter().all(|t| t.group.is_none()));
     }
 
     #[test]
