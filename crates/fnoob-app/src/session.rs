@@ -49,6 +49,7 @@ enum GridAction {
     Select(Id, Id),
     SelectTrack(Id),
     FocusTitle(Id, bool, bool),
+    OpenDevices(Id),
     Edit(Id),
     NewClip(Id, usize),
     Move(ClipDrag, Id, usize),
@@ -198,10 +199,10 @@ impl App {
                 FontId::proportional(13.0),
                 Color32::WHITE,
             );
-            if ui
-                .interact(header, base.with(("header", track)), Sense::click())
-                .clicked()
-            {
+            let header_response = ui.interact(header, base.with(("header", track)), Sense::click());
+            if header_response.double_clicked() {
+                actions.push(GridAction::OpenDevices(*track));
+            } else if header_response.clicked() {
                 let modifiers = ui.input(|i| i.modifiers);
                 actions.push(GridAction::FocusTitle(
                     *track,
@@ -677,6 +678,12 @@ impl App {
             GridAction::FocusTitle(track, shift, ctrl) => {
                 self.session.selected = None;
                 self.focus_title(track, shift, ctrl);
+            }
+            GridAction::OpenDevices(track) => {
+                self.session.selected = None;
+                self.focus_title(track, false, false);
+                self.chain_target = crate::chain::ChainTarget::SelectedTrack;
+                self.show_devices();
             }
             GridAction::Edit(clip) => {
                 let midi = self

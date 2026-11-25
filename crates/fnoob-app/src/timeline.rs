@@ -57,6 +57,7 @@ pub enum UiAction {
         shift: bool,
         ctrl: bool,
     },
+    OpenDevices,
     ShowDevices,
     ToggleTakes(Id),
     Comp {
@@ -1427,7 +1428,7 @@ impl App {
             );
             let name_response = crate::ui_kit::hint(
                 name_response,
-                "Track title: click to select and show its devices, double-click to rename, right-click for more.",
+                "Track title: click to select, double-click to open its devices. Ctrl+R renames, right-click for more.",
             );
             match &mut renaming {
                 Some((rid, text)) if *rid == id => {
@@ -1475,7 +1476,7 @@ impl App {
                 }
             }
             if name_response.double_clicked() {
-                actions.push(UiAction::StartRename(id));
+                actions.push(UiAction::OpenDevices);
             } else if name_response.clicked() {
                 let modifiers = ui.input(|i| i.modifiers);
                 actions.push(UiAction::FocusTrackTitle {
@@ -1710,6 +1711,10 @@ impl App {
                 self.edit(|p| {
                     fnoob_core::takes::delete_take_lane(p, track, lane);
                 });
+            }
+            UiAction::OpenDevices => {
+                self.chain_target = crate::chain::ChainTarget::SelectedTrack;
+                self.show_devices();
             }
             UiAction::ShowDevices => {
                 if self.detail_visible() {
