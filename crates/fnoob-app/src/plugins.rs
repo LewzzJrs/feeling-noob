@@ -639,7 +639,12 @@ impl App {
                 InstrumentChoice::DrumSampler => Instrument::DrumSampler(Box::default()),
             };
             if let Some(t) = p.track_mut(track) {
+                let old = t
+                    .instrument
+                    .as_ref()
+                    .map_or_else(String::new, |i| i.label().to_owned());
                 t.instrument = Some(instrument);
+                fnoob_core::edit::name_after_instrument(t, &old);
             }
         });
     }

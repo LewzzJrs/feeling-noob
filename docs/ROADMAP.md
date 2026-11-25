@@ -71,6 +71,8 @@ Done in Phase 24: time selection edits (cut, copy, paste, duplicate, delete, and
 
 Done in Phase 25: clip view panel with position and length Set buttons, MIDI clip loops and Duplicate Loop, piano roll Fit, Fold and Scale views, a grid menu in the editor, and velocity Randomize and Ramp.
 
+Done in Phase 26: device title bars in the track colour with an on/off switch, a drop area after the chain, and default track names that follow the loaded instrument.
+
 Not started, in rough priority order:
 
 - Audio warping and time stretch, clip tempo

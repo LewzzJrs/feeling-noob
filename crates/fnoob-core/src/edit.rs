@@ -66,6 +66,21 @@ pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
     Some(id)
 }
 
+pub fn name_after_instrument(track: &mut Track, old_label: &str) -> bool {
+    let Some(new_label) = track.instrument.as_ref().map(|i| i.label().to_owned()) else {
+        return false;
+    };
+    let Some((number, rest)) = track.name.split_once(' ') else {
+        return false;
+    };
+    let numbered = !number.is_empty() && number.chars().all(|c| c.is_ascii_digit());
+    if numbered && (rest == TrackKind::Instrument.default_name() || rest == old_label) {
+        track.name = format!("{number} {new_label}");
+        return true;
+    }
+    false
+}
+
 pub fn set_region_loop(project: &mut Project, id: Id, loop_ticks: Option<u64>) -> bool {
     let Some(region) = region_mut(project, id) else {
         return false;
@@ -1196,6 +1211,22 @@ mod tests {
 
     fn notes(p: &Project, id: Id) -> Vec<Note> {
         region(p, id).notes().to_vec()
+    }
+
+    #[test]
+    fn default_names_follow_the_instrument() {
+        let mut p = Project::new("t", 48_000);
+        let id = add_track(&mut p, TrackKind::Instrument);
+        let track = p.track_mut(id).unwrap();
+        track.instrument = Some(crate::model::Instrument::Sampler(Default::default()));
+        assert!(name_after_instrument(track, "Basic Synth"));
+        assert_eq!(track.name, "1 Sampler");
+        track.instrument = Some(crate::model::Instrument::BasicSynth(Default::default()));
+        assert!(name_after_instrument(track, "Sampler"));
+        assert_eq!(track.name, "1 Basic Synth");
+        track.name = "Lead".into();
+        assert!(!name_after_instrument(track, "Basic Synth"));
+        assert_eq!(track.name, "Lead");
     }
 
     #[test]

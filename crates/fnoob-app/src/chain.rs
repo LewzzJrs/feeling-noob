@@ -113,6 +113,16 @@ impl App {
                     }
                     if count < MAX_INSERTS {
                         self.add_card(ui, owner, count);
+                        let height = ui.available_height().clamp(60.0, 220.0);
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(240.0, height), egui::Sense::hover());
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Drop Audio Effects Here",
+                            egui::FontId::proportional(13.0),
+                            ui.visuals().weak_text_color(),
+                        );
                     }
                 })
             })
@@ -160,6 +170,57 @@ impl App {
         }
     }
 
+    fn accent(&self, owner: Owner) -> egui::Color32 {
+        match owner {
+            Owner::Track(id) => self.project.track(id).map_or(egui::Color32::GRAY, |t| {
+                crate::timeline::track_color(t.color)
+            }),
+            Owner::Return(_) => egui::Color32::from_gray(160),
+        }
+    }
+
+    fn title_bar(ui: &mut Ui, name: &str, on: Option<bool>, accent: egui::Color32) -> bool {
+        let mut toggled = false;
+        let fill = if on == Some(false) {
+            accent.gamma_multiply(0.35)
+        } else {
+            accent.gamma_multiply(0.85)
+        };
+        egui::Frame::new()
+            .fill(fill)
+            .corner_radius(3.0)
+            .inner_margin(egui::Margin::symmetric(4, 2))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    if let Some(on) = on {
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+                        let color = if on {
+                            egui::Color32::from_rgb(255, 170, 60)
+                        } else {
+                            egui::Color32::from_gray(90)
+                        };
+                        ui.painter().circle_filled(rect.center(), 5.5, color);
+                        ui.painter().circle_stroke(
+                            rect.center(),
+                            5.5,
+                            egui::Stroke::new(1.0, egui::Color32::BLACK),
+                        );
+                        let response = crate::ui_kit::hint(
+                            response,
+                            "Device on/off: click to switch this device on or off.",
+                        );
+                        if response.clicked() {
+                            toggled = true;
+                        }
+                    }
+                    ui.label(RichText::new(name).strong().color(egui::Color32::BLACK));
+                });
+            });
+        toggled
+    }
+
     fn card<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
         egui::Frame::group(ui.style())
             .show(ui, |ui| {
@@ -184,9 +245,10 @@ impl App {
         } else {
             CARD_W
         };
+        let accent = self.accent(Owner::Track(track));
         Self::card(ui, width, |ui| {
+            Self::title_bar(ui, instrument.label(), None, accent);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(instrument.label()).strong());
                 ui.menu_button("Change", |ui| {
                     for choice in InstrumentChoice::BUILTIN {
                         if ui.button(choice.label()).clicked() {
@@ -235,19 +297,11 @@ impl App {
         count: usize,
         slot: &PluginSlot,
     ) {
+        let accent = self.accent(owner);
         Self::card(ui, CARD_W, |ui| {
-            ui.horizontal(|ui| {
-                let mut on = !slot.bypass;
-                if ui
-                    .checkbox(&mut on, "")
-                    .on_hover_text("Turn the device on or off")
-                    .changed()
-                {
-                    self.toggle_bypass(owner, index);
-                }
-                let name = RichText::new(&slot.name).strong();
-                ui.label(if slot.bypass { name.weak() } else { name });
-            });
+            if Self::title_bar(ui, &slot.name, Some(!slot.bypass), accent) {
+                self.toggle_bypass(owner, index);
+            }
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(index > 0, egui::Button::new("<").small())
