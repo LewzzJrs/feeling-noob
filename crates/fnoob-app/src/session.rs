@@ -348,7 +348,13 @@ impl App {
                         }
                         if *kind == TrackKind::Instrument {
                             body_response.context_menu(|ui| {
-                                if ui.button("New MIDI Clip").clicked() {
+                                let mut button = egui::Button::new("Insert Empty MIDI Clip");
+                                if let Some(label) = fnoob_core::keymap::shortcut_label(
+                                    fnoob_core::keymap::Command::InsertMidiClip,
+                                ) {
+                                    button = button.shortcut_text(label);
+                                }
+                                if ui.add(button).clicked() {
                                     actions.push(GridAction::NewClip(*track, scene));
                                     ui.close();
                                 }

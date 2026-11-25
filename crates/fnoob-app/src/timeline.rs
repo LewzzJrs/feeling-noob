@@ -47,7 +47,13 @@ const PLAYHEAD: Color32 = Color32::from_rgb(240, 240, 240);
 const MARKER: Color32 = Color32::from_rgb(235, 170, 90);
 
 pub fn track_color(index: u8) -> Color32 {
-    TRACK_PALETTE[usize::from(index) % TRACK_PALETTE.len()]
+    let base = TRACK_PALETTE[usize::from(index) % TRACK_PALETTE.len()];
+    let shade = |f: fn(u8) -> u8| Color32::from_rgb(f(base.r()), f(base.g()), f(base.b()));
+    match usize::from(index) / TRACK_PALETTE.len() % 3 {
+        1 => shade(|c| (u16::from(c) + (255 - u16::from(c)) * 2 / 5) as u8),
+        2 => shade(|c| (u16::from(c) * 3 / 5) as u8),
+        _ => base,
+    }
 }
 
 pub enum UiAction {
@@ -189,6 +195,7 @@ pub enum UiAction {
     Run(fnoob_core::keymap::Command),
     SetGrid(fnoob_core::model::Grid),
     ToggleFold(Id),
+    SelectTrackContent(Id),
     SetTempo {
         tick: u64,
         bpm: f64,
@@ -1644,19 +1651,60 @@ impl App {
                     actions.push(UiAction::TitleCommand { id, command });
                 }
                 ui.separator();
-                ui.menu_button("Color", |ui| {
+                use fnoob_core::keymap::{Command, shortcut_label};
+                for (text, command) in [
+                    ("Insert Audio Track", Command::NewAudioTrack),
+                    ("Insert MIDI Track", Command::NewMidiTrack),
+                    ("Insert Return Track", Command::NewReturnTrack),
+                ] {
+                    let mut button = egui::Button::new(text);
+                    if let Some(label) = shortcut_label(command) {
+                        button = button.shortcut_text(label);
+                    }
+                    if ui.add(button).clicked() {
+                        actions.push(UiAction::TitleCommand { id, command });
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("Select Track Content").clicked() {
+                    actions.push(UiAction::SelectTrackContent(id));
+                    ui.close();
+                }
+                let mut takes = egui::Button::new("Show Take Lanes");
+                if let Some(label) = shortcut_label(Command::ShowTakeLanes) {
+                    takes = takes.shortcut_text(label);
+                }
+                if ui.add(takes).clicked() {
+                    actions.push(UiAction::ToggleTakes(id));
+                    ui.close();
+                }
+                ui.separator();
+                let current = self.project.track(id).map_or(0, |t| t.color);
+                for row in 0..fnoob_core::model::PALETTE_COLORS / 8 {
                     ui.horizontal(|ui| {
-                        for color in 0..fnoob_core::model::TRACK_COLORS {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        for column in 0..8u8 {
+                            let color = row * 8 + column;
                             let (rect, response) =
-                                ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                            ui.painter().rect_filled(rect, 3.0, track_color(color));
+                                ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, track_color(color));
+                            if color == current {
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    2.0,
+                                    Stroke::new(1.5, Color32::WHITE),
+                                    StrokeKind::Inside,
+                                );
+                            }
                             if response.clicked() {
                                 actions.push(UiAction::SetColor { id, color });
                                 ui.close();
                             }
                         }
                     });
-                });
+                }
+                ui.separator();
                 if ui.button("Move up").clicked() {
                     actions.push(UiAction::MoveTrack { id, delta: -1 });
                     ui.close();
@@ -2030,6 +2078,16 @@ impl App {
             UiAction::Run(command) => self.run(command),
             UiAction::SetGrid(grid) => self.edit(|p| p.snap.grid = grid),
             UiAction::ToggleFold(id) => self.edit_track(id, |t| t.folded = !t.folded),
+            UiAction::SelectTrackContent(id) => {
+                self.selection.track = Some(id);
+                self.header_focus = false;
+                self.time_selection = None;
+                self.selection.regions = self
+                    .project
+                    .track(id)
+                    .map(|t| t.regions.iter().map(|r| r.id).collect())
+                    .unwrap_or_default();
+            }
             UiAction::SetTempo { tick, bpm } => {
                 let mut added = false;
                 self.edit(|p| added = edit::set_tempo_change(p, tick, bpm));
@@ -3094,6 +3152,18 @@ pub(crate) fn title_menu(ui: &mut egui::Ui) -> Option<fnoob_core::keymap::Comman
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_has_light_and_dark_rows() {
+        let base = track_color(0);
+        let light = track_color(8);
+        let dark = track_color(16);
+        assert!(light.r() >= base.r() && light.g() >= base.g());
+        assert!(dark.r() <= base.r() && dark.b() <= base.b());
+        for index in 0..fnoob_core::model::PALETTE_COLORS {
+            let _ = track_color(index);
+        }
+    }
 
     #[test]
     fn input_choices_cover_mono_and_stereo_pairs() {

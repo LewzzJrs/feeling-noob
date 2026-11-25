@@ -4,6 +4,7 @@ pub type Id = u64;
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const TRACK_COLORS: u8 = 8;
+pub const PALETTE_COLORS: u8 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeSignature {

@@ -1281,14 +1281,32 @@ impl App {
         }
     }
 
+    fn menu_toggle(&mut self, ui: &mut egui::Ui, text: &str, on: bool, command: Command) {
+        let mut button = egui::Button::selectable(on, text);
+        if let Some(label) = shortcut_label(command) {
+            button = button.shortcut_text(label);
+        }
+        if ui.add(button).clicked() {
+            self.run(command);
+            ui.close();
+        }
+    }
+
+    fn menu_action(&mut self, ui: &mut egui::Ui, text: &str, action: impl FnOnce(&mut Self)) {
+        if ui.button(text).clicked() {
+            action(self);
+            ui.close();
+        }
+    }
+
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 self.menu_item(ui, "New Project", Command::NewProject);
-                self.menu_item(ui, "Open...", Command::Open);
+                self.menu_item(ui, "Open Project...", Command::Open);
                 let recent = self.settings.recent_projects.clone();
                 ui.add_enabled_ui(!recent.is_empty(), |ui| {
-                    ui.menu_button("Open Recent", |ui| {
+                    ui.menu_button("Open Recent Project", |ui| {
                         for path in recent {
                             let exists = Path::new(&path).join(PROJECT_FILE).is_file();
                             if ui.add_enabled(exists, egui::Button::new(&path)).clicked() {
@@ -1298,38 +1316,22 @@ impl App {
                         }
                     });
                 });
-                self.menu_item(ui, "Save", Command::Save);
-                self.menu_item(ui, "Save As...", Command::SaveAs);
                 ui.separator();
-                if ui.button("Project Settings...").clicked() {
-                    self.show_project_settings = true;
-                    ui.close();
-                }
-                if ui.button("Move Unused Audio Files...").clicked() {
-                    self.find_unused_audio();
-                    ui.close();
-                }
+                self.menu_action(ui, "Import Audio File...", |app| app.import_audio());
+                self.menu_action(ui, "Move Unused Audio Files...", |app| {
+                    app.find_unused_audio()
+                });
                 ui.separator();
-                self.menu_item(ui, "Bounce to WAV...", Command::Bounce);
+                self.menu_item(ui, "Save Project", Command::Save);
+                self.menu_item(ui, "Save Project As...", Command::SaveAs);
                 ui.separator();
-                if ui.button("Import Audio File...").clicked() {
-                    self.import_audio();
-                    ui.close();
-                }
-                if ui.button("Plugin Manager...").clicked() {
-                    self.plugins.show_manager = true;
-                    ui.close();
-                }
+                self.menu_item(ui, "Export Audio...", Command::Bounce);
                 ui.separator();
-                if ui.button("Audio and MIDI Settings...").clicked() {
-                    self.show_settings = true;
-                    ui.close();
-                }
+                self.menu_action(ui, "Project Settings...", |app| {
+                    app.show_project_settings = true
+                });
                 ui.separator();
-                if ui.button("Exit").clicked() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                    ui.close();
-                }
+                self.menu_item(ui, "Quit", Command::Quit);
             });
             ui.menu_button("Edit", |ui| {
                 self.menu_item(ui, "Undo", Command::Undo);
@@ -1340,30 +1342,36 @@ impl App {
                 self.menu_item(ui, "Paste", Command::Paste);
                 self.menu_item(ui, "Duplicate", Command::Duplicate);
                 self.menu_item(ui, "Delete", Command::Delete);
+                ui.separator();
+                self.menu_item(ui, "Activate/Deactivate Clip(s)", Command::MuteRegions);
+                ui.separator();
                 self.menu_item(ui, "Select All", Command::SelectAll);
+                self.menu_item(ui, "Loop Selection", Command::ToggleLoop);
+                ui.separator();
+                self.menu_item(ui, "Group Tracks", Command::GroupTracks);
+                self.menu_item(ui, "Ungroup Tracks", Command::Ungroup);
                 ui.separator();
                 self.menu_item(ui, "Cut Time", Command::CutTime);
                 self.menu_item(ui, "Paste Time", Command::PasteTime);
                 self.menu_item(ui, "Duplicate Time", Command::DuplicateTime);
                 self.menu_item(ui, "Delete Time", Command::DeleteTime);
-                self.menu_item(ui, "Insert Silence", Command::InsertScene);
                 ui.separator();
-                self.menu_item(ui, "Consolidate", Command::Consolidate);
-                self.menu_item(ui, "Crop Clip(s)", Command::Crop);
-                self.menu_item(ui, "Reverse Clip(s)", Command::Reverse);
-                self.menu_item(ui, "Create Fade", Command::CreateFade);
+                self.menu_item(ui, "Rename", Command::Rename);
                 ui.separator();
-                self.menu_item(ui, "Group Tracks", Command::GroupTracks);
-                self.menu_item(ui, "Ungroup Tracks", Command::Ungroup);
-                ui.separator();
+                self.menu_item(ui, "Mute Track", Command::ToggleTrackMute);
+                self.menu_item(ui, "Solo Track", Command::ToggleTrackSolo);
+                self.menu_item(ui, "Arm Track", Command::ToggleTrackRecord);
                 self.menu_item(ui, "Freeze / Unfreeze Track", Command::FreezeTrack);
                 self.menu_item(ui, "Freeze and Flatten Track", Command::FlattenTrack);
                 ui.separator();
-                self.menu_item(ui, "Split at Playhead", Command::SplitAtPlayhead);
-                self.menu_item(ui, "Repeat", Command::RepeatRegions);
-                self.menu_item(ui, "Mute Regions", Command::MuteRegions);
+                self.menu_item(ui, "Split", Command::SplitAtPlayhead);
+                self.menu_item(ui, "Consolidate", Command::Consolidate);
+                self.menu_item(ui, "Crop Clip(s)", Command::Crop);
+                self.menu_item(ui, "Reverse Clip(s)", Command::Reverse);
+                self.menu_item(ui, "Repeat Clip(s)", Command::RepeatRegions);
                 self.menu_item(ui, "Nudge Left", Command::NudgeLeft);
                 self.menu_item(ui, "Nudge Right", Command::NudgeRight);
+                ui.separator();
                 self.menu_item(ui, "Quantize", Command::Quantize);
             });
             ui.menu_button("Create", |ui| {
@@ -1371,100 +1379,159 @@ impl App {
                 self.menu_item(ui, "Insert MIDI Track", Command::NewMidiTrack);
                 self.menu_item(ui, "Insert Return Track", Command::NewReturnTrack);
                 self.menu_item(ui, "Insert Several Tracks...", Command::NewTracks);
-                self.menu_item(ui, "Insert Scene", Command::InsertScene);
                 ui.separator();
-                self.menu_item(ui, "Add Marker", Command::AddMarker);
+                let insert = if self.session.open {
+                    "Insert Scene"
+                } else {
+                    "Insert Silence"
+                };
+                self.menu_item(ui, insert, Command::InsertScene);
+                ui.separator();
+                self.menu_item(ui, "Insert Empty MIDI Clip", Command::InsertMidiClip);
                 self.menu_item(ui, "Capture MIDI", Command::CaptureMidi);
-            });
-            ui.menu_button("Track", |ui| {
-                let selected = self.selection.track;
-                if ui
-                    .add_enabled(selected.is_some(), egui::Button::new("Delete Track"))
-                    .clicked()
-                {
-                    if let Some(id) = selected {
-                        self.edit(|p| {
-                            edit::delete_track(p, id);
-                        });
-                        self.selection.track = None;
-                        self.selection.regions.clear();
-                    }
-                    ui.close();
-                }
-                let synth = selected.filter(|id| {
-                    self.project
-                        .track(*id)
-                        .is_some_and(|t| t.kind == TrackKind::Instrument)
-                });
-                if ui
-                    .add_enabled(synth.is_some(), egui::Button::new("Instrument Settings..."))
-                    .clicked()
-                {
-                    if let Some(track) = synth {
-                        self.open_instrument(track);
-                    }
-                    ui.close();
-                }
                 ui.separator();
-                self.menu_item(ui, "Duplicate", Command::Duplicate);
-                self.menu_item(ui, "Rename", Command::Rename);
-                for (label, delta) in [("Move Track Up", -1), ("Move Track Down", 1)] {
-                    if ui
-                        .add_enabled(selected.is_some(), egui::Button::new(label))
-                        .clicked()
-                    {
-                        if let Some(id) = selected {
-                            self.edit(|p| {
-                                edit::move_track(p, id, delta);
-                            });
-                        }
-                        ui.close();
-                    }
-                }
+                self.menu_item(ui, "Create Fade", Command::CreateFade);
                 ui.separator();
-                self.menu_item(ui, "Mute Track", Command::ToggleTrackMute);
-                self.menu_item(ui, "Solo Track", Command::ToggleTrackSolo);
-                self.menu_item(ui, "Record Enable Track", Command::ToggleTrackRecord);
+                self.menu_item(ui, "Add Locator", Command::AddMarker);
             });
-            ui.menu_button("Transport", |ui| {
+            ui.menu_button("Playback", |ui| {
                 self.menu_item(ui, "Play / Stop", Command::PlayStop);
-                self.menu_item(ui, "Record", Command::Record);
-                self.menu_item(ui, "Go to Beginning", Command::GoToBeginning);
-                self.menu_item(ui, "Rewind One Bar", Command::Rewind);
-                self.menu_item(ui, "Forward One Bar", Command::Forward);
+                self.menu_item(ui, "Continue Playback", Command::ContinuePlay);
+                self.menu_item(ui, "Play From Insert Marker", Command::PlayFromInsert);
+                self.menu_item(ui, "Return Play Position to 1.1.1", Command::GoToBeginning);
+                self.menu_item(
+                    ui,
+                    "Move Insert Marker to Playhead",
+                    Command::InsertToPlayhead,
+                );
                 ui.separator();
-                self.menu_item(ui, "Loop", Command::ToggleLoop);
-                self.menu_item(ui, "Metronome", Command::ToggleMetronome);
-                self.menu_item(ui, "Count-in", Command::ToggleCountIn);
-                if ui.button("Punch In").clicked() {
+                self.menu_item(ui, "Record", Command::Record);
+                let punch = self.project.punch;
+                if ui
+                    .add(egui::Button::selectable(punch.punch_in, "Punch In"))
+                    .clicked()
+                {
                     self.edit(|p| p.punch.punch_in = !p.punch.punch_in);
                     ui.close();
                 }
-                if ui.button("Punch Out").clicked() {
+                if ui
+                    .add(egui::Button::selectable(punch.punch_out, "Punch Out"))
+                    .clicked()
+                {
                     self.edit(|p| p.punch.punch_out = !p.punch.punch_out);
                     ui.close();
                 }
-                self.menu_item(ui, "Capture MIDI", Command::CaptureMidi);
                 ui.separator();
-                self.menu_item(ui, "Add Marker", Command::AddMarker);
-                self.menu_item(ui, "Previous Marker", Command::PreviousMarker);
-                self.menu_item(ui, "Next Marker", Command::NextMarker);
+                let metronome = self.project.metronome;
+                self.menu_toggle(ui, "Metronome", metronome.enabled, Command::ToggleMetronome);
+                self.menu_toggle(
+                    ui,
+                    "Count-In",
+                    metronome.count_in_enabled,
+                    Command::ToggleCountIn,
+                );
+                self.menu_toggle(
+                    ui,
+                    "Loop",
+                    self.project.loop_range.enabled,
+                    Command::ToggleLoop,
+                );
                 ui.separator();
-                self.menu_item(ui, "Musical Typing", Command::ToggleMusicalTyping);
+                self.menu_item(ui, "Back to Timeline", Command::BackToArrangement);
             });
             ui.menu_button("View", |ui| {
-                self.menu_item(ui, "Timeline / Clip Grid", Command::ToggleClipGrid);
-                self.menu_item(ui, "Browser", Command::ToggleBrowser);
-                self.menu_item(ui, "Detail Area", Command::ToggleDetail);
-                self.menu_item(ui, "Clip / Devices", Command::SwitchDetail);
-                self.menu_item(ui, "Mixer Section", Command::ToggleMixer);
-                self.menu_item(ui, "Automation", Command::ToggleAutomation);
-                self.menu_item(ui, "Follow", Command::ToggleFollow);
-                self.menu_item(ui, "Draw Mode", Command::ToggleDrawMode);
+                self.menu_item(ui, "Toggle Timeline / Clip Grid", Command::ToggleClipGrid);
+                ui.separator();
+                self.menu_toggle(ui, "Clip View", self.editor.open, Command::ShowClipView);
+                self.menu_toggle(
+                    ui,
+                    "Device View",
+                    self.devices_open,
+                    Command::ShowDeviceView,
+                );
+                self.menu_item(ui, "Toggle Clip / Device View", Command::SwitchDetail);
+                self.menu_toggle(
+                    ui,
+                    "Detail Area",
+                    self.detail_visible(),
+                    Command::ToggleDetail,
+                );
+                ui.separator();
+                self.menu_toggle(ui, "Browser", self.browser.open, Command::ToggleBrowser);
+                self.menu_toggle(ui, "Mixer", self.mixer_open, Command::ToggleMixer);
+                self.menu_toggle(ui, "In/Out", self.io_open, Command::ToggleInOut);
+                self.menu_toggle(ui, "Sends", self.sends_open, Command::ToggleSends);
+                self.menu_toggle(ui, "Returns", self.returns_visible, Command::ToggleReturns);
+                self.menu_item(ui, "Take Lanes", Command::ShowTakeLanes);
+                self.menu_toggle(
+                    ui,
+                    "Automation",
+                    self.automation_view,
+                    Command::ToggleAutomation,
+                );
                 ui.separator();
                 self.menu_item(ui, "Zoom In", Command::ZoomIn);
                 self.menu_item(ui, "Zoom Out", Command::ZoomOut);
-                self.menu_item(ui, "Snap to Grid", Command::ToggleSnap);
+                self.menu_item(ui, "Zoom to Selection", Command::ZoomToSelection);
+                self.menu_item(ui, "Zoom Back", Command::ZoomBack);
+                self.menu_item(ui, "Fit Song", Command::FitSong);
+                self.menu_toggle(ui, "Follow", self.view.follow, Command::ToggleFollow);
+            });
+            ui.menu_button("Navigate", |ui| {
+                self.menu_action(ui, "Timeline", |app| app.session.open = false);
+                self.menu_action(ui, "Clip Grid", |app| app.session.open = true);
+                self.menu_item(ui, "Clip View", Command::ShowClipView);
+                self.menu_item(ui, "Device View", Command::ShowDeviceView);
+                self.menu_item(ui, "Browser", Command::ToggleBrowser);
+                self.menu_item(ui, "Mixer", Command::ToggleMixer);
+                ui.separator();
+                self.menu_item(ui, "Previous Track", Command::SelectPreviousTrack);
+                self.menu_item(ui, "Next Track", Command::SelectNextTrack);
+                self.menu_item(ui, "Previous Locator", Command::PreviousMarker);
+                self.menu_item(ui, "Next Locator", Command::NextMarker);
+            });
+            ui.menu_button("Options", |ui| {
+                self.menu_toggle(
+                    ui,
+                    "Computer MIDI Keyboard",
+                    self.musical.on,
+                    Command::ToggleMusicalTyping,
+                );
+                let scale = self.project.scale.enabled;
+                if ui
+                    .add(egui::Button::selectable(scale, "Highlight Scales"))
+                    .clicked()
+                {
+                    self.edit(|p| p.scale.enabled = !scale);
+                    ui.close();
+                }
+                ui.separator();
+                self.menu_item(ui, "Narrow Grid", Command::NarrowGrid);
+                self.menu_item(ui, "Widen Grid", Command::WidenGrid);
+                self.menu_toggle(
+                    ui,
+                    "Snap to Grid",
+                    self.project.snap.enabled,
+                    Command::ToggleSnap,
+                );
+                ui.separator();
+                self.menu_toggle(ui, "Draw Mode", self.draw_mode, Command::ToggleDrawMode);
+                let overdub = self.project.midi_overdub;
+                if ui
+                    .add(egui::Button::selectable(
+                        overdub,
+                        "MIDI Arrangement Overdub",
+                    ))
+                    .clicked()
+                {
+                    self.edit(|p| p.midi_overdub = !overdub);
+                    ui.close();
+                }
+                ui.separator();
+                self.menu_action(ui, "Plugin Manager...", |app| {
+                    app.plugins.show_manager = true
+                });
+                self.menu_item(ui, "Audio and MIDI Settings...", Command::OpenSettings);
             });
         });
     }
