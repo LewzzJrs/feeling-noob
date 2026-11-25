@@ -385,6 +385,8 @@ Phase 22 aligned the shortcuts with the common clip-based workstation layout on 
 | New / Open / Save / Save As / Quit | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+Q` |
 | Add marker, previous / next marker | `Alt+M`, `Alt+,` / `Alt+.` |
 
+Clicking a track title selects the track itself: `Shift`+click selects a range of titles and `Ctrl`+click adds or removes one. With titles selected, Cut, Copy, Paste, Delete and Duplicate act on whole tracks; pasted tracks go after the last selected track.
+
 While the computer MIDI keyboard is on, its letter keys play notes and do not reach these shortcuts.
 
 Rules:
