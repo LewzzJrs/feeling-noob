@@ -1,7 +1,6 @@
 use crate::app::App;
 use eframe::egui;
 use fnoob_core::settings::RecordFormat;
-use fnoob_core::time::Position;
 use fnoob_engine::RenderPlan;
 use fnoob_engine::bounce::{BounceJob, BounceRequest, start_bounce};
 use fnoob_platform::plugin::Plugin;
@@ -31,11 +30,11 @@ impl App {
         let timeline = self.timeline();
         let range = self.project.loop_range;
         if range.enabled {
-            let ts = self.project.time_signature;
+            let meter = self.project.meter();
             let label = format!(
                 "Loop area {} to {}",
-                Position::from_tick(range.start_tick, ts),
-                Position::from_tick(range.end_tick, ts)
+                meter.position(range.start_tick),
+                meter.position(range.end_tick)
             );
             let start = timeline.tick_to_sample(range.start_tick);
             let end = timeline.tick_to_sample(range.end_tick);

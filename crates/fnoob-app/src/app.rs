@@ -11,7 +11,7 @@ use fnoob_core::model::{AutomationParam, Id, Project, Region, Track, TrackKind};
 use fnoob_core::settings::{
     BUFFER_SIZES, InputChoice, MidiInputChoice, RecordFormat, Settings, default_settings_path,
 };
-use fnoob_core::time::{Timeline, grid_ticks, snap_floor, ticks_per_bar};
+use fnoob_core::time::{Timeline, grid_ticks, ticks_per_bar};
 use fnoob_engine::audio_data::AudioPool;
 use fnoob_engine::device::{
     AudioInputStream, AudioOutput, DeviceInfo, OutputDeviceInfo, list_output_devices, open_output,
@@ -506,7 +506,7 @@ impl App {
             return;
         }
         let regions = self.selection.regions.clone();
-        let bar = ticks_per_bar(self.project.time_signature);
+        let _bar = ticks_per_bar(self.project.time_signature);
         let grid = grid_ticks(self.project.snap.grid, self.project.time_signature) as i64;
         match command {
             Command::PlayStop => {
@@ -528,11 +528,13 @@ impl App {
             Command::GoToBeginning => self.locate(0),
             Command::Rewind => {
                 let tick = self.playhead_tick();
-                self.locate(snap_floor(tick.saturating_sub(1), bar));
+                let meter = self.project.meter();
+                self.locate(meter.bar_floor(tick.saturating_sub(1)));
             }
             Command::Forward => {
                 let tick = self.playhead_tick();
-                self.locate(snap_floor(tick, bar) + bar);
+                let meter = self.project.meter();
+                self.locate(meter.bar_start(meter.bar_at(tick).0 + 1));
             }
             Command::ToggleLoop => self.edit(|p| p.loop_range.enabled = !p.loop_range.enabled),
             Command::ToggleMetronome => self.edit(|p| p.metronome.enabled = !p.metronome.enabled),

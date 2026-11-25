@@ -2,7 +2,7 @@ use crate::app::App;
 use eframe::egui::{self};
 use fnoob_core::edit;
 use fnoob_core::model::{Id, MAX_GAIN_DB, MIN_GAIN_DB, Region, RegionContent};
-use fnoob_core::time::{PPQ, Position};
+use fnoob_core::time::PPQ;
 
 #[derive(Default)]
 pub struct Inspector {
@@ -36,10 +36,9 @@ impl App {
             });
         }
         self.inspector.region_name = Some((id, text));
-        let ts = self.project.time_signature;
         ui.label(format!(
             "Start {}   Length {:.2} beats",
-            Position::from_tick(region.start_tick, ts),
+            self.project.meter().position(region.start_tick),
             beats(region.length_tick)
         ));
         let mut start = beats(region.start_tick);

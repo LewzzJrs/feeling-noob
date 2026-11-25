@@ -8,7 +8,7 @@ use fnoob_core::io::PROJECT_FILE;
 use fnoob_core::model::{
     AudioInput, AutomationParam, Id, Region, RegionContent, Track, TrackKind, value_at,
 };
-use fnoob_core::time::{grid_ticks, snap_floor, snap_round, ticks_per_bar};
+use fnoob_core::time::{grid_ticks, snap_floor, ticks_per_bar};
 use std::path::PathBuf;
 
 pub const HEADER_WIDTH: f32 = 330.0;
@@ -40,6 +40,7 @@ const TRACK_PALETTE: [Color32; 8] = [
 const LOOP_ON: Color32 = Color32::from_rgb(64, 170, 150);
 const PUNCH: Color32 = Color32::from_rgb(220, 70, 70);
 const TEMPO: Color32 = Color32::from_rgb(150, 200, 120);
+const METER: Color32 = Color32::from_rgb(170, 150, 230);
 const LOOP_OFF: Color32 = Color32::from_rgb(80, 80, 86);
 const PLAYHEAD: Color32 = Color32::from_rgb(240, 240, 240);
 const MARKER: Color32 = Color32::from_rgb(235, 170, 90);
@@ -167,6 +168,15 @@ pub enum UiAction {
         bpm: f64,
     },
     DeleteTempo(u64),
+    SetTempoRamp {
+        tick: u64,
+        ramp: bool,
+    },
+    SetMeter {
+        bar: u64,
+        signature: fnoob_core::model::TimeSignature,
+    },
+    DeleteMeter(u64),
     RenameMarker(Id),
     DeleteMarker(Id),
 }
@@ -233,10 +243,9 @@ impl Geometry {
 impl App {
     fn snapped(&self, tick: u64) -> u64 {
         if self.project.snap.enabled {
-            snap_round(
-                tick,
-                grid_ticks(self.project.snap.grid, self.project.time_signature),
-            )
+            self.project
+                .meter()
+                .snap_round(tick, self.project.snap.grid)
         } else {
             tick
         }
@@ -558,14 +567,15 @@ impl App {
                 painter.vline(g.x(tick), g.ruler.y_range(), Stroke::new(3.0, PUNCH));
             }
         }
+        let meter = self.project.meter();
         let bar = ticks_per_bar(self.project.time_signature);
         let bar_px = bar as f32 * g.pixels_per_tick;
         let label_every = ((48.0 / bar_px).ceil() as u64).max(1);
-        let first_bar = snap_floor(g.tick(g.ruler.left()), bar) / bar;
-        let last_bar = g.tick(g.ruler.right()) / bar + 1;
+        let first_bar = meter.bar_at(g.tick(g.ruler.left())).0;
+        let last_bar = meter.bar_at(g.tick(g.ruler.right())).0 + 1;
         let text_color = visuals.text_color();
         for index in first_bar..=last_bar {
-            let x = g.x(index * bar);
+            let x = g.x(meter.bar_start(index));
             let labeled = index % label_every == 0;
             let top = if labeled {
                 bar_row.top()
@@ -688,11 +698,102 @@ impl App {
                     });
                     ui.close();
                 }
+                let meter = self.project.meter();
+                let (bar, start, ts) = meter.bar_at(g.tick(pos.x));
+                let bar = if g.tick(pos.x) - start > ticks_per_bar(ts) / 2 {
+                    bar + 1
+                } else {
+                    bar
+                };
+                if bar > 0
+                    && ui
+                        .button(format!("Add Time Signature Change at Bar {}", bar + 1))
+                        .clicked()
+                {
+                    actions.push(UiAction::SetMeter {
+                        bar: bar + 1,
+                        signature: meter.signature_at(meter.bar_start(bar)),
+                    });
+                    ui.close();
+                }
             }
         });
-        let mut points = vec![(0, self.project.tempo_bpm)];
-        points.extend(self.project.tempo_changes.iter().map(|c| (c.tick, c.bpm)));
-        for (tick, bpm) in points {
+        let meter = self.project.meter();
+        let mut signatures = vec![(1, self.project.time_signature)];
+        signatures.extend(
+            self.project
+                .meter_changes
+                .iter()
+                .map(|c| (c.bar, c.signature)),
+        );
+        for (bar, ts) in signatures {
+            let x = g.x(meter.bar_start(bar - 1));
+            if x < row.left() - 60.0 || x > row.right() {
+                continue;
+            }
+            let flag = Rect::from_min_size(
+                Pos2::new(x - 30.0, row.top() + 1.0),
+                Vec2::new(28.0, row.height() - 2.0),
+            );
+            painter.rect_filled(flag, CornerRadius::same(2), METER.gamma_multiply(0.85));
+            painter.text(
+                flag.center(),
+                Align2::CENTER_CENTER,
+                format!("{}/{}", ts.numerator, ts.denominator),
+                FontId::proportional(10.0),
+                Color32::BLACK,
+            );
+            if bar == 1 {
+                continue;
+            }
+            let response = ui
+                .interact(
+                    flag.intersect(row),
+                    ui.scope_id().with(("meter", bar)),
+                    Sense::click(),
+                )
+                .on_hover_text("Time signature change. Right-click to edit or delete.");
+            response.context_menu(|ui| {
+                let mut next = ts;
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut next.numerator).range(1..=16));
+                    ui.label("/");
+                    for d in [2, 4, 8, 16] {
+                        ui.selectable_value(&mut next.denominator, d, d.to_string());
+                    }
+                });
+                if next != ts {
+                    actions.push(UiAction::SetMeter {
+                        bar,
+                        signature: next,
+                    });
+                }
+                if ui.button("Delete Time Signature Change").clicked() {
+                    actions.push(UiAction::DeleteMeter(bar));
+                    ui.close();
+                }
+            });
+        }
+        let mut points = vec![(0, self.project.tempo_bpm, false)];
+        points.extend(
+            self.project
+                .tempo_changes
+                .iter()
+                .map(|c| (c.tick, c.bpm, c.ramp)),
+        );
+        let mut previous_x = None;
+        for (tick, bpm, ramp) in points {
+            let x = g.x(tick);
+            if ramp && let Some(from) = previous_x {
+                painter.line_segment(
+                    [
+                        Pos2::new(from, row.bottom() - 2.0),
+                        Pos2::new(x, row.top() + 2.0),
+                    ],
+                    Stroke::new(1.5, TEMPO),
+                );
+            }
+            previous_x = Some(x);
             let x = g.x(tick);
             if x < row.left() - 60.0 || x > row.right() {
                 continue;
@@ -732,6 +833,13 @@ impl App {
                 {
                     actions.push(UiAction::SetTempo { tick, bpm: value });
                 }
+                let mut glide = ramp;
+                if ui
+                    .checkbox(&mut glide, "Ramp from the previous tempo")
+                    .changed()
+                {
+                    actions.push(UiAction::SetTempoRamp { tick, ramp: glide });
+                }
                 if ui.button("Delete Tempo Change").clicked() {
                     actions.push(UiAction::DeleteTempo(tick));
                     ui.close();
@@ -743,12 +851,12 @@ impl App {
     fn draw_lanes(&self, ui: &mut egui::Ui, g: &Geometry, actions: &mut Vec<UiAction>) {
         let painter = ui.painter_at(g.lanes);
         let visuals = ui.visuals().clone();
-        let bar = ticks_per_bar(self.project.time_signature);
-        let first_bar = snap_floor(g.tick(g.lanes.left()), bar) / bar;
-        let last_bar = g.tick(g.lanes.right()) / bar + 1;
+        let meter = self.project.meter();
+        let first_bar = meter.bar_at(g.tick(g.lanes.left())).0;
+        let last_bar = meter.bar_at(g.tick(g.lanes.right())).0 + 1;
         for index in first_bar..=last_bar {
             painter.vline(
-                g.x(index * bar),
+                g.x(meter.bar_start(index)),
                 g.lanes.y_range(),
                 Stroke::new(1.0, visuals.faint_bg_color),
             );
@@ -1639,6 +1747,20 @@ impl App {
             }
             UiAction::DeleteTempo(tick) => self.edit(|p| {
                 edit::delete_tempo_change(p, tick);
+            }),
+            UiAction::SetTempoRamp { tick, ramp } => self.edit(|p| {
+                edit::set_tempo_ramp(p, tick, ramp);
+            }),
+            UiAction::SetMeter { bar, signature } => {
+                let mut added = false;
+                self.edit(|p| added = edit::set_meter_change(p, bar, signature));
+                if !added {
+                    self.message =
+                        Some("A song can have at most 64 time signature changes.".into());
+                }
+            }
+            UiAction::DeleteMeter(bar) => self.edit(|p| {
+                edit::delete_meter_change(p, bar);
             }),
             UiAction::RenameMarker(id) => {
                 if let Some(marker) = self.project.markers.iter().find(|m| m.id == id) {

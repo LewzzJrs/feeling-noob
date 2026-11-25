@@ -5,7 +5,7 @@ use fnoob_core::keymap::{Command, shortcut_label};
 use fnoob_core::model::Grid;
 use fnoob_core::scale::{NOTE_NAMES, ScaleKind};
 use fnoob_core::session::LaunchQuantize;
-use fnoob_core::time::{MAX_BPM, MIN_BPM, Position, ticks_per_bar};
+use fnoob_core::time::{MAX_BPM, MIN_BPM, ticks_per_bar};
 use fnoob_engine::{Command as EngineCommand, TransportState};
 
 const DENOMINATORS: [u32; 4] = [2, 4, 8, 16];
@@ -156,7 +156,7 @@ impl App {
                 "Follow: scroll the timeline with the playhead.",
                 Command::ToggleFollow,
             );
-            let position = Position::from_tick(self.playhead_tick(), self.project.time_signature);
+            let position = self.project.meter().position(self.playhead_tick());
             let text = if state == TransportState::CountIn {
                 "count-in".to_owned()
             } else {
