@@ -569,11 +569,11 @@ impl App {
         let paths: Vec<PathBuf> = dropped
             .iter()
             .map(|f| f.path().to_path_buf())
-            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")))
+            .filter(|p| fnoob_engine::decode::is_audio_file(p))
             .collect();
         if paths.is_empty() {
             if !dropped.is_empty() {
-                self.message = Some("Only WAV files can be dropped on the clip grid.".into());
+                self.message = Some("Only audio files can be dropped on the clip grid.".into());
             }
             return;
         }

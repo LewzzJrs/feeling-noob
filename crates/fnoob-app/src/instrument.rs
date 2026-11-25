@@ -87,7 +87,7 @@ impl App {
     fn load_sample(&mut self, track: Id, target: SampleTarget) {
         let Some(source) = rfd::FileDialog::new()
             .set_title("Load sample")
-            .add_filter("WAV audio", &["wav"])
+            .add_filter("Audio files", &fnoob_engine::decode::AUDIO_EXTENSIONS)
             .pick_file()
         else {
             return;

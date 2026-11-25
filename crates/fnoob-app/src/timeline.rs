@@ -1720,10 +1720,10 @@ impl App {
                 }
                 let (wavs, others): (Vec<PathBuf>, Vec<PathBuf>) = paths
                     .into_iter()
-                    .partition(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")));
+                    .partition(|p| fnoob_engine::decode::is_audio_file(p));
                 if wavs.is_empty() {
                     self.message = Some(format!(
-                        "Only WAV files and project folders can be dropped ({} other files skipped).",
+                        "Only audio files (WAV, MP3, FLAC, OGG, AIFF, M4A) and project folders can be dropped ({} other files skipped).",
                         others.len()
                     ));
                     return;

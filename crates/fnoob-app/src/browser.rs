@@ -4,7 +4,6 @@ use eframe::egui::{self, RichText};
 use fnoob_core::catalog::CatalogEntry;
 use fnoob_core::model::{Id, MAX_INSERTS, TrackKind};
 use fnoob_engine::Command as EngineCommand;
-use fnoob_engine::audio_data::load_wav;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -61,7 +60,7 @@ impl Browser {
     }
 }
 
-fn find_wavs(folders: &[PathBuf]) -> Vec<PathBuf> {
+fn find_audio_files(folders: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = folders.to_vec();
     while let Some(dir) = stack.pop() {
@@ -72,10 +71,7 @@ fn find_wavs(folders: &[PathBuf]) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
-            {
+            } else if fnoob_engine::decode::is_audio_file(&path) {
                 found.push(path);
                 if found.len() >= MAX_SAMPLES {
                     return found;
@@ -135,7 +131,7 @@ impl App {
     }
 
     fn rescan_samples(&mut self) {
-        self.browser.samples = find_wavs(&self.sample_folders());
+        self.browser.samples = find_audio_files(&self.sample_folders());
         self.browser.scanned = true;
     }
 
@@ -145,7 +141,7 @@ impl App {
             self.send(EngineCommand::PreviewAudio(None));
             return;
         }
-        match load_wav(path, self.sample_rate()) {
+        match fnoob_engine::decode::load_any(path, self.sample_rate()) {
             Ok(data) => {
                 self.browser.previewing = Some(path.to_path_buf());
                 self.send(EngineCommand::PreviewAudio(Some(Arc::new(data))));
@@ -488,7 +484,7 @@ mod tests {
         std::fs::write(root.join("kicks").join("k1.WAV"), b"").unwrap();
         std::fs::write(root.join("notes.txt"), b"").unwrap();
         assert_eq!(
-            find_wavs(std::slice::from_ref(&root)),
+            find_audio_files(std::slice::from_ref(&root)),
             [root.join("kicks").join("k1.WAV")]
         );
         std::fs::remove_dir_all(root).unwrap();

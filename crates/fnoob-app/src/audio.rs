@@ -4,6 +4,7 @@ use fnoob_core::io::AUDIO_DIR;
 use fnoob_core::model::{Id, TrackKind};
 use fnoob_core::settings::InputChoice;
 use fnoob_engine::audio_data::{AudioData, load_wav};
+use fnoob_engine::decode;
 use fnoob_engine::device::{DeviceError, list_input_devices, open_input};
 use fnoob_engine::record::{RecordTarget, WavRecorder, start_recording};
 use fnoob_engine::{Command as EngineCommand, TransportState};
@@ -283,7 +284,7 @@ impl App {
     pub(crate) fn import_audio(&mut self) {
         let Some(sources) = rfd::FileDialog::new()
             .set_title("Import audio files")
-            .add_filter("WAV audio", &["wav"])
+            .add_filter("Audio files", &decode::AUDIO_EXTENSIONS)
             .pick_files()
         else {
             return;
@@ -299,8 +300,10 @@ impl App {
         source: &Path,
         taken: &mut HashSet<String>,
     ) -> Result<(String, AudioData), String> {
-        let data = load_wav(source, self.project.sample_rate)
-            .map_err(|e| format!("{}: {e}", source.display()))?;
+        let rate = self.project.sample_rate;
+        let convert = decode::needs_conversion(source, rate);
+        let data =
+            decode::load_any(source, rate).map_err(|e| format!("{}: {e}", source.display()))?;
         let stem = source.file_stem().map_or_else(
             || "Audio".to_owned(),
             |s| file_stem_for(&s.to_string_lossy()),
@@ -311,8 +314,14 @@ impl App {
         destination
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::copy(source, &destination).map(|_| ()))
             .map_err(|e| format!("{}: {e}", source.display()))?;
+        if convert {
+            decode::write_wav(&destination, &data, rate)
+                .map_err(|e| format!("{}: {e}", source.display()))?;
+        } else {
+            std::fs::copy(source, &destination)
+                .map_err(|e| format!("{}: {e}", source.display()))?;
+        }
         Ok((rel, data))
     }
 
