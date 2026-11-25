@@ -187,6 +187,20 @@ pub fn validate(project: &Project) -> Result<(), String> {
         }
         last = change.tick;
     }
+    let mut last_bar = 1;
+    for change in &project.meter_changes {
+        let ts = change.signature;
+        if change.bar <= last_bar
+            || !(1..=16).contains(&ts.numerator)
+            || ![2, 4, 8, 16].contains(&ts.denominator)
+        {
+            return Err("time signature changes must be in order, after bar 1, and valid".into());
+        }
+        last_bar = change.bar;
+    }
+    if project.meter_changes.len() > crate::time::MAX_METER_CHANGES {
+        return Err("too many time signature changes".into());
+    }
     if project.tempo_changes.len() > crate::time::MAX_TEMPO_CHANGES {
         return Err("too many tempo changes".into());
     }

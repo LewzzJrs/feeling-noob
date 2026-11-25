@@ -201,10 +201,55 @@ pub fn set_tempo_change(project: &mut Project, tick: u64, bpm: f64) -> bool {
             if changes.len() >= crate::time::MAX_TEMPO_CHANGES {
                 return false;
             }
-            changes.insert(index, crate::model::TempoChange { tick, bpm });
+            changes.insert(
+                index,
+                crate::model::TempoChange {
+                    tick,
+                    bpm,
+                    ramp: false,
+                },
+            );
         }
     }
     true
+}
+
+pub fn set_tempo_ramp(project: &mut Project, tick: u64, ramp: bool) -> bool {
+    match project.tempo_changes.iter_mut().find(|c| c.tick == tick) {
+        Some(change) => {
+            change.ramp = ramp;
+            true
+        }
+        None => false,
+    }
+}
+
+pub fn set_meter_change(
+    project: &mut Project,
+    bar: u64,
+    signature: crate::model::TimeSignature,
+) -> bool {
+    if bar <= 1 {
+        project.time_signature = signature;
+        return true;
+    }
+    let changes = &mut project.meter_changes;
+    match changes.binary_search_by_key(&bar, |c| c.bar) {
+        Ok(index) => changes[index].signature = signature,
+        Err(index) => {
+            if changes.len() >= crate::time::MAX_METER_CHANGES {
+                return false;
+            }
+            changes.insert(index, crate::model::MeterChange { bar, signature });
+        }
+    }
+    true
+}
+
+pub fn delete_meter_change(project: &mut Project, bar: u64) -> bool {
+    let before = project.meter_changes.len();
+    project.meter_changes.retain(|c| c.bar != bar);
+    project.meter_changes.len() != before
 }
 
 pub fn delete_tempo_change(project: &mut Project, tick: u64) -> bool {

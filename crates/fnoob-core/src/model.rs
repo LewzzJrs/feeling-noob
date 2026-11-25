@@ -28,6 +28,14 @@ pub struct LoopRange {
 pub struct TempoChange {
     pub tick: u64,
     pub bpm: f64,
+    #[serde(default)]
+    pub ramp: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeterChange {
+    pub bar: u64,
+    pub signature: TimeSignature,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -710,6 +718,8 @@ pub struct Project {
     pub punch: Punch,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempo_changes: Vec<TempoChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub meter_changes: Vec<MeterChange>,
     #[serde(default)]
     pub scale: crate::scale::Scale,
     pub metronome: MetronomeSettings,
@@ -755,10 +765,19 @@ impl Project {
     }
 
     pub fn timeline(&self, sample_rate: u32) -> crate::time::Timeline {
-        crate::time::Timeline::with_changes(
+        crate::time::Timeline::with_ramps(
             sample_rate,
             self.tempo_bpm,
-            self.tempo_changes.iter().map(|c| (c.tick, c.bpm)),
+            self.tempo_changes.iter().map(|c| (c.tick, c.bpm, c.ramp)),
+        )
+    }
+
+    pub fn meter(&self) -> crate::time::MeterMap {
+        crate::time::MeterMap::with_changes(
+            self.time_signature,
+            self.meter_changes
+                .iter()
+                .map(|c| (c.bar.saturating_sub(1), c.signature)),
         )
     }
 
@@ -788,6 +807,7 @@ impl Project {
             },
             punch: Punch::default(),
             tempo_changes: Vec::new(),
+            meter_changes: Vec::new(),
             scale: crate::scale::Scale::default(),
             metronome: MetronomeSettings {
                 enabled: true,
