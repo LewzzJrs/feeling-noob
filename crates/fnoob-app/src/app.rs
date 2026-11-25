@@ -283,10 +283,7 @@ impl App {
     }
 
     pub(crate) fn timeline(&self) -> Timeline {
-        Timeline {
-            sample_rate: self.sample_rate(),
-            bpm: self.project.tempo_bpm,
-        }
+        self.project.timeline(self.sample_rate())
     }
 
     pub(crate) fn is_dirty(&self) -> bool {

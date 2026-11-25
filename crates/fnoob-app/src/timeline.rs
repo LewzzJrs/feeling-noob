@@ -20,7 +20,8 @@ type TakeRows = (usize, Id, u8, Vec<(String, Vec<TakeRegion>)>);
 const NAME_WIDTH: f32 = 116.0;
 const IO_WIDTH: f32 = 96.0;
 pub const LOOP_ROW: f32 = 12.0;
-pub const RULER_HEIGHT: f32 = 34.0;
+pub const RULER_HEIGHT: f32 = 50.0;
+const TEMPO_ROW: f32 = 16.0;
 pub const LANE_HEIGHT: f32 = 60.0;
 pub const MIN_PIXELS_PER_TICK: f32 = 0.002;
 pub const MAX_PIXELS_PER_TICK: f32 = 0.5;
@@ -38,6 +39,7 @@ const TRACK_PALETTE: [Color32; 8] = [
 ];
 const LOOP_ON: Color32 = Color32::from_rgb(64, 170, 150);
 const PUNCH: Color32 = Color32::from_rgb(220, 70, 70);
+const TEMPO: Color32 = Color32::from_rgb(150, 200, 120);
 const LOOP_OFF: Color32 = Color32::from_rgb(80, 80, 86);
 const PLAYHEAD: Color32 = Color32::from_rgb(240, 240, 240);
 const MARKER: Color32 = Color32::from_rgb(235, 170, 90);
@@ -160,6 +162,11 @@ pub enum UiAction {
     DeleteRegion(Id),
     SplitRegion(Id),
     LocateMarker(u64),
+    SetTempo {
+        tick: u64,
+        bpm: f64,
+    },
+    DeleteTempo(u64),
     RenameMarker(Id),
     DeleteMarker(Id),
 }
@@ -529,7 +536,12 @@ impl App {
         let visuals = ui.visuals();
         painter.rect_filled(g.ruler, 0.0, visuals.faint_bg_color);
         let loop_row = Rect::from_min_size(g.ruler.min, Vec2::new(g.ruler.width(), LOOP_ROW));
-        let bar_row = Rect::from_min_max(Pos2::new(g.ruler.left(), loop_row.bottom()), g.ruler.max);
+        let bar_row = Rect::from_min_max(
+            Pos2::new(g.ruler.left(), loop_row.bottom()),
+            Pos2::new(g.ruler.right(), g.ruler.bottom() - TEMPO_ROW),
+        );
+        let tempo_row =
+            Rect::from_min_max(Pos2::new(g.ruler.left(), bar_row.bottom()), g.ruler.max);
         let range = self.project.loop_range;
         let loop_rect = Rect::from_x_y_ranges(
             g.x(range.start_tick)..=g.x(range.end_tick),
@@ -641,6 +653,87 @@ impl App {
                 }
                 if ui.button("Delete marker").clicked() {
                     actions.push(UiAction::DeleteMarker(marker.id));
+                    ui.close();
+                }
+            });
+        }
+        self.draw_tempo_row(ui, g, tempo_row, actions);
+    }
+
+    fn draw_tempo_row(
+        &self,
+        ui: &mut egui::Ui,
+        g: &Geometry,
+        row: Rect,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let painter = ui.painter_at(row);
+        painter.rect_filled(row, 0.0, ui.visuals().extreme_bg_color);
+        let response = crate::ui_kit::hint(
+            ui.interact(row, ui.scope_id().with("tempo_row"), Sense::click()),
+            "Tempo lane: right-click to add a tempo change. Right-click a tempo to change or delete it.",
+        );
+        let timeline = self.timeline();
+        response.context_menu(|ui| {
+            if let Some(pos) = ui
+                .ctx()
+                .pointer_interact_pos()
+                .or(response.interact_pointer_pos())
+            {
+                let tick = self.snapped(g.tick(pos.x));
+                if ui.button("Add Tempo Change Here").clicked() {
+                    actions.push(UiAction::SetTempo {
+                        tick,
+                        bpm: timeline.bpm_at_tick(tick),
+                    });
+                    ui.close();
+                }
+            }
+        });
+        let mut points = vec![(0, self.project.tempo_bpm)];
+        points.extend(self.project.tempo_changes.iter().map(|c| (c.tick, c.bpm)));
+        for (tick, bpm) in points {
+            let x = g.x(tick);
+            if x < row.left() - 60.0 || x > row.right() {
+                continue;
+            }
+            let flag = Rect::from_min_size(
+                Pos2::new(x, row.top() + 1.0),
+                Vec2::new(46.0, row.height() - 2.0),
+            );
+            painter.rect_filled(flag, CornerRadius::same(2), TEMPO.gamma_multiply(0.85));
+            painter.text(
+                flag.left_center() + Vec2::new(3.0, 0.0),
+                Align2::LEFT_CENTER,
+                format!("{bpm:.1}"),
+                FontId::proportional(10.0),
+                Color32::BLACK,
+            );
+            if tick == 0 {
+                continue;
+            }
+            let flag_response = ui
+                .interact(
+                    flag.intersect(row),
+                    ui.scope_id().with(("tempo", tick)),
+                    Sense::click(),
+                )
+                .on_hover_text("Tempo change. Right-click to edit or delete.");
+            flag_response.context_menu(|ui| {
+                let mut value = bpm;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut value)
+                            .range(fnoob_core::time::MIN_BPM..=fnoob_core::time::MAX_BPM)
+                            .speed(0.2)
+                            .suffix(" bpm"),
+                    )
+                    .changed()
+                {
+                    actions.push(UiAction::SetTempo { tick, bpm: value });
+                }
+                if ui.button("Delete Tempo Change").clicked() {
+                    actions.push(UiAction::DeleteTempo(tick));
                     ui.close();
                 }
             });
@@ -1537,6 +1630,16 @@ impl App {
                 });
             }
             UiAction::LocateMarker(tick) => self.locate(tick),
+            UiAction::SetTempo { tick, bpm } => {
+                let mut added = false;
+                self.edit(|p| added = edit::set_tempo_change(p, tick, bpm));
+                if !added {
+                    self.message = Some("A song can have at most 64 tempo changes.".into());
+                }
+            }
+            UiAction::DeleteTempo(tick) => self.edit(|p| {
+                edit::delete_tempo_change(p, tick);
+            }),
             UiAction::RenameMarker(id) => {
                 if let Some(marker) = self.project.markers.iter().find(|m| m.id == id) {
                     self.marker_rename = Some((id, marker.name.clone()));
