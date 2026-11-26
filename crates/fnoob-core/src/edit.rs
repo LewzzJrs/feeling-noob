@@ -54,6 +54,7 @@ pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
     target.takes.clear();
     target.regions = vec![Region {
         loop_ticks: None,
+        warp: None,
         id,
         name,
         start_tick: 0,
@@ -392,6 +393,7 @@ pub fn add_midi_region(
     let track = project.track_mut(track_id)?;
     track.regions.push(Region {
         loop_ticks: None,
+        warp: None,
         id,
         name: track.name.clone(),
         start_tick,
@@ -539,6 +541,65 @@ pub fn ticks_to_frames(project: &Project, start_tick: u64, ticks: u64) -> u64 {
     timeline.tick_to_sample(start_tick + ticks) - timeline.tick_to_sample(start_tick)
 }
 
+pub fn region_frames(project: &Project, region: &Region, start_tick: u64, ticks: u64) -> u64 {
+    match region.warp {
+        Some(warp) => (ticks as f64 * warp.frames_per_tick(project.sample_rate)).round() as u64,
+        None => ticks_to_frames(project, start_tick, ticks),
+    }
+}
+
+pub fn set_warp(project: &mut Project, region: Id, warp: Option<crate::model::Warp>) -> bool {
+    let Some((_, found)) = project.find_region(region) else {
+        return false;
+    };
+    if !matches!(found.content, RegionContent::Audio { .. }) || found.warp == warp {
+        return false;
+    }
+    let warp = warp.map(|w| crate::model::Warp {
+        bpm: w
+            .bpm
+            .clamp(crate::model::MIN_WARP_BPM, crate::model::MAX_WARP_BPM),
+        ..w
+    });
+    let start = found.start_tick;
+    let frames = |ticks: u64| region_frames(project, found, start, ticks);
+    let (length, looped, fade_in, fade_out) = (
+        frames(found.length_tick),
+        found.loop_ticks.map(frames),
+        frames(found.fade_in_tick),
+        frames(found.fade_out_tick),
+    );
+    let ticks = |frames: u64| match warp {
+        Some(w) => ((frames as f64 / w.frames_per_tick(project.sample_rate)).round() as u64).max(1),
+        None => frames_to_ticks_at(project, start, frames),
+    };
+    let (length, looped, fade_in, fade_out) = (
+        ticks(length),
+        looped.map(ticks),
+        if fade_in == 0 { 0 } else { ticks(fade_in) },
+        if fade_out == 0 { 0 } else { ticks(fade_out) },
+    );
+    match region_mut(project, region) {
+        Some(r) => {
+            r.warp = warp;
+            r.length_tick = length;
+            r.loop_ticks = looped;
+            r.fade_in_tick = fade_in.min(length);
+            r.fade_out_tick = fade_out.min(length);
+            true
+        }
+        None => false,
+    }
+}
+
+pub fn warp_at_tempo(project: &Project, region: Id) -> Option<crate::model::Warp> {
+    let (_, found) = project.find_region(region)?;
+    Some(crate::model::Warp {
+        bpm: project_timeline(project).bpm_at_tick(found.start_tick),
+        mode: crate::model::WarpMode::default(),
+    })
+}
+
 pub fn frames_to_ticks(project: &Project, frames: u64) -> u64 {
     let ticks = frames as f64 / project_timeline(project).samples_per_tick();
     (ticks.ceil() as u64).max(1)
@@ -587,12 +648,18 @@ pub fn split_regions_at(project: &mut Project, ids: &[Id], tick: u64) -> Vec<Id>
         for index in candidates {
             let id = project.alloc_id();
             let start = project.tracks[track_index].regions[index].start_tick;
-            let cut_frames = ticks_to_frames(project, start, tick - start);
+            let cut_frames = region_frames(
+                project,
+                &project.tracks[track_index].regions[index],
+                start,
+                tick - start,
+            );
             let region = &mut project.tracks[track_index].regions[index];
             let cut = tick - region.start_tick;
             let content = split_content(region, cut, cut_frames);
             let right = Region {
                 loop_ticks: None,
+                warp: None,
                 id,
                 name: region.name.clone(),
                 start_tick: tick,
@@ -759,6 +826,7 @@ pub fn add_audio_region(
     let id = project.alloc_id();
     project.track_mut(track_id)?.regions.push(Region {
         loop_ticks: None,
+        warp: None,
         id,
         name,
         start_tick,
@@ -996,20 +1064,28 @@ pub fn trim_region_start(project: &mut Project, id: Id, new_start: u64) -> bool 
         return false;
     };
     let (start, end) = (region.start_tick, region.end_tick());
+    let warp = region.warp;
     let new_start = match region.content {
         RegionContent::Audio { offset_frames, .. } => {
-            let earliest = start.saturating_sub(frames_to_ticks(project, offset_frames));
-            new_start.max(earliest)
+            let back = match warp {
+                Some(w) => (offset_frames as f64 / w.frames_per_tick(project.sample_rate)) as u64,
+                None => frames_to_ticks(project, offset_frames),
+            };
+            new_start.max(start.saturating_sub(back))
         }
         RegionContent::Midi { .. } => new_start,
     };
     if new_start >= end || new_start == start {
         return false;
     }
+    let shift = |from: u64, ticks: u64| match warp {
+        Some(w) => (ticks as f64 * w.frames_per_tick(project.sample_rate)).round() as i64,
+        None => ticks_to_frames(project, from, ticks) as i64,
+    };
     let frames_shift = if new_start > start {
-        ticks_to_frames(project, start, new_start - start) as i64
+        shift(start, new_start - start)
     } else {
-        -(ticks_to_frames(project, new_start, start - new_start) as i64)
+        -shift(new_start, start - new_start)
     };
     let Some(region) = region_mut(project, id) else {
         return false;
@@ -1925,5 +2001,26 @@ mod tests {
         assert_eq!(p.tracks[0].id, other);
         assert!(!move_track(&mut p, other, -1));
         crate::io::validate(&p).unwrap();
+    }
+
+    #[test]
+    fn warp_keeps_the_audio_the_region_covers() {
+        let mut p = Project::new("t", 48_000);
+        p.tempo_bpm = 120.0;
+        let track = add_track(&mut p, TrackKind::Audio);
+        let file = add_audio_file(&mut p, "a.wav".into(), 1, 48_000);
+        let region = add_audio_region(&mut p, track, 0, file, 0).unwrap();
+        let length = |p: &Project| p.find_region(region).unwrap().1.length_tick;
+        assert_eq!(length(&p), 1920);
+        let warp = warp_at_tempo(&p, region).unwrap();
+        assert_eq!(warp.bpm, 120.0);
+        assert!(set_warp(&mut p, region, Some(warp)));
+        assert_eq!(length(&p), 1920);
+        let slow = crate::model::Warp { bpm: 60.0, ..warp };
+        assert!(set_warp(&mut p, region, Some(slow)));
+        assert_eq!(length(&p), 960);
+        assert!(!set_warp(&mut p, region, Some(slow)));
+        assert!(set_warp(&mut p, region, None));
+        assert_eq!(length(&p), 1920);
     }
 }

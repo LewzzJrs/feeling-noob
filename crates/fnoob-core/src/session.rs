@@ -220,6 +220,7 @@ fn new_clip(
     SessionClip {
         region: Region {
             loop_ticks: None,
+            warp: None,
             id: project.alloc_id(),
             name,
             start_tick: 0,

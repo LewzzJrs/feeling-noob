@@ -115,6 +115,88 @@ impl App {
                 }
             });
         }
+        if !is_midi {
+            ui.horizontal(|ui| {
+                let mut warped = region.warp.is_some();
+                if ui
+                    .checkbox(&mut warped, "Warp")
+                    .on_hover_text(
+                        "Warp: the clip follows the song tempo. Set the tempo the audio was played at.",
+                    )
+                    .changed()
+                {
+                    let warp = if warped {
+                        edit::warp_at_tempo(&self.project, id)
+                    } else {
+                        None
+                    };
+                    self.edit(|p| {
+                        edit::set_warp(p, id, warp);
+                    });
+                }
+                if let Some(warp) = region.warp {
+                    let mut bpm = warp.bpm;
+                    let response = ui
+                        .add(
+                            egui::DragValue::new(&mut bpm)
+                                .range(
+                                    fnoob_core::model::MIN_WARP_BPM
+                                        ..=fnoob_core::model::MAX_WARP_BPM,
+                                )
+                                .speed(0.1)
+                                .fixed_decimals(2)
+                                .suffix(" BPM"),
+                        )
+                        .on_hover_text("Tempo the audio was played at");
+                    self.live_edit(&response, |p| {
+                        edit::set_warp(p, id, Some(fnoob_core::model::Warp { bpm, ..warp }));
+                    });
+                    for (label, factor, info) in [
+                        (":2", 0.5, "Half the original tempo: the clip plays twice as long"),
+                        ("*2", 2.0, "Double the original tempo: the clip plays half as long"),
+                    ] {
+                        if ui.small_button(label).on_hover_text(info).clicked() {
+                            let next = fnoob_core::model::Warp {
+                                bpm: warp.bpm * factor,
+                                ..warp
+                            };
+                            self.edit(|p| {
+                                edit::set_warp(p, id, Some(next));
+                            });
+                        }
+                    }
+                }
+            });
+            if let Some(warp) = region.warp {
+                ui.horizontal(|ui| {
+                    ui.label("Mode");
+                    for mode in fnoob_core::model::WarpMode::ALL {
+                        let info = match mode {
+                            fnoob_core::model::WarpMode::Stretch => {
+                                "Stretch: change the speed and keep the pitch"
+                            }
+                            fnoob_core::model::WarpMode::Repitch => {
+                                "Repitch: speed and pitch change together, like a turntable"
+                            }
+                        };
+                        if ui
+                            .selectable_label(warp.mode == mode, mode.label())
+                            .on_hover_text(info)
+                            .clicked()
+                            && warp.mode != mode
+                        {
+                            self.edit(|p| {
+                                edit::set_warp(
+                                    p,
+                                    id,
+                                    Some(fnoob_core::model::Warp { mode, ..warp }),
+                                );
+                            });
+                        }
+                    }
+                });
+            }
+        }
         let mut start = beats(region.start_tick);
         ui.horizontal(|ui| {
             ui.label("Start (beats)");

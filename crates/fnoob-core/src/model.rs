@@ -681,6 +681,44 @@ pub struct Region {
     pub content: RegionContent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warp: Option<Warp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WarpMode {
+    #[default]
+    Stretch,
+    Repitch,
+}
+
+impl WarpMode {
+    pub const ALL: [WarpMode; 2] = [WarpMode::Stretch, WarpMode::Repitch];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stretch => "Stretch",
+            Self::Repitch => "Repitch",
+        }
+    }
+}
+
+pub const MIN_WARP_BPM: f64 = 20.0;
+pub const MAX_WARP_BPM: f64 = 999.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Warp {
+    pub bpm: f64,
+    #[serde(default)]
+    pub mode: WarpMode,
+}
+
+impl Warp {
+    pub fn frames_per_tick(self, sample_rate: u32) -> f64 {
+        f64::from(sample_rate) * 60.0
+            / self.bpm.clamp(MIN_WARP_BPM, MAX_WARP_BPM)
+            / crate::time::PPQ as f64
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

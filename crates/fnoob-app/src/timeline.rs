@@ -2563,9 +2563,21 @@ impl App {
         let timeline = self.timeline();
         let region_start = timeline.tick_to_sample(region.start_tick);
         let gain = 10f32.powf(gain_db / 20.0);
-        let frame_at = |x: f32| {
-            let sample = timeline.tick_to_sample(g.tick(x));
-            offset_frames + sample.saturating_sub(region_start)
+        let rate = self.project.sample_rate;
+        let warp = region.warp;
+        let (region_tick, looped) = (region.start_tick, region.loop_ticks);
+        let frame_at = |x: f32| match warp {
+            Some(w) => {
+                let mut ticks = g.tick(x).saturating_sub(region_tick);
+                if let Some(length) = looped.filter(|l| *l > 0) {
+                    ticks %= length;
+                }
+                offset_frames + (ticks as f64 * w.frames_per_tick(rate)) as u64
+            }
+            None => {
+                let sample = timeline.tick_to_sample(g.tick(x));
+                offset_frames + sample.saturating_sub(region_start)
+            }
         };
         let stroke = Stroke::new(1.0, Color32::from_black_alpha(170));
         let mut x = visible.left();

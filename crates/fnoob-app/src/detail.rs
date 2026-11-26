@@ -152,21 +152,18 @@ impl App {
                     ui,
                     file_id,
                     offset_frames,
-                    region.length_tick,
-                    region.start_tick,
+                    fnoob_core::edit::region_frames(
+                        &self.project,
+                        &region,
+                        region.start_tick,
+                        region.length_tick,
+                    ),
                 ),
             });
         });
     }
 
-    fn audio_clip_view(
-        &self,
-        ui: &mut Ui,
-        file: Id,
-        offset: u64,
-        length_tick: u64,
-        start_tick: u64,
-    ) {
+    fn audio_clip_view(&self, ui: &mut Ui, file: Id, offset: u64, frames: u64) {
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
@@ -180,7 +177,6 @@ impl App {
             );
             return;
         };
-        let frames = fnoob_core::edit::ticks_to_frames(&self.project, start_tick, length_tick);
         let width = rect.width().max(1.0) as u64;
         let color = Color32::from_rgb(120, 190, 230);
         let mid = rect.center().y;

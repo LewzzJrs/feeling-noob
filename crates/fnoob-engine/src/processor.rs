@@ -1466,6 +1466,48 @@ pub fn render_clips(track: &mut AudioTrackPlan, from: u64, frames: u64) -> Vec<f
     out
 }
 
+const GRAIN: u64 = 2048;
+const HOP: u64 = GRAIN / 2;
+
+fn frame_at(data: &AudioData, position: f64) -> (f32, f32) {
+    if position < 0.0 {
+        return (0.0, 0.0);
+    }
+    let index = position.floor();
+    let frac = (position - index) as f32;
+    let (a, b) = (data.frame(index as u64), data.frame(index as u64 + 1));
+    (a.0 + (b.0 - a.0) * frac, a.1 + (b.1 - a.1) * frac)
+}
+
+fn warped_frame(
+    clip: &crate::plan::Clip,
+    warp: &crate::plan::ClipWarp,
+    position: u64,
+) -> (f32, f32) {
+    let offset = clip.offset as f64;
+    if warp.repitch {
+        return frame_at(&clip.data, offset + warp.source_at(position));
+    }
+    let into = position - clip.start;
+    let grain = into / HOP;
+    let (mut left, mut right) = (0.0, 0.0);
+    for index in [grain.checked_sub(1), Some(grain)].into_iter().flatten() {
+        let begin = index * HOP;
+        let inside = into - begin;
+        let weight = if index == 0 && inside < HOP {
+            1.0
+        } else {
+            let phase = std::f32::consts::PI * inside as f32 / GRAIN as f32;
+            phase.sin() * phase.sin()
+        };
+        let source = offset + warp.source_at(clip.start + begin) + inside as f64;
+        let (l, r) = frame_at(&clip.data, source);
+        left += l * weight;
+        right += r * weight;
+    }
+    (left, right)
+}
+
 fn clip_frame(track: &mut AudioTrackPlan, position: u64) -> (f32, f32) {
     while let Some(clip) = track.clips.get(track.cursor)
         && clip.end <= position
@@ -1487,12 +1529,17 @@ fn clip_frame(track: &mut AudioTrackPlan, position: u64) -> (f32, f32) {
             if left_over < clip.fade_out {
                 gain *= left_over as f32 / clip.fade_out as f32;
             }
-            let source = if clip.loop_len > 0 {
-                into % clip.loop_len
-            } else {
-                into
+            let (l, r) = match &clip.warp {
+                Some(warp) => warped_frame(clip, warp, position),
+                None => {
+                    let source = if clip.loop_len > 0 {
+                        into % clip.loop_len
+                    } else {
+                        into
+                    };
+                    clip.data.frame(clip.offset + source)
+                }
             };
-            let (l, r) = clip.data.frame(clip.offset + source);
             left += l * gain;
             right += r * gain;
         }
@@ -2662,5 +2709,51 @@ mod tests {
         assert!(render(&project) < 0.01);
         project.track_mut(track).unwrap().strip.inserts[0].sidechain = None;
         assert!(render(&project) > 0.1);
+    }
+
+    fn warped_project(data: &AudioData, mode: fnoob_core::model::WarpMode) -> Box<RenderPlan> {
+        let (mut project, track, pool) = audio_project(data, 0);
+        project.tempo_bpm = 120.0;
+        let region = project.track(track).unwrap().regions[0].id;
+        assert!(fnoob_core::edit::set_warp(
+            &mut project,
+            region,
+            Some(fnoob_core::model::Warp { bpm: 60.0, mode })
+        ));
+        audio_plan(&project, &pool)
+    }
+
+    #[test]
+    fn repitched_clips_follow_the_tempo() {
+        let ramp: Vec<f32> = (0..48_000).map(|i| i as f32 / 48_000.0).collect();
+        let data = AudioData::from_samples(1, ramp);
+        let mut plan = warped_project(&data, fnoob_core::model::WarpMode::Repitch);
+        let out = render_clips(&mut plan.audio_tracks[0], 0, 4000);
+        for position in [100usize, 1000, 3000] {
+            let expected = (2 * position) as f32 / 48_000.0;
+            assert!((out[position * 2] - expected).abs() < 1e-3, "{position}");
+        }
+    }
+
+    #[test]
+    fn stretched_clips_keep_their_pitch() {
+        let rate = SR as f32;
+        let sine: Vec<f32> = (0..96_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate).sin() * 0.5)
+            .collect();
+        let data = AudioData::from_samples(1, sine);
+        let mut plan = warped_project(&data, fnoob_core::model::WarpMode::Stretch);
+        let out = render_clips(&mut plan.audio_tracks[0], 0, 24_000);
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        let crossings = left[4000..20_000]
+            .windows(2)
+            .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+            .count();
+        let hz = crossings as f32 * rate / 16_000.0;
+        assert!((hz - 440.0).abs() < 25.0, "{hz}");
+        let peak = left[4000..20_000]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.3 && peak < 0.75, "{peak}");
     }
 }

@@ -422,7 +422,8 @@ impl App {
         let Some(dir) = self.project_dir.clone() else {
             return Err("Save the project first.".into());
         };
-        let wanted = edit::ticks_to_frames(&self.project, found.start_tick, found.length_tick);
+        let wanted =
+            edit::region_frames(&self.project, &found, found.start_tick, found.length_tick);
         let start = offset_frames.min(source.frames);
         let end = (start + wanted).min(source.frames);
         let channels = usize::from(source.channels.max(1));

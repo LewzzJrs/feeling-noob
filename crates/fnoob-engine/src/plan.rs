@@ -56,6 +56,28 @@ pub struct Clip {
     pub fade_out: u64,
     pub loop_len: u64,
     pub data: Arc<AudioData>,
+    pub warp: Option<ClipWarp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipWarp {
+    pub repitch: bool,
+    pub start_tick: f64,
+    pub frames_per_tick: f64,
+    pub loop_frames: f64,
+    pub timeline: Timeline,
+}
+
+impl ClipWarp {
+    pub fn source_at(&self, sample: u64) -> f64 {
+        let ticks = self.timeline.sample_to_tick_f64(sample as f64) - self.start_tick;
+        let frames = ticks * self.frames_per_tick;
+        if self.loop_frames > 0.0 {
+            frames.rem_euclid(self.loop_frames)
+        } else {
+            frames
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -441,6 +463,16 @@ fn audio_track_plans(
                     };
                     let start = timeline.tick_to_sample(region.start_tick);
                     let end = timeline.tick_to_sample(region.end_tick());
+                    let warp = region.warp.map(|w| {
+                        let per_tick = w.frames_per_tick(timeline.sample_rate);
+                        ClipWarp {
+                            repitch: w.mode == fnoob_core::model::WarpMode::Repitch,
+                            start_tick: region.start_tick as f64,
+                            frames_per_tick: per_tick,
+                            loop_frames: region.loop_ticks.map_or(0.0, |t| t as f64 * per_tick),
+                            timeline,
+                        }
+                    });
                     (end > start && offset_frames < data.frames).then(|| Clip {
                         start,
                         end,
@@ -448,8 +480,13 @@ fn audio_track_plans(
                         gain: 10f32.powf(gain_db / 20.0),
                         fade_in: fade(region.fade_in_tick),
                         fade_out: fade(region.fade_out_tick),
-                        loop_len: region.loop_ticks.map_or(0, fade),
+                        loop_len: if warp.is_some() {
+                            0
+                        } else {
+                            region.loop_ticks.map_or(0, fade)
+                        },
                         data: Arc::clone(data),
+                        warp,
                     })
                 })
                 .collect();
@@ -496,6 +533,7 @@ fn frozen_plan(
             fade_out: 0,
             loop_len: 0,
             data: Arc::clone(data),
+            warp: None,
         })
         .into_iter()
         .collect();
