@@ -232,6 +232,7 @@ pub enum UiAction {
     DeleteMeter(u64),
     RenameMarker(Id),
     DeleteMarker(Id),
+    ExportMidi(Id),
 }
 
 fn automation_y(lane: Rect, param: AutomationParam, value: f32) -> f32 {
@@ -1629,6 +1630,12 @@ impl App {
                 actions.push(UiAction::SendToGrid(region.id));
                 ui.close();
             }
+            if matches!(region.content, RegionContent::Midi { .. })
+                && ui.button("Export MIDI Clip...").clicked()
+            {
+                actions.push(UiAction::ExportMidi(region.id));
+                ui.close();
+            }
             if ui.button("Delete").clicked() {
                 actions.push(UiAction::DeleteRegion(region.id));
                 ui.close();
@@ -2382,6 +2389,10 @@ impl App {
                     (self.view.scroll_y + pixels).clamp(0.0, (content - LANE_HEIGHT).max(0.0));
             }
             UiAction::Zoom { factor, anchor } => self.zoom_at(factor, anchor),
+            UiAction::ExportMidi(region) => {
+                self.selection.regions = vec![region];
+                self.export_midi_clip();
+            }
             UiAction::DropFiles { paths, track, tick } => {
                 let project = paths.iter().find_map(|p| {
                     if p.is_dir() && p.join(PROJECT_FILE).is_file() {
@@ -2396,12 +2407,21 @@ impl App {
                     self.request(Pending::OpenPath(dir));
                     return;
                 }
+                let (midis, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths
+                    .into_iter()
+                    .partition(|p| crate::midi_files::is_midi_file(p));
+                if !midis.is_empty() {
+                    self.import_midi_files(&midis, track, tick);
+                    if paths.is_empty() {
+                        return;
+                    }
+                }
                 let (wavs, others): (Vec<PathBuf>, Vec<PathBuf>) = paths
                     .into_iter()
                     .partition(|p| fnoob_engine::decode::is_audio_file(p));
                 if wavs.is_empty() {
                     self.message = Some(format!(
-                        "Only audio files (WAV, MP3, FLAC, OGG, AIFF, M4A) and project folders can be dropped ({} other files skipped).",
+                        "Only audio files (WAV, MP3, FLAC, OGG, AIFF, M4A), MIDI files and project folders can be dropped ({} other files skipped).",
                         others.len()
                     ));
                     return;

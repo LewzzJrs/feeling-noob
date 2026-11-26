@@ -974,6 +974,7 @@ impl App {
                 }
             }
             Command::Bounce => self.open_bounce_dialog(),
+            Command::ExportMidiClip => self.export_midi_clip(),
             Command::ToggleTrackMute => {
                 if let Some(id) = self.selection.track {
                     self.edit_track(id, |t| t.mute = !t.mute);
@@ -1451,6 +1452,7 @@ impl App {
                 });
                 ui.separator();
                 self.menu_action(ui, "Import Audio File...", |app| app.import_audio());
+                self.menu_action(ui, "Import MIDI File...", |app| app.import_midi());
                 self.menu_action(ui, "Move Unused Audio Files...", |app| {
                     app.find_unused_audio()
                 });
@@ -1460,6 +1462,7 @@ impl App {
                 self.menu_action(ui, "Save as Template", |app| app.save_as_template());
                 ui.separator();
                 self.menu_item(ui, "Export Audio...", Command::Bounce);
+                self.menu_item(ui, "Export MIDI Clip...", Command::ExportMidiClip);
                 ui.separator();
                 self.menu_action(ui, "Project Settings...", |app| {
                     app.show_project_settings = true

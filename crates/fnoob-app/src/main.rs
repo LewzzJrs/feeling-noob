@@ -14,6 +14,7 @@ mod inspector;
 mod instrument;
 mod keys;
 mod midi;
+mod midi_files;
 mod mixer;
 mod musical;
 mod piano_roll;
