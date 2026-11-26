@@ -523,7 +523,14 @@ pub fn crossfades(track: &Track) -> Vec<(u64, u64)> {
     audio
         .windows(2)
         .filter(|w| w[1].start_tick < w[0].end_tick() && w[1].end_tick() > w[0].end_tick())
-        .map(|w| (w[1].start_tick, w[0].end_tick()))
+        .map(|w| {
+            let overlap = w[0].end_tick() - w[1].start_tick;
+            let length = match w[1].fade_in_tick {
+                0 => overlap,
+                fade => fade.min(overlap),
+            };
+            (w[1].start_tick, w[1].start_tick + length)
+        })
         .collect()
 }
 
@@ -736,6 +743,10 @@ pub struct Region {
     pub loop_ticks: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warp: Option<Warp>,
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub fade_in_curve: f32,
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub fade_out_curve: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

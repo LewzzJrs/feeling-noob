@@ -233,6 +233,11 @@ pub enum UiAction {
     RenameMarker(Id),
     DeleteMarker(Id),
     ExportMidi(Id),
+    SetFadeCurve {
+        region: Id,
+        fade_in: bool,
+        curve: f32,
+    },
     ResizeTrack {
         id: Id,
         height: f32,
@@ -1581,11 +1586,33 @@ impl App {
                 ui.interact(
                     handle,
                     ui.scope_id().with(("fade", region.id, is_in)),
-                    Sense::drag(),
+                    Sense::click_and_drag(),
                 )
                 .on_hover_cursor(CursorIcon::ResizeHorizontal),
-                "Fade handle: drag to set the fade length.",
+                "Fade handle: drag to set the fade length; over another clip it sets the crossfade length. Right-click for the curve.",
             );
+            let current = if is_in {
+                region.fade_in_curve
+            } else {
+                region.fade_out_curve
+            };
+            if let Some(actions) = actions.as_mut() {
+                response.context_menu(|ui| {
+                    for (label, curve) in [("Linear", 0.0), ("Slow", 0.6), ("Fast", -0.6)] {
+                        if ui
+                            .selectable_label((current - curve).abs() < 0.01, label)
+                            .clicked()
+                        {
+                            actions.push(UiAction::SetFadeCurve {
+                                region: region.id,
+                                fade_in: is_in,
+                                curve,
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+            }
             if (response.dragged() || response.drag_stopped())
                 && let Some(pos) = response.interact_pointer_pos()
             {
@@ -1613,29 +1640,38 @@ impl App {
         if interactive {
             return;
         }
-        if fade_in > 0 {
-            let x = g.x(region.start_tick + fade_in);
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    rect.left_top(),
-                    Pos2::new(x, rect.top()),
-                    rect.left_bottom(),
-                ],
-                shade,
-                Stroke::NONE,
-            ));
-        }
-        if fade_out > 0 {
-            let x = g.x(region.end_tick() - fade_out);
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    Pos2::new(x, rect.top()),
-                    rect.right_top(),
-                    rect.right_bottom(),
-                ],
-                shade,
-                Stroke::NONE,
-            ));
+        let line = Stroke::new(1.2, Color32::from_white_alpha(170));
+        for (is_in, length, curve) in [
+            (true, fade_in, region.fade_in_curve),
+            (false, fade_out, region.fade_out_curve),
+        ] {
+            if length == 0 {
+                continue;
+            }
+            let (from, to) = if is_in {
+                (rect.left(), g.x(region.start_tick + length))
+            } else {
+                (g.x(region.end_tick() - length), rect.right())
+            };
+            let steps = 24;
+            let mut mesh = egui::Mesh::default();
+            let mut points = Vec::with_capacity(steps + 1);
+            for k in 0..=steps {
+                let t = k as f32 / steps as f32;
+                let x = from + (to - from) * t;
+                let gain = fnoob_core::model::shape(if is_in { t } else { 1.0 - t }, curve);
+                let y = rect.bottom() - (rect.height() - 2.0) * gain;
+                points.push(Pos2::new(x, y));
+                mesh.colored_vertex(Pos2::new(x, rect.top()), shade);
+                mesh.colored_vertex(Pos2::new(x, y), shade);
+                if k > 0 {
+                    let at = (k * 2) as u32;
+                    mesh.add_triangle(at - 2, at - 1, at);
+                    mesh.add_triangle(at - 1, at + 1, at);
+                }
+            }
+            painter.add(egui::Shape::mesh(mesh));
+            painter.add(egui::Shape::line(points, line));
         }
     }
 
@@ -2517,6 +2553,15 @@ impl App {
                     }
                 }
                 self.height_backup = None;
+            }
+            UiAction::SetFadeCurve {
+                region,
+                fade_in,
+                curve,
+            } => {
+                self.edit(|p| {
+                    edit::set_fade_curve(p, region, fade_in, curve);
+                });
             }
             UiAction::ExportMidi(region) => {
                 self.selection.regions = vec![region];

@@ -1534,17 +1534,25 @@ fn clip_frame(track: &mut AudioTrackPlan, position: u64) -> (f32, f32) {
             let left_over = clip.end - position;
             let mut gain = clip.gain;
             if into < clip.fade_in {
-                gain *= into as f32 / clip.fade_in as f32;
+                gain *=
+                    fnoob_core::model::shape(into as f32 / clip.fade_in as f32, clip.fade_in_curve);
             }
             if left_over < clip.fade_out {
-                gain *= left_over as f32 / clip.fade_out as f32;
+                gain *= fnoob_core::model::shape(
+                    left_over as f32 / clip.fade_out as f32,
+                    clip.fade_out_curve,
+                );
             }
             if into < clip.xfade_in {
                 gain *= (into as f32 / clip.xfade_in as f32 * std::f32::consts::FRAC_PI_2).sin();
             }
-            if left_over < clip.xfade_out {
-                gain *=
-                    (left_over as f32 / clip.xfade_out as f32 * std::f32::consts::FRAC_PI_2).sin();
+            if clip.xfade_out > 0 && position >= clip.xfade_from {
+                let t = (position - clip.xfade_from) as f32 / clip.xfade_out as f32;
+                gain *= if t >= 1.0 {
+                    0.0
+                } else {
+                    ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin()
+                };
             }
             let (l, r) = match &clip.warp {
                 Some(warp) => warped_frame(clip, warp, position),
@@ -2797,5 +2805,31 @@ mod tests {
             fnoob_core::model::crossfades(project.track(track).unwrap()),
             vec![(40, 160)]
         );
+        project.crossfade_overlaps = true;
+        let second = project.track(track).unwrap().regions[1].id;
+        fnoob_core::edit::set_region_fades(&mut project, second, 40, 0);
+        assert_eq!(
+            fnoob_core::model::crossfades(project.track(track).unwrap()),
+            vec![(40, 80)]
+        );
+        let mut plan = audio_plan(&project, &pool);
+        let out = render_clips(&mut plan.audio_tracks[0], 0, 6000);
+        assert!((out[1500 * 2] - 0.5 * std::f32::consts::SQRT_2).abs() < 1e-2);
+        assert!((out[3000 * 2] - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn fade_curves_shape_the_gain() {
+        let data = AudioData::from_samples(1, vec![1.0; 48_000]);
+        let (mut project, track, pool) = audio_project(&data, 0);
+        let region = project.track(track).unwrap().regions[0].id;
+        fnoob_core::edit::set_region_fades(&mut project, region, 400, 0);
+        let mut plan = audio_plan(&project, &pool);
+        let linear = render_clips(&mut plan.audio_tracks[0], 0, 10_000)[5000 * 2];
+        assert!((linear - 0.5).abs() < 1e-2, "{linear}");
+        fnoob_core::edit::set_fade_curve(&mut project, region, true, 0.6);
+        let mut plan = audio_plan(&project, &pool);
+        let slow = render_clips(&mut plan.audio_tracks[0], 0, 10_000)[5000 * 2];
+        assert!(slow < 0.3, "{slow}");
     }
 }

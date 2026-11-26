@@ -55,6 +55,8 @@ pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
     target.regions = vec![Region {
         loop_ticks: None,
         warp: None,
+        fade_in_curve: 0.0,
+        fade_out_curve: 0.0,
         id,
         name,
         start_tick: 0,
@@ -394,6 +396,8 @@ pub fn add_midi_region(
     track.regions.push(Region {
         loop_ticks: None,
         warp: None,
+        fade_in_curve: 0.0,
+        fade_out_curve: 0.0,
         id,
         name: track.name.clone(),
         start_tick,
@@ -548,6 +552,21 @@ pub fn region_frames(project: &Project, region: &Region, start_tick: u64, ticks:
     }
 }
 
+pub fn set_fade_curve(project: &mut Project, region: Id, fade_in: bool, curve: f32) -> bool {
+    let curve = curve.clamp(-1.0, 1.0);
+    match region_mut(project, region) {
+        Some(r) if fade_in && r.fade_in_curve != curve => {
+            r.fade_in_curve = curve;
+            true
+        }
+        Some(r) if !fade_in && r.fade_out_curve != curve => {
+            r.fade_out_curve = curve;
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn set_warp(project: &mut Project, region: Id, warp: Option<crate::model::Warp>) -> bool {
     let Some((_, found)) = project.find_region(region) else {
         return false;
@@ -660,6 +679,8 @@ pub fn split_regions_at(project: &mut Project, ids: &[Id], tick: u64) -> Vec<Id>
             let right = Region {
                 loop_ticks: None,
                 warp: None,
+                fade_in_curve: 0.0,
+                fade_out_curve: 0.0,
                 id,
                 name: region.name.clone(),
                 start_tick: tick,
@@ -827,6 +848,8 @@ pub fn add_audio_region(
     project.track_mut(track_id)?.regions.push(Region {
         loop_ticks: None,
         warp: None,
+        fade_in_curve: 0.0,
+        fade_out_curve: 0.0,
         id,
         name,
         start_tick,
