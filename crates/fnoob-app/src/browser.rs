@@ -64,6 +64,27 @@ pub fn templates_dir() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.join("templates")))
 }
 
+pub fn default_set_path() -> Option<PathBuf> {
+    fnoob_core::settings::default_settings_path().and_then(|p| {
+        p.parent()
+            .map(|d| d.join(format!("Default Set.{}", fnoob_core::io::PROJECT_EXTENSION)))
+    })
+}
+
+pub fn starting_project(sample_rate: u32) -> fnoob_core::model::Project {
+    if let Some(path) = default_set_path().filter(|p| p.is_dir())
+        && let Ok(mut project) = fnoob_core::io::load(&path)
+    {
+        project.name = "Untitled".into();
+        project.sample_rate = sample_rate;
+        fnoob_core::edit::strip_audio(&mut project);
+        return project;
+    }
+    let mut project = fnoob_core::model::Project::new("Untitled", sample_rate);
+    fnoob_core::edit::default_set(&mut project);
+    project
+}
+
 fn find_templates() -> Vec<PathBuf> {
     let Some(dir) = templates_dir() else {
         return Vec::new();
@@ -208,6 +229,41 @@ impl App {
             }
             Err(e) => self.message = Some(format!("Cannot save the template. {e}")),
         }
+    }
+
+    pub(crate) fn save_as_default_set(&mut self) {
+        let Some(path) = default_set_path() else {
+            self.message = Some("No place to keep the default set on this computer.".into());
+            return;
+        };
+        let mut project = self.project.clone();
+        let had_audio = !project.audio_files.is_empty();
+        fnoob_core::edit::strip_audio(&mut project);
+        match std::fs::create_dir_all(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|()| fnoob_core::io::save(&path, &project).map_err(|e| e.to_string()))
+        {
+            Ok(()) => {
+                self.message = Some(if had_audio {
+                    "New projects now start from this set. Audio clips and samples are not kept."
+                        .into()
+                } else {
+                    "New projects now start from this set.".into()
+                })
+            }
+            Err(e) => self.message = Some(format!("Cannot save the default set. {e}")),
+        }
+    }
+
+    pub(crate) fn reset_default_set(&mut self) {
+        let Some(path) = default_set_path().filter(|p| p.is_dir()) else {
+            self.message = Some("New projects already use the built-in set.".into());
+            return;
+        };
+        self.message = Some(match std::fs::remove_dir_all(&path) {
+            Ok(()) => "New projects use the built-in set again.".into(),
+            Err(e) => format!("Cannot remove the default set. {e}"),
+        });
     }
 
     pub(crate) fn new_from_template(&mut self, path: &Path) {

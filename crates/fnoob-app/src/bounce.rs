@@ -10,12 +10,22 @@ const TAIL_SECONDS: u64 = 2;
 
 pub struct BounceDialog {
     format: RecordFormat,
+    stems: bool,
 }
 
 pub struct ActiveBounce {
     job: BounceJob,
     _plugins: Vec<Plugin>,
     freeze: Option<(fnoob_core::model::Id, String)>,
+    stems: Option<StemQueue>,
+}
+
+pub struct StemQueue {
+    format: RecordFormat,
+    left: Vec<(fnoob_core::model::Id, PathBuf)>,
+    done: usize,
+    total: usize,
+    dir: PathBuf,
 }
 
 const FREEZE_GAIN_DB: f32 = 3.010_3;
@@ -25,6 +35,7 @@ impl App {
         if self.bounce.is_none() {
             self.bounce_dialog = Some(BounceDialog {
                 format: RecordFormat::Int24,
+                stems: false,
             });
         }
     }
@@ -52,12 +63,67 @@ impl App {
     }
 
     fn start_bounce(&mut self, format: RecordFormat, path: PathBuf) {
+        let project = self.project.clone();
+        self.start_bounce_of(project, format, path, None);
+    }
+
+    fn start_stems(&mut self, format: RecordFormat, dir: PathBuf) {
+        let left: Vec<(fnoob_core::model::Id, PathBuf)> = self
+            .project
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let name = format!("{:02} {}.wav", i + 1, crate::audio::file_stem_for(&t.name));
+                (t.id, dir.join(name))
+            })
+            .collect();
+        let queue = StemQueue {
+            format,
+            total: left.len(),
+            left,
+            done: 0,
+            dir,
+        };
+        self.next_stem(queue);
+    }
+
+    fn next_stem(&mut self, mut queue: StemQueue) {
+        if queue.left.is_empty() {
+            self.message = Some(format!(
+                "Exported {} stems to {}",
+                queue.done,
+                queue.dir.display()
+            ));
+            return;
+        }
+        let (id, path) = queue.left.remove(0);
+        let mut project = self.project.clone();
+        for track in &mut project.tracks {
+            track.solo = track.id == id;
+            if track.id == id {
+                track.mute = false;
+                if matches!(track.output, fnoob_core::model::Output::Track(_)) {
+                    track.output = fnoob_core::model::Output::Main;
+                }
+            }
+        }
+        let format = queue.format;
+        self.start_bounce_of(project, format, path, Some(queue));
+    }
+
+    fn start_bounce_of(
+        &mut self,
+        mut project: fnoob_core::model::Project,
+        format: RecordFormat,
+        path: PathBuf,
+        stems: Option<StemQueue>,
+    ) {
         let Some((start, frames, _)) = self.bounce_range() else {
             self.message = Some("There is nothing to bounce.".into());
             return;
         };
         let (map, processors, builtins, plugins) = self.bounce_plugins();
-        let mut project = self.project.clone();
         project.loop_range.enabled = false;
         let rate = self.sample_rate();
         let mut plan = RenderPlan::build(&project, rate, &self.pool, &map);
@@ -79,6 +145,7 @@ impl App {
                     job,
                     _plugins: plugins,
                     freeze: None,
+                    stems,
                 })
             }
             Err(e) => self.message = Some(format!("Bounce failed: {e}")),
@@ -165,6 +232,7 @@ impl App {
                     job,
                     _plugins: plugins,
                     freeze: Some((id, rel)),
+                    stems: None,
                 })
             }
             Err(e) => self.message = Some(format!("Freeze failed: {e}")),
@@ -197,7 +265,9 @@ impl App {
     }
 
     pub(crate) fn bounce_windows(&mut self, ctx: &egui::Context) {
-        if let Some(mut format) = self.bounce_dialog.as_ref().map(|d| d.format) {
+        if let Some((mut format, mut stems)) =
+            self.bounce_dialog.as_ref().map(|d| (d.format, d.stems))
+        {
             let range = self.bounce_range();
             let rate = self.sample_rate();
             let mut choice = None;
@@ -222,7 +292,16 @@ impl App {
                         ui.selectable_value(&mut format, option, option.label());
                     }
                 });
-                ui.label("Muted tracks are left out. The metronome is not included.");
+                ui.horizontal(|ui| {
+                    ui.label("Render");
+                    ui.selectable_value(&mut stems, false, "Main mix");
+                    ui.selectable_value(&mut stems, true, "All tracks (stems)");
+                });
+                ui.label(if stems {
+                    "One file per track, with its effects, fader and sends. Files go into a folder you pick."
+                } else {
+                    "Muted tracks are left out. The metronome is not included."
+                });
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(range.is_some(), egui::Button::new("Bounce..."))
@@ -239,8 +318,19 @@ impl App {
             });
             if let Some(dialog) = &mut self.bounce_dialog {
                 dialog.format = format;
+                dialog.stems = stems;
             }
             match choice {
+                Some(true) if stems => {
+                    self.bounce_dialog = None;
+                    let mut picker = rfd::FileDialog::new().set_title("Folder for the stems");
+                    if let Some(dir) = self.project_dir.as_ref().and_then(|d| d.parent()) {
+                        picker = picker.set_directory(dir);
+                    }
+                    if let Some(dir) = picker.pick_folder() {
+                        self.start_stems(format, dir);
+                    }
+                }
                 Some(true) => {
                     self.bounce_dialog = None;
                     let mut picker = rfd::FileDialog::new()
@@ -263,13 +353,15 @@ impl App {
         };
         let progress = active.job.progress();
         let mut cancel = false;
-        let heading = if active.freeze.is_some() {
-            "Freezing..."
-        } else {
-            "Bouncing..."
+        let heading = match (&active.freeze, &active.stems) {
+            (Some(_), _) => "Freezing...".to_owned(),
+            (None, Some(queue)) => {
+                format!("Exporting stem {} of {}...", queue.done + 1, queue.total)
+            }
+            (None, None) => "Bouncing...".to_owned(),
         };
         egui::Modal::new(egui::Id::unique("bounce_progress")).show(ctx, |ui| {
-            ui.heading(heading);
+            ui.heading(&heading);
             ui.add(egui::ProgressBar::new(progress).show_percentage());
             cancel = ui.button("Cancel").clicked();
         });
@@ -287,6 +379,23 @@ impl App {
                     Ok(path) => self.finish_freeze(id, &rel, &path),
                     Err(e) if e == "cancelled" => self.message = Some("Freeze cancelled.".into()),
                     Err(e) => self.message = Some(format!("Freeze failed: {e}")),
+                }
+                return;
+            }
+            if let Some(mut queue) = active.stems {
+                drop(outcome.engine);
+                match outcome.result {
+                    Ok(_) => {
+                        queue.done += 1;
+                        self.next_stem(queue);
+                    }
+                    Err(e) if e == "cancelled" => {
+                        self.message = Some(format!(
+                            "Stem export cancelled after {} of {} files.",
+                            queue.done, queue.total
+                        ))
+                    }
+                    Err(e) => self.message = Some(format!("Stem export failed: {e}")),
                 }
                 return;
             }

@@ -210,8 +210,7 @@ impl App {
                 Settings::default()
             }
         };
-        let mut project = Project::new("Untitled", DEFAULT_SAMPLE_RATE);
-        edit::default_set(&mut project);
+        let project = crate::browser::starting_project(DEFAULT_SAMPLE_RATE);
         let (plugins, plugin_problem) = crate::plugins::PluginHost::new();
         if plugin_problem.is_some() {
             message = plugin_problem;
@@ -1275,8 +1274,7 @@ impl App {
     fn proceed(&mut self, pending: Pending) {
         match pending {
             Pending::New => {
-                let mut project = Project::new("Untitled", self.sample_rate());
-                edit::default_set(&mut project);
+                let project = crate::browser::starting_project(self.sample_rate());
                 self.replace_project(project, None);
             }
             Pending::Open => self.open(),
@@ -1460,6 +1458,14 @@ impl App {
                 self.menu_item(ui, "Save Project", Command::Save);
                 self.menu_item(ui, "Save Project As...", Command::SaveAs);
                 self.menu_action(ui, "Save as Template", |app| app.save_as_template());
+                ui.menu_button("Default Set", |ui| {
+                    self.menu_action(ui, "Save Current as Default Set", |app| {
+                        app.save_as_default_set()
+                    });
+                    self.menu_action(ui, "Use Built-in Default Set", |app| {
+                        app.reset_default_set()
+                    });
+                });
                 ui.separator();
                 self.menu_item(ui, "Export Audio...", Command::Bounce);
                 self.menu_item(ui, "Export MIDI Clip...", Command::ExportMidiClip);
