@@ -2082,9 +2082,14 @@ impl eframe::App for App {
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
                 if self.session.open {
-                    egui::Frame::NONE
-                        .inner_margin(6.0)
-                        .show(ui, |ui| self.session_view(ui));
+                    egui::ScrollArea::both()
+                        .id_salt("clip_grid_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            egui::Frame::NONE
+                                .inner_margin(6.0)
+                                .show(ui, |ui| self.session_view(ui));
+                        });
                 } else {
                     self.follow_playhead(ui.available_width() - crate::timeline::HEADER_WIDTH);
                     self.tracks_area(ui);

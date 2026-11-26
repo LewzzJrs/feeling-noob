@@ -50,6 +50,7 @@ pub struct Editor {
     pub ramp: (u8, u8),
     rows: usize,
     width: f32,
+    height: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -78,6 +79,7 @@ impl Default for Editor {
             ramp: (40, 110),
             rows: 128,
             width: 800.0,
+            height: 200.0,
         }
     }
 }
@@ -318,6 +320,7 @@ impl App {
                 self.edit(|p| {
                     edit::move_notes(p, region, &selected, 0, delta);
                 });
+                self.reveal_selected_notes(region);
             }
             Command::ExtendLeft | Command::ExtendRight => {
                 let delta = if command == Command::ExtendLeft {
@@ -338,6 +341,7 @@ impl App {
                 self.edit(|p| {
                     edit::move_notes(p, region, &selected, 0, delta);
                 });
+                self.reveal_selected_notes(region);
             }
             Command::Quantize => {
                 let picked: Vec<usize> = if selected.is_empty() {
@@ -370,6 +374,7 @@ impl App {
         self.editor.rows = rows.len();
         let (area, response) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         self.editor.width = (area.width() - KEYS_WIDTH).max(50.0);
+        self.editor.height = (area.height() - RULER - VELOCITY_LANE).max(ROW);
         let layout = Layout {
             keys: Rect::from_min_max(
                 Pos2::new(area.left(), area.top() + RULER),
@@ -430,6 +435,36 @@ impl App {
         }
         for action in actions {
             self.apply_editor_action(action, region, track, start, end);
+        }
+    }
+
+    fn reveal_selected_notes(&mut self, region: Id) {
+        let rows = self.editor_rows(region);
+        let pitches: Vec<u8> = self
+            .project
+            .find_region(region)
+            .map(|(_, r)| {
+                self.editor
+                    .selected
+                    .iter()
+                    .filter_map(|&i| r.notes().get(i).map(|n| n.pitch))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let indices: Vec<usize> = pitches
+            .iter()
+            .filter_map(|p| rows.iter().position(|r| r == p))
+            .collect();
+        let (Some(&first), Some(&last)) = (indices.iter().min(), indices.iter().max()) else {
+            return;
+        };
+        let top = first as f32 * ROW;
+        let bottom = (last + 1) as f32 * ROW;
+        let height = self.editor.height.max(ROW * 4.0);
+        if top < self.editor.scroll_y {
+            self.editor.scroll_y = (top - ROW * 2.0).max(0.0);
+        } else if bottom > self.editor.scroll_y + height {
+            self.editor.scroll_y = (bottom - height + ROW * 2.0).max(0.0);
         }
     }
 
@@ -831,13 +866,17 @@ impl App {
                 y + ROW,
                 Stroke::new(1.0, Color32::from_gray(170)),
             );
-            if pitch % 12 == 0 {
+            if pitch % 12 == 0 || self.editor.fold != Fold::Off {
                 painter.text(
                     Pos2::new(g.keys.right() - 3.0, y + ROW / 2.0),
                     Align2::RIGHT_CENTER,
                     note_name(pitch),
                     FontId::proportional(9.0),
-                    Color32::from_gray(60),
+                    if is_black(pitch) && self.editor.fold == Fold::Off {
+                        Color32::from_gray(200)
+                    } else {
+                        Color32::from_gray(60)
+                    },
                 );
             }
         }
