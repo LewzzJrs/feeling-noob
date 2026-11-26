@@ -18,7 +18,7 @@ use fnoob_engine::device::{
 };
 use fnoob_engine::midi_in::{MidiConnection, MidiInputInfo};
 use fnoob_engine::{Command as EngineCommand, EngineHandle, RenderPlan, TransportState};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -145,6 +145,7 @@ pub struct App {
     pub(crate) header_focus: bool,
     pub(crate) view: View,
     pub(crate) height_backup: Option<Vec<(Id, f32)>>,
+    pub(crate) bar_widths: HashMap<&'static str, f32>,
     pub(crate) drag: Option<Drag>,
     pub(crate) renaming: Option<(Id, String)>,
     pub(crate) editor: Editor,
@@ -249,6 +250,7 @@ impl App {
             track_clipboard: Vec::new(),
             header_focus: false,
             height_backup: None,
+            bar_widths: HashMap::new(),
             view: View {
                 pixels_per_tick: 0.04,
                 scroll_tick: 0.0,

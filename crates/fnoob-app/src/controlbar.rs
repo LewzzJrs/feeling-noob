@@ -21,6 +21,27 @@ fn with_keys(text: &str, command: Command) -> String {
     }
 }
 
+impl App {
+    fn wrap_before(&self, ui: &mut Ui, key: &str) {
+        if self
+            .bar_widths
+            .get(key)
+            .is_some_and(|width| *width > ui.available_size_before_wrap().x)
+        {
+            ui.end_row();
+        }
+    }
+}
+
+fn divider(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(7.0, 18.0), egui::Sense::hover());
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        ui.visuals().widgets.noninteractive.bg_stroke,
+    );
+}
+
 pub fn tap_tempo(taps: &[f64]) -> Option<f64> {
     if taps.len() < 2 {
         return None;
@@ -69,7 +90,9 @@ impl App {
             {
                 self.run(Command::ToggleBrowser);
             }
-            ui.separator();
+            divider(ui);
+            self.wrap_before(ui, "tempo");
+            let width = ui.horizontal(|ui| {
             if hint(
                 ui.button("Tap"),
                 "Tap tempo: click in time with the music to set the tempo.",
@@ -178,8 +201,17 @@ impl App {
             if quantize != self.project.launch_quantize {
                 self.edit(|p| p.launch_quantize = quantize);
             }
-            self.scale_controls(ui);
-            ui.separator();
+            })
+            .response
+            .rect
+            .width();
+            self.bar_widths.insert("tempo", width);
+            self.wrap_before(ui, "scale");
+            let width = ui.horizontal(|ui| self.scale_controls(ui)).response.rect.width();
+            self.bar_widths.insert("scale", width);
+            divider(ui);
+            self.wrap_before(ui, "transport");
+            let width = ui.horizontal(|ui| {
             self.switch(
                 ui,
                 self.view.follow,
@@ -271,9 +303,18 @@ impl App {
             {
                 self.run(Command::CaptureMidi);
             }
-            ui.separator();
-            self.loop_controls(ui);
-            ui.separator();
+            })
+            .response
+            .rect
+            .width();
+            self.bar_widths.insert("transport", width);
+            divider(ui);
+            self.wrap_before(ui, "loop");
+            let width = ui.horizontal(|ui| self.loop_controls(ui)).response.rect.width();
+            self.bar_widths.insert("loop", width);
+            divider(ui);
+            self.wrap_before(ui, "modes");
+            let width = ui.horizontal(|ui| {
             self.switch(
                 ui,
                 self.draw_mode,
@@ -297,7 +338,12 @@ impl App {
                 "Computer MIDI keyboard: play notes with the letter keys.",
                 Command::ToggleMusicalTyping,
             );
-            ui.separator();
+            })
+            .response
+            .rect
+            .width();
+            self.bar_widths.insert("modes", width);
+            divider(ui);
             if let Some((_, engine)) = &self.audio {
                 let load = engine.cpu_load();
                 self.cpu = load.max(self.cpu * 0.97);
@@ -307,7 +353,9 @@ impl App {
                 );
 
             }
-            ui.separator();
+            divider(ui);
+            self.wrap_before(ui, "view");
+            let width = ui.horizontal(|ui| {
             let grid = self.session.open;
             self.switch(
                 ui,
@@ -323,6 +371,11 @@ impl App {
                 "Clip grid view: launch clips and scenes.",
                 Command::ToggleClipGrid,
             );
+            })
+            .response
+            .rect
+            .width();
+            self.bar_widths.insert("view", width);
         });
     }
 
@@ -463,15 +516,16 @@ impl App {
     }
 
     pub(crate) fn status_bar(&mut self, ui: &mut Ui) {
+        let text = match (
+            self.info.clone().or_else(|| self.message.clone()),
+            self.position_status(),
+        ) {
+            (Some(text), _) => RichText::new(text),
+            (None, Some(status)) => RichText::new(status),
+            (None, None) => RichText::new("Point at a control to learn what it does.").weak(),
+        };
+        let wide = ui.available_width() >= 1100.0;
         ui.horizontal(|ui| {
-            let text = self.info.clone().or_else(|| self.message.clone());
-            match (text, self.position_status()) {
-                (Some(text), _) => ui.label(text),
-                (None, Some(status)) => ui.label(status),
-                (None, None) => {
-                    ui.label(RichText::new("Point at a control to learn what it does.").weak())
-                }
-            };
             ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                 self.snap_controls(ui);
                 ui.separator();
@@ -480,6 +534,7 @@ impl App {
                 }
                 ui.separator();
                 match &self.audio {
+                    Some(_) if !wide => ui.label(""),
                     Some((output, _)) => ui.label(
                         RichText::new(format!(
                             "{}  {:.1} kHz  |  In: {}  |  MIDI: {}",
@@ -495,6 +550,9 @@ impl App {
                     ),
                     None => ui.colored_label(ui.visuals().warn_fg_color, "No audio output"),
                 };
+                ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(text).truncate());
+                });
             });
         });
     }
