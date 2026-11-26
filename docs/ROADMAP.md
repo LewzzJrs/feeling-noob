@@ -103,7 +103,6 @@ Not started, in rough priority order:
 
 - CLAP hosting via `clack-host`
 - DAWproject import/export
-- Standard MIDI File import/export
 
 ## 5. Platform and release
 
