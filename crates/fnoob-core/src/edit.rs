@@ -1209,6 +1209,7 @@ mod tests {
             velocity: 100,
             start_tick,
             length_tick,
+            chance: 100,
         }
     }
 
@@ -1248,6 +1249,7 @@ mod tests {
                 velocity: 100,
                 start_tick: 100,
                 length_tick: 50,
+                chance: 100,
             },
         );
         assert!(set_region_loop(&mut p, r, Some(960)));
@@ -1273,6 +1275,7 @@ mod tests {
                     velocity: 120,
                     start_tick: k * 960,
                     length_tick: 100,
+                    chance: 100,
                 },
             );
         }
@@ -1521,12 +1524,14 @@ mod tests {
             velocity: 100,
             start_tick: 0,
             length_tick: 2000,
+            chance: 100,
         });
         notes.push(Note {
             pitch: 62,
             velocity: 100,
             start_tick: 2500,
             length_tick: 100,
+            chance: 100,
         });
         let created = split_regions_at(&mut p, &[id], 3840 + 1920);
         assert_eq!(created.len(), 1);

@@ -91,6 +91,7 @@ fn clip_plan(
                         .tick_to_sample((n.start_tick + n.length_tick).min(region.length_tick)),
                     pitch: n.pitch,
                     velocity: n.velocity,
+                    chance: n.chance,
                 })
                 .filter(|n| n.end > n.start)
                 .collect();

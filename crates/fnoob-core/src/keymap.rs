@@ -106,6 +106,7 @@ pub enum Command {
     ExtendDown,
     SessionRecord,
     CaptureScene,
+    TripletGrid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -272,6 +273,7 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (ctrl(letter('U')), Command::Quantize),
     (ctrl(Key::Digit(1)), Command::NarrowGrid),
     (ctrl(Key::Digit(2)), Command::WidenGrid),
+    (ctrl(Key::Digit(3)), Command::TripletGrid),
     (ctrl(Key::Digit(4)), Command::ToggleSnap),
     (ctrl(Key::Digit(6)), Command::QuantizeSixteenth),
     (ctrl(Key::Digit(7)), Command::QuantizeEighth),

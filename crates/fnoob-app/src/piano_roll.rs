@@ -46,6 +46,9 @@ pub struct Editor {
     pub preview: Option<(Id, u8, Instant)>,
     pub held_key: Option<(Id, u8)>,
     pub fold: Fold,
+    pub humanize: (u8, u8),
+    pub strum: u16,
+    pub chance: u8,
     pub spread: u8,
     pub ramp: (u8, u8),
     rows: usize,
@@ -75,6 +78,9 @@ impl Default for Editor {
             preview: None,
             held_key: None,
             fold: Fold::Off,
+            humanize: (20, 10),
+            strum: 40,
+            chance: 50,
             spread: 20,
             ramp: (40, 110),
             rows: 128,
@@ -468,6 +474,131 @@ impl App {
         }
     }
 
+    fn apply_tool(&mut self, region: Id, keep: bool, tool: impl FnOnce(&mut Vec<Note>, &[usize])) {
+        let selected = self.editor.selected.clone();
+        self.edit(|p| {
+            if let Some(notes) = edit::region_mut(p, region).and_then(|r| r.notes_mut()) {
+                tool(notes, &selected);
+            }
+        });
+        if !keep {
+            self.editor.selected.clear();
+        }
+    }
+
+    fn midi_tools_menu(&mut self, ui: &mut egui::Ui, region: Id, clip_length: u64) {
+        use fnoob_core::midi_tools as tools;
+        ui.label(
+            egui::RichText::new(
+                "Acts on the selected notes, or on every note when none is selected.",
+            )
+            .small()
+            .weak(),
+        );
+        ui.horizontal(|ui| {
+            ui.label("Transpose");
+            for (label, by) in [("-12", -12), ("-1", -1), ("+1", 1), ("+12", 12)] {
+                if ui.button(label).clicked() {
+                    self.apply_tool(region, true, |n, s| tools::transpose(n, s, by));
+                    self.reveal_selected_notes(region);
+                }
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .button("Humanize")
+                .on_hover_text("Move notes a little in time and change their velocity at random")
+                .clicked()
+            {
+                let (timing, velocity) = self.editor.humanize;
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(7, |d| d.as_nanos() as u64);
+                self.apply_tool(region, false, |n, s| {
+                    tools::humanize(n, s, u64::from(timing), velocity, seed);
+                });
+            }
+            ui.add(
+                egui::DragValue::new(&mut self.editor.humanize.0)
+                    .range(0..=240)
+                    .prefix("time ±")
+                    .suffix(" ticks"),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.editor.humanize.1)
+                    .range(0..=64)
+                    .prefix("velocity ±"),
+            );
+        });
+        if ui
+            .button("Legato")
+            .on_hover_text("Stretch each note to the start of the next one")
+            .clicked()
+        {
+            self.apply_tool(region, true, |n, s| tools::legato(n, s, clip_length));
+        }
+        ui.horizontal(|ui| {
+            let step = u64::from(self.editor.strum);
+            if ui.button("Strum Up").clicked() {
+                self.apply_tool(region, false, |n, s| tools::strum(n, s, step, false));
+            }
+            if ui.button("Strum Down").clicked() {
+                self.apply_tool(region, false, |n, s| tools::strum(n, s, step, true));
+            }
+            ui.add(
+                egui::DragValue::new(&mut self.editor.strum)
+                    .range(1..=480)
+                    .suffix(" ticks per note"),
+            );
+        });
+        ui.horizontal(|ui| {
+            let rate = self.grid_ticks();
+            for style in tools::ArpStyle::ALL {
+                if ui
+                    .button(format!("Arpeggiate {}", style.label()))
+                    .on_hover_text("Play each chord as single notes, one per grid step")
+                    .clicked()
+                {
+                    self.apply_tool(region, false, |n, s| tools::arpeggiate(n, s, rate, style));
+                }
+            }
+        });
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Add chord");
+            for (label, intervals) in tools::CHORDS {
+                if ui.button(label).clicked() {
+                    self.apply_tool(region, false, |n, s| tools::add_chord(n, s, intervals));
+                }
+            }
+            let scale = self.project.scale;
+            if ui
+                .button(format!("In Key ({})", scale.label()))
+                .on_hover_text("Add the third and fifth from the song key above each note")
+                .clicked()
+            {
+                self.apply_tool(region, false, |n, s| tools::add_key_chord(n, s, scale));
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            let chance = self.editor.chance;
+            if ui
+                .button("Set Chance")
+                .on_hover_text("How likely the notes are to play each time the clip passes them")
+                .clicked()
+            {
+                self.apply_tool(region, true, |n, s| tools::set_chance(n, s, chance));
+            }
+            ui.add(
+                egui::DragValue::new(&mut self.editor.chance)
+                    .range(0..=100)
+                    .suffix("%"),
+            );
+        });
+    }
+
     fn editor_rows(&self, region: Id) -> Vec<u8> {
         let scale = self.project.scale;
         let notes: Vec<u8> = self
@@ -527,13 +658,18 @@ impl App {
                 .width(56.0)
                 .selected_text(grid.label())
                 .show_ui(ui, |ui| {
-                    for option in fnoob_core::model::Grid::ALL {
+                    for option in fnoob_core::model::Grid::ALL
+                        .into_iter()
+                        .chain(fnoob_core::model::Grid::TRIPLETS)
+                    {
                         ui.selectable_value(&mut grid, option, option.label());
                     }
                 });
             if grid != self.project.snap.grid {
                 self.edit(|p| p.snap.grid = grid);
             }
+            ui.separator();
+            ui.menu_button("MIDI Tools", |ui| self.midi_tools_menu(ui, region, end - start));
             ui.separator();
             let selected = self.editor.selected.clone();
             ui.label("Velocity");
@@ -596,6 +732,21 @@ impl App {
                     }
                     self.live_edit(&slider, |p| {
                         edit::set_notes_velocity(p, region, &selected, velocity);
+                    });
+                    let mut chance = note.chance;
+                    let field = ui
+                        .add(
+                            egui::DragValue::new(&mut chance)
+                                .range(0..=100)
+                                .suffix("%")
+                                .prefix("Chance "),
+                        )
+                        .on_hover_text("How likely the selected notes are to play each time");
+                    self.live_edit(&field, |p| {
+                        if let Some(notes) = edit::region_mut(p, region).and_then(|r| r.notes_mut())
+                        {
+                            fnoob_core::midi_tools::set_chance(notes, &selected, chance);
+                        }
                     });
                 }
                 None => {
@@ -722,7 +873,21 @@ impl App {
             }
             let selected = self.editor.selected.contains(&index);
             let shade = 0.45 + 0.55 * f32::from(note.velocity) / 127.0;
+            let shade = if note.chance < fnoob_core::model::FULL_CHANCE {
+                shade * 0.55
+            } else {
+                shade
+            };
             painter.rect_filled(rect, CornerRadius::same(2), color.gamma_multiply(shade));
+            if note.chance < fnoob_core::model::FULL_CHANCE && rect.width() > 26.0 {
+                painter.text(
+                    rect.left_center() + Vec2::new(3.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    format!("{}%", note.chance),
+                    FontId::proportional(9.0),
+                    Color32::WHITE,
+                );
+            }
             let border = if selected {
                 Stroke::new(2.0, Color32::WHITE)
             } else {
@@ -1013,6 +1178,7 @@ impl App {
                     velocity,
                     start_tick: tick - start,
                     length_tick: length.max(1),
+                    chance: 100,
                 };
                 let mut created = None;
                 self.edit(|p| created = edit::add_note(p, region, note));

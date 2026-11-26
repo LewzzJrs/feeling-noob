@@ -24,6 +24,7 @@ fn process_does_not_allocate() {
                     velocity: 100,
                     start_tick: step * 120,
                     length_tick: 600,
+                    chance: 100,
                 },
             );
         }
@@ -60,6 +61,7 @@ fn process_does_not_allocate() {
                     velocity: 100,
                     start_tick: step * 240,
                     length_tick: 200,
+                    chance: 100,
                 },
             );
         }
@@ -96,6 +98,7 @@ fn process_does_not_allocate() {
                     velocity: 90,
                     start_tick: step * 240,
                     length_tick: 300,
+                    chance: 100,
                 },
             );
         }

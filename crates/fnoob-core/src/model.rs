@@ -63,6 +63,11 @@ pub enum Grid {
     Eighth,
     Sixteenth,
     ThirtySecond,
+    HalfTriplet,
+    BeatTriplet,
+    EighthTriplet,
+    SixteenthTriplet,
+    ThirtySecondTriplet,
 }
 
 impl Grid {
@@ -89,6 +94,47 @@ impl Grid {
             Grid::Eighth => "1/8",
             Grid::Sixteenth => "1/16",
             Grid::ThirtySecond => "1/32",
+            Grid::HalfTriplet => "1/2T",
+            Grid::BeatTriplet => "1/4T",
+            Grid::EighthTriplet => "1/8T",
+            Grid::SixteenthTriplet => "1/16T",
+            Grid::ThirtySecondTriplet => "1/32T",
+        }
+    }
+
+    pub const TRIPLETS: [Grid; 5] = [
+        Grid::HalfTriplet,
+        Grid::BeatTriplet,
+        Grid::EighthTriplet,
+        Grid::SixteenthTriplet,
+        Grid::ThirtySecondTriplet,
+    ];
+
+    pub fn is_triplet(self) -> bool {
+        Self::TRIPLETS.contains(&self)
+    }
+
+    pub fn toggled_triplet(self) -> Grid {
+        match self {
+            Grid::Half => Grid::HalfTriplet,
+            Grid::Beat => Grid::BeatTriplet,
+            Grid::Eighth => Grid::EighthTriplet,
+            Grid::Sixteenth => Grid::SixteenthTriplet,
+            Grid::ThirtySecond => Grid::ThirtySecondTriplet,
+            Grid::HalfTriplet => Grid::Half,
+            Grid::BeatTriplet => Grid::Beat,
+            Grid::EighthTriplet => Grid::Eighth,
+            Grid::SixteenthTriplet => Grid::Sixteenth,
+            Grid::ThirtySecondTriplet => Grid::ThirtySecond,
+            other => other,
+        }
+    }
+
+    pub fn family(self) -> &'static [Grid] {
+        if self.is_triplet() {
+            &Self::TRIPLETS
+        } else {
+            &Self::ALL
         }
     }
 
@@ -348,6 +394,18 @@ pub struct Note {
     pub velocity: u8,
     pub start_tick: u64,
     pub length_tick: u64,
+    #[serde(default = "full_chance", skip_serializing_if = "is_full_chance")]
+    pub chance: u8,
+}
+
+pub const FULL_CHANCE: u8 = 100;
+
+fn full_chance() -> u8 {
+    FULL_CHANCE
+}
+
+fn is_full_chance(chance: &u8) -> bool {
+    *chance >= FULL_CHANCE
 }
 
 impl Note {

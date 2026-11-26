@@ -325,7 +325,7 @@ impl App {
             .width(48.0)
             .selected_text(grid_size.label())
             .show_ui(ui, |ui| {
-                for g in Grid::ALL {
+                for g in Grid::ALL.into_iter().chain(Grid::TRIPLETS) {
                     ui.selectable_value(&mut grid_size, g, g.label());
                 }
             });

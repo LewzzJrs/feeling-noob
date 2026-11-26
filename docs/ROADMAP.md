@@ -80,7 +80,7 @@ Done in Phase 28: menus reordered as File, Edit, Create, Playback, View, Navigat
 Not started, in rough priority order:
 
 - Audio warping and time stretch, clip tempo
-- MIDI tools: transpose, humanize, legato, chop, strum, arpeggiate, rhythm and chord generators
+- MIDI tools: chop, ornament, rhythm, shape and euclidean generators
 - Scale mode: fold the piano roll to scale notes, scale-aware MIDI tools
 - Automation of plugin parameters, automation recording, clip envelopes
 - Crossfades between overlapping regions, fade handles on region corners

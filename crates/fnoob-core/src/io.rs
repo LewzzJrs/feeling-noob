@@ -562,6 +562,7 @@ mod tests {
                     velocity: 100,
                     start_tick: 0,
                     length_tick: 1,
+                    chance: 100,
                 });
             },
             |p| {

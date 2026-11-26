@@ -165,6 +165,7 @@ mod tests {
                     velocity: 100,
                     start_tick: u64::from(i) * 480,
                     length_tick: 400,
+                    chance: 100,
                 },
             );
         }

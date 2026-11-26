@@ -751,6 +751,14 @@ impl App {
             }
             Command::ZoomToSelection => self.zoom_to_selection(),
             Command::SessionRecord => self.toggle_session_record(),
+            Command::TripletGrid => {
+                let next = self.project.snap.grid.toggled_triplet();
+                if next == self.project.snap.grid {
+                    self.message = Some("Bar grids have no triplet form.".into());
+                } else {
+                    self.edit(|p| p.snap.grid = next);
+                }
+            }
             Command::CaptureScene => self.capture_scene(),
             Command::ExtendLeft
             | Command::ExtendRight
@@ -797,7 +805,7 @@ impl App {
                 self.edit(|p| p.launch_quantize = quantize);
             }
             Command::NarrowGrid | Command::WidenGrid => {
-                let all = fnoob_core::model::Grid::ALL;
+                let all = self.project.snap.grid.family();
                 let index = all
                     .iter()
                     .position(|g| *g == self.project.snap.grid)
@@ -1630,6 +1638,12 @@ impl App {
                 ui.separator();
                 self.menu_item(ui, "Narrow Grid", Command::NarrowGrid);
                 self.menu_item(ui, "Widen Grid", Command::WidenGrid);
+                self.menu_toggle(
+                    ui,
+                    "Triplet Grid",
+                    self.project.snap.grid.is_triplet(),
+                    Command::TripletGrid,
+                );
                 self.menu_toggle(
                     ui,
                     "Snap to Grid",

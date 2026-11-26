@@ -878,7 +878,7 @@ impl Processor {
             while let Some(&note) = track.notes.get(track.cursor)
                 && note.start <= position
             {
-                if note.end > position && !overrides {
+                if note.end > position && !overrides && passes(note.chance, &mut self.rng) {
                     trigger(
                         track,
                         &self.plugins,
@@ -909,7 +909,7 @@ impl Processor {
                         break;
                     };
                     track.session.play.cursor += 1;
-                    if note.start == elapsed {
+                    if note.start == elapsed && passes(note.chance, &mut self.rng) {
                         let end = position + (note.end - note.start);
                         trigger(track, &self.plugins, frame, note.pitch, note.velocity, end);
                     }
@@ -1307,6 +1307,11 @@ impl Mix {
     }
 }
 
+fn passes(chance: u8, rng: &mut u64) -> bool {
+    chance >= fnoob_core::model::FULL_CHANCE
+        || crate::session::random(rng) * 100.0 < f32::from(chance)
+}
+
 fn peak(peaks: &mut [f32], slot: usize, left: f32, right: f32) {
     if let Some(p) = peaks.get_mut(slot) {
         let level = left.abs().max(right.abs());
@@ -1488,6 +1493,7 @@ mod tests {
             velocity: 100,
             start_tick,
             length_tick,
+            chance: 100,
         }
     }
 
@@ -2032,6 +2038,15 @@ mod tests {
         assert!(frame[1].abs() < 1e-6);
         project.track_mut(track).unwrap().strip.volume_db = SILENT_DB;
         assert_eq!(first_frame(&project).0, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn note_chance_decides_how_often_a_note_plays() {
+        let mut rng = 42;
+        assert!((0..100).all(|_| passes(100, &mut rng)));
+        assert!((0..100).all(|_| !passes(0, &mut rng)));
+        let hits = (0..2000).filter(|_| passes(25, &mut rng)).count();
+        assert!((350..650).contains(&hits), "{hits}");
     }
 
     #[test]

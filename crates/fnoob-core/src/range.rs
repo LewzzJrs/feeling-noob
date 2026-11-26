@@ -360,6 +360,7 @@ mod tests {
                 velocity: 100,
                 start_tick: 2500,
                 length_tick: 100,
+                chance: 100,
             },
         );
         add_midi_region(&mut p, b, 1000, 1000).unwrap();

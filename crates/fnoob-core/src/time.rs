@@ -32,6 +32,11 @@ pub fn grid_ticks(grid: Grid, ts: TimeSignature) -> u64 {
         Grid::Eighth => PPQ / 2,
         Grid::Sixteenth => PPQ / 4,
         Grid::ThirtySecond => PPQ / 8,
+        Grid::HalfTriplet => PPQ * 4 / 3,
+        Grid::BeatTriplet => PPQ * 2 / 3,
+        Grid::EighthTriplet => PPQ / 3,
+        Grid::SixteenthTriplet => PPQ / 6,
+        Grid::ThirtySecondTriplet => PPQ / 12,
     }
 }
 
@@ -542,6 +547,9 @@ mod tests {
             denominator: 4,
         });
         assert_eq!(plain.snap_floor(5 * bar + 10, Grid::FourBars), 4 * bar);
+        assert_eq!(grid_ticks(Grid::EighthTriplet, SIX_EIGHT) * 3, PPQ);
+        assert_eq!(Grid::Eighth.toggled_triplet(), Grid::EighthTriplet);
+        assert_eq!(Grid::Bar.toggled_triplet(), Grid::Bar);
         assert_eq!(plain.snap_round(7 * bar, Grid::FourBars), 8 * bar);
         assert_eq!(plain.snap_round(5 * bar - 10, Grid::TwoBars), 4 * bar);
     }

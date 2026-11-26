@@ -29,6 +29,7 @@ impl Take {
                 velocity: held_velocity.clamp(1, 127),
                 start_tick: start,
                 length_tick: tick.saturating_sub(start).max(1),
+                chance: 100,
             });
         }
         if velocity > 0 {

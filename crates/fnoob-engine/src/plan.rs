@@ -22,6 +22,7 @@ pub struct PlannedNote {
     pub end: u64,
     pub pitch: u8,
     pub velocity: u8,
+    pub chance: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -427,6 +428,7 @@ fn track_plans(
                                         end: timeline.tick_to_sample(end),
                                         pitch: n.pitch,
                                         velocity: n.velocity,
+                                        chance: n.chance,
                                     }
                                 })
                         })
@@ -566,6 +568,7 @@ mod tests {
             velocity: 100,
             start_tick,
             length_tick,
+            chance: 100,
         }
     }
 

@@ -44,6 +44,7 @@ pub fn notes(phrase: &[Played], timeline: Timeline, stopped_at_tick: u64) -> Vec
                 velocity: velocity.clamp(1, 127),
                 start_tick: start,
                 length_tick: end - start,
+                chance: 100,
             });
         }
     };
