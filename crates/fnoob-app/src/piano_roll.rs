@@ -51,9 +51,18 @@ pub struct Editor {
     pub chance: u8,
     pub spread: u8,
     pub ramp: (u8, u8),
+    pub lane: NoteLane,
+    marquee: Option<(Pos2, Pos2)>,
     rows: usize,
     width: f32,
     height: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NoteLane {
+    #[default]
+    Velocity,
+    Chance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,6 +92,8 @@ impl Default for Editor {
             chance: 50,
             spread: 20,
             ramp: (40, 110),
+            lane: NoteLane::Velocity,
+            marquee: None,
             rows: 128,
             width: 800.0,
             height: 200.0,
@@ -121,6 +132,12 @@ enum EditorAction {
     DragUpdate(Pos2),
     VelocityStart(usize),
     VelocityUpdate(u8),
+    Marquee(Option<(Pos2, Pos2)>),
+    SelectMany {
+        indices: Vec<usize>,
+        add: bool,
+    },
+    SwitchLane,
     DragEnd,
     KeyDown(u8),
     KeyUp,
@@ -872,11 +889,26 @@ impl App {
             painter.vline(g.x(tick), g.notes.y_range(), Stroke::new(1.0, color));
             tick += step;
         }
-        let background = ui.interact(g.notes, ui.scope_id().with("note_grid"), Sense::click());
+        let background = ui.interact(
+            g.notes,
+            ui.scope_id().with("note_grid"),
+            Sense::click_and_drag(),
+        );
         let background = crate::ui_kit::hint(
             background,
-            "Double-click to add a note, or turn on Draw mode (B) and click.",
+            "Double-click to add a note, or turn on Draw mode (B) and click. Drag to select notes in a box; Ctrl adds to the selection.",
         );
+        if let Some(pos) = background.interact_pointer_pos() {
+            if background.drag_started() {
+                actions.push(EditorAction::Marquee(Some((pos, pos))));
+            } else if background.dragged()
+                && let Some((anchor, _)) = self.editor.marquee
+            {
+                actions.push(EditorAction::Marquee(Some((anchor, pos))));
+            }
+        }
+        let finish_marquee = background.drag_stopped();
+        let mut note_rects: Vec<(usize, Rect)> = Vec::new();
         if let Some(pos) = background.interact_pointer_pos() {
             let add = background.double_clicked() || self.draw_mode && background.clicked();
             if add {
@@ -901,6 +933,7 @@ impl App {
             if !rect.intersects(g.notes) {
                 continue;
             }
+            note_rects.push((index, rect));
             let selected = self.editor.selected.contains(&index);
             let shade = 0.45 + 0.55 * f32::from(note.velocity) / 127.0;
             let shade = if note.chance < fnoob_core::model::FULL_CHANCE {
@@ -958,6 +991,34 @@ impl App {
             if response.drag_stopped() {
                 actions.push(EditorAction::DragEnd);
             }
+        }
+        if let Some((anchor, current)) = self.editor.marquee {
+            let area = Rect::from_two_pos(anchor, current);
+            painter.rect_filled(
+                area,
+                0.0,
+                ui.visuals().selection.bg_fill.gamma_multiply(0.18),
+            );
+            painter.rect_stroke(
+                area,
+                0.0,
+                Stroke::new(1.0, ui.visuals().selection.bg_fill),
+                StrokeKind::Inside,
+            );
+            if finish_marquee {
+                let indices = note_rects
+                    .iter()
+                    .filter(|(_, rect)| rect.intersects(area))
+                    .map(|(index, _)| *index)
+                    .collect();
+                actions.push(EditorAction::SelectMany {
+                    indices,
+                    add: ui.input(|i| i.modifiers.ctrl || i.modifiers.shift),
+                });
+                actions.push(EditorAction::Marquee(None));
+            }
+        } else if finish_marquee {
+            actions.push(EditorAction::Marquee(None));
         }
     }
 
@@ -1111,13 +1172,29 @@ impl App {
             Pos2::new(g.keys.left(), g.velocity.top()),
             Pos2::new(g.keys.right(), g.velocity.bottom()),
         );
+        let chance_lane = self.editor.lane == NoteLane::Chance;
         ui.painter_at(keys_corner).text(
             keys_corner.center(),
             Align2::CENTER_CENTER,
-            "Velocity",
+            if chance_lane {
+                "Chance ▾"
+            } else {
+                "Velocity ▾"
+            },
             FontId::proportional(10.0),
-            ui.visuals().weak_text_color(),
+            ui.visuals().text_color(),
         );
+        let switch = crate::ui_kit::hint(
+            ui.interact(
+                keys_corner,
+                ui.scope_id().with("lane_switch"),
+                Sense::click(),
+            ),
+            "Click to switch the lane between note velocity and note chance.",
+        );
+        if switch.clicked() {
+            actions.push(EditorAction::SwitchLane);
+        }
         let Some((track, r)) = self.project.find_region(region) else {
             return;
         };
@@ -1129,7 +1206,11 @@ impl App {
                 continue;
             }
             let selected = self.editor.selected.contains(&index);
-            let top = g.velocity_y(note.velocity);
+            let top = if chance_lane {
+                g.velocity_y((u16::from(note.chance.min(100)) * 127 / 100) as u8)
+            } else {
+                g.velocity_y(note.velocity)
+            };
             let stroke = Stroke::new(
                 if selected { 3.0 } else { 2.0 },
                 if selected { Color32::WHITE } else { color },
@@ -1193,6 +1274,23 @@ impl App {
                 }
             }
             EditorAction::ClearSelection => self.editor.selected.clear(),
+            EditorAction::Marquee(area) => self.editor.marquee = area,
+            EditorAction::SelectMany { indices, add } => {
+                if !add {
+                    self.editor.selected.clear();
+                }
+                for index in indices {
+                    if !self.editor.selected.contains(&index) {
+                        self.editor.selected.push(index);
+                    }
+                }
+            }
+            EditorAction::SwitchLane => {
+                self.editor.lane = match self.editor.lane {
+                    NoteLane::Velocity => NoteLane::Chance,
+                    NoteLane::Chance => NoteLane::Velocity,
+                };
+            }
             EditorAction::AddNote { tick, pitch } => {
                 if !(start..end).contains(&tick) {
                     return;
@@ -1262,7 +1360,16 @@ impl App {
                 } else {
                     vec![index]
                 };
-                edit::set_notes_velocity(&mut project, region, &targets, velocity);
+                if self.editor.lane == NoteLane::Chance {
+                    let chance = (u16::from(velocity) * 100 / 127) as u8;
+                    if let Some(notes) =
+                        edit::region_mut(&mut project, region).and_then(|r| r.notes_mut())
+                    {
+                        fnoob_core::midi_tools::set_chance(notes, &targets, chance);
+                    }
+                } else {
+                    edit::set_notes_velocity(&mut project, region, &targets, velocity);
+                }
                 if project != self.project {
                     self.project = project;
                     self.sync_plan();
