@@ -52,6 +52,7 @@ pub struct Clip {
     pub gain: f32,
     pub fade_in: u64,
     pub fade_out: u64,
+    pub loop_len: u64,
     pub data: Arc<AudioData>,
 }
 
@@ -276,6 +277,7 @@ fn audio_track_plans(
                         gain: 10f32.powf(gain_db / 20.0),
                         fade_in: fade(region.fade_in_tick),
                         fade_out: fade(region.fade_out_tick),
+                        loop_len: region.loop_ticks.map_or(0, fade),
                         data: Arc::clone(data),
                     })
                 })
@@ -319,6 +321,7 @@ fn frozen_plan(
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            loop_len: 0,
             data: Arc::clone(data),
         })
         .into_iter()

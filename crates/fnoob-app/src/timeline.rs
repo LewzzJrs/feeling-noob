@@ -196,6 +196,12 @@ pub enum UiAction {
     SetGrid(fnoob_core::model::Grid),
     ToggleFold(Id),
     SelectTrackContent(Id),
+    FadePreview(Option<(Id, u64, u64)>),
+    SetFades {
+        region: Id,
+        fade_in: u64,
+        fade_out: u64,
+    },
     SetTempo {
         tick: u64,
         bpm: f64,
@@ -1155,7 +1161,19 @@ impl App {
                 };
                 painter.rect_stroke(rect, CornerRadius::same(4), border, StrokeKind::Inside);
                 self.draw_waveform(ui, g, region, rect);
-                self.draw_fades(ui, g, region, rect);
+                self.draw_fades(ui, g, region, rect, None);
+                if let (Some(repeat), Some(_)) = (region.loop_ticks, region.audio_file()) {
+                    let loop_painter = ui.painter_at(rect.intersect(g.lanes));
+                    let mut at = region.start_tick + repeat.max(1);
+                    while at < region.end_tick() {
+                        loop_painter.vline(
+                            g.x(at),
+                            rect.y_range(),
+                            Stroke::new(1.5, Color32::from_black_alpha(140)),
+                        );
+                        at += repeat.max(1);
+                    }
+                }
                 let notes = region.notes();
                 if let (Some(low), Some(high)) = (
                     notes.iter().map(|n| n.pitch).min(),
@@ -1220,6 +1238,7 @@ impl App {
                     ui.scope_id().with(("region", region.id)),
                     Sense::click_and_drag(),
                 );
+                self.draw_fades(ui, g, region, rect, Some(actions));
                 let near_edge =
                     |pos: Pos2| pos.x >= rect.right() - EDGE && rect.width() > 3.0 * EDGE;
                 let near_start =
@@ -1367,14 +1386,77 @@ impl App {
         }
     }
 
-    fn draw_fades(&self, ui: &egui::Ui, g: &Geometry, region: &Region, rect: Rect) {
+    fn draw_fades(
+        &self,
+        ui: &egui::Ui,
+        g: &Geometry,
+        region: &Region,
+        rect: Rect,
+        actions: Option<&mut Vec<UiAction>>,
+    ) {
         if region.audio_file().is_none() {
             return;
         }
+        let interactive = actions.is_some();
+        let mut actions = actions;
+        let (fade_in, fade_out) = match self.fade_preview {
+            Some((id, i, o)) if id == region.id => (i, o),
+            _ => (region.fade_in_tick, region.fade_out_tick),
+        };
         let painter = ui.painter_at(rect.intersect(g.lanes));
         let shade = Color32::from_black_alpha(110);
-        if region.fade_in_tick > 0 {
-            let x = g.x(region.start_tick + region.fade_in_tick);
+        for (is_in, value) in [(true, fade_in), (false, fade_out)] {
+            let x = if is_in {
+                g.x(region.start_tick + value)
+            } else {
+                g.x(region.end_tick() - value)
+            };
+            let handle = Rect::from_center_size(Pos2::new(x, rect.top() + 6.0), Vec2::splat(9.0));
+            if !handle.intersects(g.lanes) {
+                continue;
+            }
+            if !interactive {
+                painter.rect_filled(handle, 1.0, Color32::from_white_alpha(200));
+                continue;
+            }
+            let response = crate::ui_kit::hint(
+                ui.interact(
+                    handle,
+                    ui.scope_id().with(("fade", region.id, is_in)),
+                    Sense::drag(),
+                )
+                .on_hover_cursor(CursorIcon::ResizeHorizontal),
+                "Fade handle: drag to set the fade length.",
+            );
+            if (response.dragged() || response.drag_stopped())
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let tick = g.tick(pos.x).clamp(region.start_tick, region.end_tick());
+                let (mut new_in, mut new_out) = (fade_in, fade_out);
+                if is_in {
+                    new_in = (tick - region.start_tick).min(region.length_tick - fade_out);
+                } else {
+                    new_out = (region.end_tick() - tick).min(region.length_tick - fade_in);
+                }
+                let Some(actions) = actions.as_mut() else {
+                    continue;
+                };
+                actions.push(if response.drag_stopped() {
+                    UiAction::SetFades {
+                        region: region.id,
+                        fade_in: new_in,
+                        fade_out: new_out,
+                    }
+                } else {
+                    UiAction::FadePreview(Some((region.id, new_in, new_out)))
+                });
+            }
+        }
+        if interactive {
+            return;
+        }
+        if fade_in > 0 {
+            let x = g.x(region.start_tick + fade_in);
             painter.add(egui::Shape::convex_polygon(
                 vec![
                     rect.left_top(),
@@ -1385,8 +1467,8 @@ impl App {
                 Stroke::NONE,
             ));
         }
-        if region.fade_out_tick > 0 {
-            let x = g.x(region.end_tick() - region.fade_out_tick);
+        if fade_out > 0 {
+            let x = g.x(region.end_tick() - fade_out);
             painter.add(egui::Shape::convex_polygon(
                 vec![
                     Pos2::new(x, rect.top()),
@@ -2078,6 +2160,17 @@ impl App {
             UiAction::Run(command) => self.run(command),
             UiAction::SetGrid(grid) => self.edit(|p| p.snap.grid = grid),
             UiAction::ToggleFold(id) => self.edit_track(id, |t| t.folded = !t.folded),
+            UiAction::FadePreview(preview) => self.fade_preview = preview,
+            UiAction::SetFades {
+                region,
+                fade_in,
+                fade_out,
+            } => {
+                self.fade_preview = None;
+                self.edit(|p| {
+                    edit::set_region_fades(p, region, fade_in, fade_out);
+                });
+            }
             UiAction::SelectTrackContent(id) => {
                 self.selection.track = Some(id);
                 self.header_focus = false;
@@ -2507,35 +2600,40 @@ impl App {
 
     pub(crate) fn consolidate(&mut self) {
         let ranges = self.clip_ranges();
+        if ranges.is_empty() {
+            self.message = Some("Select clips or a time range to consolidate.".into());
+            return;
+        }
+        let kind = |t: Id| self.project.track(t).map(|t| t.kind);
         let midi: Vec<(Id, u64, u64)> = ranges
             .iter()
             .copied()
-            .filter(|(t, _, _)| {
-                self.project
-                    .track(*t)
-                    .is_some_and(|t| t.kind == fnoob_core::model::TrackKind::Instrument)
-            })
+            .filter(|(t, _, _)| kind(*t) == Some(fnoob_core::model::TrackKind::Instrument))
             .collect();
-        if midi.is_empty() {
-            self.message = Some(if ranges.is_empty() {
-                "Select clips or a time range to consolidate.".into()
-            } else {
-                "Only MIDI clips can be consolidated for now.".into()
-            });
-            return;
-        }
+        let audio: Vec<(Id, u64, u64)> = ranges
+            .iter()
+            .copied()
+            .filter(|(t, _, _)| kind(*t) == Some(fnoob_core::model::TrackKind::Audio))
+            .collect();
         let mut created = Vec::new();
-        self.edit(|p| {
-            for (track, start, end) in &midi {
-                created.extend(fnoob_core::range::consolidate_midi(p, *track, *start, *end));
+        if !midi.is_empty() {
+            self.edit(|p| {
+                for (track, start, end) in &midi {
+                    created.extend(fnoob_core::range::consolidate_midi(p, *track, *start, *end));
+                }
+            });
+        }
+        for (track, start, end) in audio {
+            match self.consolidate_audio(track, start, end) {
+                Ok(id) => created.push(id),
+                Err(e) => {
+                    self.message = Some(e);
+                    break;
+                }
             }
-        });
+        }
         self.selection.regions = created;
         self.time_selection = None;
-        if midi.len() < ranges.len() {
-            self.message =
-                Some("Audio clips were left as they are; only MIDI is consolidated.".into());
-        }
     }
 
     pub(crate) fn crop_selection(&mut self) {

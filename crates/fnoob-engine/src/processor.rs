@@ -1389,6 +1389,17 @@ fn sound(
     }
 }
 
+pub fn render_clips(track: &mut AudioTrackPlan, from: u64, frames: u64) -> Vec<f32> {
+    track.cursor = 0;
+    let mut out = Vec::with_capacity(frames as usize * 2);
+    for position in from..from + frames {
+        let (l, r) = clip_frame(track, position);
+        out.push(l);
+        out.push(r);
+    }
+    out
+}
+
 fn clip_frame(track: &mut AudioTrackPlan, position: u64) -> (f32, f32) {
     while let Some(clip) = track.clips.get(track.cursor)
         && clip.end <= position
@@ -1410,7 +1421,12 @@ fn clip_frame(track: &mut AudioTrackPlan, position: u64) -> (f32, f32) {
             if left_over < clip.fade_out {
                 gain *= left_over as f32 / clip.fade_out as f32;
             }
-            let (l, r) = clip.data.frame(clip.offset + into);
+            let source = if clip.loop_len > 0 {
+                into % clip.loop_len
+            } else {
+                into
+            };
+            let (l, r) = clip.data.frame(clip.offset + source);
             left += l * gain;
             right += r * gain;
         }
@@ -2175,6 +2191,21 @@ mod tests {
         let mut pool = AudioPool::new();
         pool.insert(file, Arc::new(data.clone()));
         (project, track, pool)
+    }
+
+    #[test]
+    fn looped_audio_clips_repeat_their_start() {
+        let ramp: Vec<f32> = (0..4000).map(|i| i as f32 / 4000.0).collect();
+        let data = AudioData::from_samples(1, ramp);
+        let (project, _, pool) = audio_project(&data, 0);
+        let mut plan = audio_plan(&project, &pool);
+        let track = &mut plan.audio_tracks[0];
+        track.clips[0].loop_len = 100;
+        let first = clip_frame(track, 30);
+        track.cursor = 0;
+        let again = clip_frame(track, 130);
+        assert!((first.0 - again.0).abs() < 1e-6);
+        assert!(first.0 > 0.0);
     }
 
     fn audio_plan(project: &Project, pool: &AudioPool) -> Box<RenderPlan> {

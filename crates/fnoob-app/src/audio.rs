@@ -325,6 +325,70 @@ impl App {
         Ok((rel, data))
     }
 
+    pub(crate) fn consolidate_audio(
+        &mut self,
+        track: Id,
+        start: u64,
+        end: u64,
+    ) -> Result<Id, String> {
+        if end <= start {
+            return Err("Nothing to consolidate.".into());
+        }
+        if self.project_dir.is_none() && !self.save_as() {
+            return Err(
+                "Consolidated audio is saved in the project folder, so save the project first."
+                    .into(),
+            );
+        }
+        let Some(dir) = self.project_dir.clone() else {
+            return Err("Save the project first.".into());
+        };
+        let rate = self.project.sample_rate;
+        let mut copy = self.project.clone();
+        for t in &mut copy.tracks {
+            t.solo = false;
+            t.group = None;
+            if t.id == track {
+                t.mute = false;
+                t.frozen = None;
+            }
+        }
+        let mut plan = fnoob_engine::RenderPlan::with_audio(&copy, rate, &self.pool);
+        let Some(lane) = plan.audio_tracks.iter_mut().find(|t| t.id == track) else {
+            return Err("Only audio tracks can be consolidated into audio.".into());
+        };
+        let timeline = copy.timeline(rate);
+        let from = timeline.tick_to_sample(start);
+        let frames = timeline.tick_to_sample(end).saturating_sub(from);
+        let samples = fnoob_engine::processor::render_clips(lane, from, frames);
+        let data = AudioData::from_samples(2, samples);
+        let name = self
+            .project
+            .track(track)
+            .map_or_else(|| "Audio".to_owned(), |t| file_stem_for(&t.name));
+        let rel = unique_audio_path(&dir, &format!("{name} Consolidated"), &HashSet::new());
+        let destination = dir.join(&rel);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        decode::write_wav(&destination, &data, rate)
+            .map_err(|e| format!("Cannot write the consolidated audio. {e}"))?;
+        let (channels, total) = (data.channels, data.frames);
+        let mut created = None;
+        let mut file = None;
+        self.edit(|p| {
+            fnoob_core::takes::clear_range(p, track, start, end);
+            let added = edit::add_audio_file(p, rel.clone(), channels, total);
+            file = Some(added);
+            created = edit::add_audio_region(p, track, start, added, 0);
+        });
+        if let Some(file) = file {
+            self.pool.insert(file, Arc::new(data));
+        }
+        self.sync_plan();
+        created.ok_or_else(|| "The consolidated clip could not be placed.".into())
+    }
+
     pub(crate) fn reversed_audio(
         &mut self,
         region: Id,

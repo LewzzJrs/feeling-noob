@@ -75,7 +75,8 @@ impl App {
             "Signature {}/{}",
             signature.numerator, signature.denominator
         ));
-        if matches!(region.content, RegionContent::Midi { .. }) {
+        let is_midi = matches!(region.content, RegionContent::Midi { .. });
+        {
             ui.horizontal(|ui| {
                 let mut looped = region.loop_ticks.is_some();
                 if ui
@@ -100,7 +101,8 @@ impl App {
                         edit::set_region_loop(p, id, Some(ticks(loop_beats).max(1)));
                     });
                 }
-                if ui
+                if is_midi
+                    && ui
                     .button("Duplicate Loop")
                     .on_hover_text(
                         "Copy the loop (or the whole clip) after itself and make it twice as long",

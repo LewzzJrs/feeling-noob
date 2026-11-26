@@ -83,12 +83,11 @@ Not started, in rough priority order:
 - MIDI tools: chop, ornament, rhythm, shape and euclidean generators
 - Scale mode: fold the piano roll to scale notes, scale-aware MIDI tools
 - Automation of plugin parameters, automation recording, clip envelopes
-- Crossfades between overlapping regions, fade handles on region corners
+- Crossfades between overlapping regions, fade curves
 - Quantize strength and swing, groove templates
 - Rubber-band selection, draw mode and chance lane in the piano roll
 - Nested groups, routing between tracks, sidechain inputs
 - Crossfader and cue output
-- Consolidating audio clips into one audio file
 - CPU meter per track
 - Event list editor, project versions, MIDI output to hardware
 

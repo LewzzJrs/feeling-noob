@@ -89,9 +89,6 @@ pub fn set_region_loop(project: &mut Project, id: Id, loop_ticks: Option<u64>) -
     let Some(region) = region_mut(project, id) else {
         return false;
     };
-    if !matches!(region.content, RegionContent::Midi { .. }) {
-        return false;
-    }
     let value = loop_ticks
         .filter(|l| *l > 0)
         .map(|l| l.min(region.length_tick));
