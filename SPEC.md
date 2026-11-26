@@ -343,6 +343,7 @@ Phase 22 aligned the shortcuts with the common clip-based workstation layout on 
 | Play from insert marker / Stop (back to insert marker) | `Space` |
 | Continue from stop point | `Shift+Space` |
 | Play from insert marker (also while playing) | `Ctrl+Space` |
+| Extend the time selection by grid / by track (timeline), extend the track title selection (titles), transpose by an octave / lengthen or shorten notes (piano roll) | `Shift+Left` / `Shift+Right`, `Shift+Up` / `Shift+Down` |
 | Move insert marker to the playhead | `Ctrl+Shift+Space` |
 | Zoom to time selection or selected clips / zoom back | `Z` / `X` |
 | Fit the whole song in view | `W` |

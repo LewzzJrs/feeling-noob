@@ -61,6 +61,10 @@ fn repeat_allowed(command: Command) -> bool {
             | Command::ZoomOut
             | Command::MoveLeft
             | Command::MoveRight
+            | Command::ExtendLeft
+            | Command::ExtendRight
+            | Command::ExtendUp
+            | Command::ExtendDown
             | Command::LoopShorter
             | Command::LoopLonger
             | Command::SelectPreviousTrack

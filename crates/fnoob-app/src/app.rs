@@ -157,6 +157,7 @@ pub struct App {
     pub(crate) insert_tick: u64,
     pub(crate) time_selection: Option<crate::arrange::TimeSelection>,
     pub(crate) time_drag: Option<(u64, usize)>,
+    key_selection: Option<((u64, usize), (u64, usize))>,
     pub(crate) time_clipboard: Option<fnoob_core::range::RangeClip>,
     pub(crate) zoom_history: crate::arrange::ZoomHistory,
     pub(crate) lanes_width: f32,
@@ -263,6 +264,7 @@ impl App {
             insert_tick: 0,
             time_selection: None,
             time_drag: None,
+            key_selection: None,
             time_clipboard: None,
             zoom_history: crate::arrange::ZoomHistory::default(),
             lanes_width: 800.0,
@@ -593,6 +595,105 @@ impl App {
         })
     }
 
+    fn step_track(&self, from: usize, up: bool) -> usize {
+        let visible = |i: usize| {
+            self.project
+                .tracks
+                .get(i)
+                .is_some_and(|t| !self.project.is_folded_away(t))
+        };
+        let mut index = from;
+        loop {
+            let next = if up {
+                index.checked_sub(1)
+            } else {
+                Some(index + 1).filter(|i| *i < self.project.tracks.len())
+            };
+            match next {
+                Some(i) if visible(i) => return i,
+                Some(i) => index = i,
+                None => return from,
+            }
+        }
+    }
+
+    fn extend_selection(&mut self, command: Command) {
+        if self.project.tracks.is_empty() {
+            return;
+        }
+        let position = |id: Id| self.project.tracks.iter().position(|t| t.id == id);
+        if self.header_focus {
+            if let Command::ExtendUp | Command::ExtendDown = command {
+                let anchor = self
+                    .selection
+                    .anchor
+                    .or(self.selection.track)
+                    .and_then(position)
+                    .unwrap_or(0);
+                let indices: Vec<usize> = self
+                    .title_selection()
+                    .iter()
+                    .filter_map(|id| position(*id))
+                    .collect();
+                let low = indices.iter().min().copied().unwrap_or(anchor);
+                let high = indices.iter().max().copied().unwrap_or(anchor);
+                let edge = if high != anchor { high } else { low };
+                let next = self.step_track(edge, command == Command::ExtendUp);
+                let id = self.project.tracks[next].id;
+                self.focus_title(id, true, false);
+            }
+            return;
+        }
+        let last = self.project.tracks.len() - 1;
+        let current = self.time_selection.clone();
+        let (anchor, edge) = match (self.key_selection, &current) {
+            (Some((anchor, edge)), Some(selection))
+                if selection.start == anchor.0.min(edge.0)
+                    && selection.end == anchor.0.max(edge.0) =>
+            {
+                (anchor, edge)
+            }
+            (_, Some(selection)) => {
+                let first = selection
+                    .tracks
+                    .first()
+                    .and_then(|id| position(*id))
+                    .unwrap_or(0);
+                let end = selection
+                    .tracks
+                    .last()
+                    .and_then(|id| position(*id))
+                    .unwrap_or(first);
+                ((selection.start, first), (selection.end, end))
+            }
+            (_, None) => {
+                let index = self.selection.track.and_then(position).unwrap_or(0);
+                ((self.insert_tick, index), (self.insert_tick, index))
+            }
+        };
+        let grid = grid_ticks(self.project.snap.grid, self.project.time_signature);
+        let edge = match command {
+            Command::ExtendLeft => (edge.0.saturating_sub(grid), edge.1),
+            Command::ExtendRight => (edge.0 + grid, edge.1),
+            Command::ExtendUp => (edge.0, self.step_track(edge.1, true)),
+            _ => (edge.0, self.step_track(edge.1, false).min(last)),
+        };
+        let edge =
+            if edge.0 == anchor.0 && matches!(command, Command::ExtendUp | Command::ExtendDown) {
+                (anchor.0 + grid, edge.1)
+            } else {
+                edge
+            };
+        self.time_drag = Some(anchor);
+        self.update_time_selection(edge.0, edge.1);
+        self.time_drag = None;
+        self.key_selection = Some((anchor, edge));
+        if self.time_selection.is_none() {
+            self.insert_tick = edge.0;
+            self.key_selection = None;
+        }
+    }
+
     fn select_track_offset(&mut self, offset: i64) {
         if self.project.tracks.is_empty() {
             return;
@@ -647,6 +748,10 @@ impl App {
                 self.time_selection = None;
             }
             Command::ZoomToSelection => self.zoom_to_selection(),
+            Command::ExtendLeft
+            | Command::ExtendRight
+            | Command::ExtendUp
+            | Command::ExtendDown => self.extend_selection(command),
             Command::ZoomBack => {
                 if let Some(state) = self.zoom_history.pop() {
                     self.view.pixels_per_tick = state.pixels_per_tick;

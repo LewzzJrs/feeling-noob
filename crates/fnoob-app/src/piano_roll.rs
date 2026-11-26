@@ -309,6 +309,26 @@ impl App {
                     edit::move_notes(p, region, &selected, delta, 0);
                 });
             }
+            Command::ExtendUp | Command::ExtendDown => {
+                let delta = if command == Command::ExtendUp {
+                    12
+                } else {
+                    -12
+                };
+                self.edit(|p| {
+                    edit::move_notes(p, region, &selected, 0, delta);
+                });
+            }
+            Command::ExtendLeft | Command::ExtendRight => {
+                let delta = if command == Command::ExtendLeft {
+                    -(grid as i64)
+                } else {
+                    grid as i64
+                };
+                self.edit(|p| {
+                    edit::resize_notes(p, region, &selected, delta);
+                });
+            }
             Command::SelectPreviousTrack | Command::SelectNextTrack => {
                 let delta = if command == Command::SelectPreviousTrack {
                     1

@@ -100,6 +100,10 @@ pub enum Command {
     Ungroup,
     FreezeTrack,
     FlattenTrack,
+    ExtendLeft,
+    ExtendRight,
+    ExtendUp,
+    ExtendDown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -211,6 +215,10 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (plain(Key::Function(10)), Command::BackToArrangement),
     (plain(Key::Home), Command::GoToBeginning),
     (plain(Key::Left), Command::MoveLeft),
+    (shift(Key::Left), Command::ExtendLeft),
+    (shift(Key::Right), Command::ExtendRight),
+    (shift(Key::Up), Command::ExtendUp),
+    (shift(Key::Down), Command::ExtendDown),
     (plain(Key::Right), Command::MoveRight),
     (alt(Key::Left), Command::NudgeLeft),
     (alt(Key::Right), Command::NudgeRight),

@@ -2334,7 +2334,7 @@ impl App {
         }
     }
 
-    fn update_time_selection(&mut self, tick: u64, index: usize) {
+    pub(crate) fn update_time_selection(&mut self, tick: u64, index: usize) {
         let Some((anchor, anchor_index)) = self.time_drag else {
             return;
         };
