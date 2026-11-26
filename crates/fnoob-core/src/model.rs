@@ -682,12 +682,13 @@ const SEND_LABELS: [&str; 8] = [
     "Send A", "Send B", "Send C", "Send D", "Send E", "Send F", "Send G", "Send H",
 ];
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AutomationParam {
     #[default]
     Volume,
     Pan,
     Send(u8),
+    Device(Id, u8),
 }
 
 impl AutomationParam {
@@ -704,6 +705,7 @@ impl AutomationParam {
             Self::Volume => "Volume",
             Self::Pan => "Pan",
             Self::Send(i) => SEND_LABELS.get(usize::from(i)).copied().unwrap_or("Send"),
+            Self::Device(..) => "Device",
         }
     }
 
@@ -711,6 +713,7 @@ impl AutomationParam {
         match self {
             Self::Volume | Self::Send(_) => (-60.0, MAX_FADER_DB),
             Self::Pan => (-1.0, 1.0),
+            Self::Device(..) => (0.0, 1.0),
         }
     }
 
@@ -718,6 +721,7 @@ impl AutomationParam {
         match self {
             Self::Volume | Self::Send(_) => (SILENT_DB..=MAX_FADER_DB).contains(&value),
             Self::Pan => (-1.0..=1.0).contains(&value),
+            Self::Device(..) => (0.0..=1.0).contains(&value),
         }
     }
 }
@@ -729,6 +733,15 @@ pub struct Automation {
     pub pan: Vec<AutomationPoint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sends: Vec<Vec<AutomationPoint>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<DeviceLane>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeviceLane {
+    pub slot: Id,
+    pub param: u8,
+    pub points: Vec<AutomationPoint>,
 }
 
 impl Automation {
@@ -737,6 +750,11 @@ impl Automation {
             AutomationParam::Volume => &self.volume,
             AutomationParam::Pan => &self.pan,
             AutomationParam::Send(i) => self.sends.get(usize::from(i)).map_or(&[], Vec::as_slice),
+            AutomationParam::Device(slot, param) => self
+                .devices
+                .iter()
+                .find(|l| l.slot == slot && l.param == param)
+                .map_or(&[], |l| l.points.as_slice()),
         }
     }
 
@@ -750,6 +768,24 @@ impl Automation {
                     self.sends.resize(i + 1, Vec::new());
                 }
                 &mut self.sends[i]
+            }
+            AutomationParam::Device(slot, param) => {
+                let index = match self
+                    .devices
+                    .iter()
+                    .position(|l| l.slot == slot && l.param == param)
+                {
+                    Some(index) => index,
+                    None => {
+                        self.devices.push(DeviceLane {
+                            slot,
+                            param,
+                            points: Vec::new(),
+                        });
+                        self.devices.len() - 1
+                    }
+                };
+                &mut self.devices[index].points
             }
         }
     }
@@ -766,6 +802,12 @@ impl Automation {
                 .enumerate()
                 .map(|(i, lane)| (AutomationParam::Send(i as u8), lane.as_slice())),
         )
+        .chain(self.devices.iter().map(|l| {
+            (
+                AutomationParam::Device(l.slot, l.param),
+                l.points.as_slice(),
+            )
+        }))
     }
 }
 

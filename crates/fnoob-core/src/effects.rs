@@ -355,6 +355,157 @@ impl BuiltinEffect {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamInfo {
+    pub name: &'static str,
+    pub min: f32,
+    pub max: f32,
+    pub log: bool,
+    pub unit: &'static str,
+}
+
+const fn param(name: &'static str, min: f32, max: f32, log: bool, unit: &'static str) -> ParamInfo {
+    ParamInfo {
+        name,
+        min,
+        max,
+        log,
+        unit,
+    }
+}
+
+impl ParamInfo {
+    pub fn from_normal(&self, normal: f32) -> f32 {
+        let n = normal.clamp(0.0, 1.0);
+        if self.log && self.min > 0.0 {
+            self.min * (self.max / self.min).powf(n)
+        } else {
+            self.min + (self.max - self.min) * n
+        }
+    }
+
+    pub fn to_normal(&self, value: f32) -> f32 {
+        let v = value.clamp(self.min, self.max);
+        if self.log && self.min > 0.0 {
+            (v / self.min).ln() / (self.max / self.min).ln()
+        } else {
+            (v - self.min) / (self.max - self.min)
+        }
+    }
+}
+
+const EQ_PARAMS: [ParamInfo; 4] = [
+    param("Low gain", -24.0, 24.0, false, " dB"),
+    param("Mid gain", -24.0, 24.0, false, " dB"),
+    param("Mid freq", 100.0, 10_000.0, true, " Hz"),
+    param("High gain", -24.0, 24.0, false, " dB"),
+];
+const COMPRESSOR_PARAMS: [ParamInfo; 3] = [
+    param("Threshold", -60.0, 0.0, false, " dB"),
+    param("Ratio", 1.0, 20.0, true, ":1"),
+    param("Makeup", 0.0, 24.0, false, " dB"),
+];
+const DELAY_PARAMS: [ParamInfo; 2] = [
+    param("Feedback", 0.0, 0.95, false, ""),
+    param("Mix", 0.0, 1.0, false, ""),
+];
+const REVERB_PARAMS: [ParamInfo; 3] = [
+    param("Size", 0.0, 1.0, false, ""),
+    param("Damping", 0.0, 1.0, false, ""),
+    param("Mix", 0.0, 1.0, false, ""),
+];
+const LIMITER_PARAMS: [ParamInfo; 2] = [
+    param("Gain", 0.0, 24.0, false, " dB"),
+    param("Ceiling", -24.0, 0.0, false, " dB"),
+];
+const UTILITY_PARAMS: [ParamInfo; 2] = [
+    param("Gain", -60.0, 24.0, false, " dB"),
+    param("Width", 0.0, 2.0, false, ""),
+];
+const FILTER_PARAMS: [ParamInfo; 3] = [
+    param("Cutoff", 20.0, 20_000.0, true, " Hz"),
+    param("Resonance", 0.3, 12.0, true, ""),
+    param("LFO amount", 0.0, 1.0, false, ""),
+];
+const CHORUS_PARAMS: [ParamInfo; 3] = [
+    param("Rate", 0.01, 10.0, true, " Hz"),
+    param("Depth", 0.0, 10.0, false, " ms"),
+    param("Mix", 0.0, 1.0, false, ""),
+];
+const SATURATOR_PARAMS: [ParamInfo; 3] = [
+    param("Drive", 0.0, 36.0, false, " dB"),
+    param("Output", -24.0, 12.0, false, " dB"),
+    param("Mix", 0.0, 1.0, false, ""),
+];
+const GATE_PARAMS: [ParamInfo; 2] = [
+    param("Threshold", -80.0, 0.0, false, " dB"),
+    param("Floor", -80.0, 0.0, false, " dB"),
+];
+
+impl BuiltinEffect {
+    pub fn params(&self) -> &'static [ParamInfo] {
+        match self {
+            Self::Eq(_) => &EQ_PARAMS,
+            Self::Compressor(_) => &COMPRESSOR_PARAMS,
+            Self::Delay(_) => &DELAY_PARAMS,
+            Self::Reverb(_) => &REVERB_PARAMS,
+            Self::Limiter(_) => &LIMITER_PARAMS,
+            Self::Utility(_) => &UTILITY_PARAMS,
+            Self::AutoFilter(_) => &FILTER_PARAMS,
+            Self::Chorus(_) => &CHORUS_PARAMS,
+            Self::Saturator(_) => &SATURATOR_PARAMS,
+            Self::Gate(_) => &GATE_PARAMS,
+        }
+    }
+
+    fn field(&mut self, index: u8) -> Option<&mut f32> {
+        Some(match (self, index) {
+            (Self::Eq(p), 0) => &mut p.low_gain_db,
+            (Self::Eq(p), 1) => &mut p.mid_gain_db,
+            (Self::Eq(p), 2) => &mut p.mid_hz,
+            (Self::Eq(p), 3) => &mut p.high_gain_db,
+            (Self::Compressor(p), 0) => &mut p.threshold_db,
+            (Self::Compressor(p), 1) => &mut p.ratio,
+            (Self::Compressor(p), 2) => &mut p.makeup_db,
+            (Self::Delay(p), 0) => &mut p.feedback,
+            (Self::Delay(p), 1) => &mut p.mix,
+            (Self::Reverb(p), 0) => &mut p.size,
+            (Self::Reverb(p), 1) => &mut p.damping,
+            (Self::Reverb(p), 2) => &mut p.mix,
+            (Self::Limiter(p), 0) => &mut p.gain_db,
+            (Self::Limiter(p), 1) => &mut p.ceiling_db,
+            (Self::Utility(p), 0) => &mut p.gain_db,
+            (Self::Utility(p), 1) => &mut p.width,
+            (Self::AutoFilter(p), 0) => &mut p.cutoff_hz,
+            (Self::AutoFilter(p), 1) => &mut p.resonance,
+            (Self::AutoFilter(p), 2) => &mut p.lfo_depth,
+            (Self::Chorus(p), 0) => &mut p.rate_hz,
+            (Self::Chorus(p), 1) => &mut p.depth_ms,
+            (Self::Chorus(p), 2) => &mut p.mix,
+            (Self::Saturator(p), 0) => &mut p.drive_db,
+            (Self::Saturator(p), 1) => &mut p.output_db,
+            (Self::Saturator(p), 2) => &mut p.mix,
+            (Self::Gate(p), 0) => &mut p.threshold_db,
+            (Self::Gate(p), 1) => &mut p.floor_db,
+            _ => return None,
+        })
+    }
+
+    pub fn normal(&self, index: u8) -> Option<f32> {
+        let info = *self.params().get(usize::from(index))?;
+        let mut copy = *self;
+        copy.field(index).map(|v| info.to_normal(*v))
+    }
+
+    pub fn set_normal(&mut self, index: u8, normal: f32) {
+        if let Some(info) = self.params().get(usize::from(index)).copied()
+            && let Some(field) = self.field(index)
+        {
+            *field = info.from_normal(normal);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +521,26 @@ mod tests {
             p.feedback = 1.5;
         }
         assert!(!bad.is_valid());
+    }
+
+    #[test]
+    fn parameters_map_to_and_from_normal() {
+        for mut effect in BuiltinEffect::all() {
+            for (i, info) in effect.params().iter().enumerate() {
+                let i = i as u8;
+                effect.set_normal(i, 0.25);
+                assert!(
+                    (effect.normal(i).unwrap() - 0.25).abs() < 1e-4,
+                    "{}",
+                    info.name
+                );
+                effect.set_normal(i, 0.0);
+                assert!(effect.is_valid(), "{} at 0", info.name);
+                effect.set_normal(i, 1.0);
+                assert!(effect.is_valid(), "{} at 1", info.name);
+            }
+            assert!(effect.normal(9).is_none());
+        }
     }
 
     #[test]

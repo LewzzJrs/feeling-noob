@@ -248,6 +248,7 @@ fn automation_value(lane: Rect, param: AutomationParam, y: f32) -> f32 {
     match param {
         AutomationParam::Volume | AutomationParam::Send(_) => (value * 2.0).round() / 2.0,
         AutomationParam::Pan => (value * 100.0).round() / 100.0,
+        AutomationParam::Device(..) => (value * 1000.0).round() / 1000.0,
     }
 }
 
@@ -256,6 +257,62 @@ fn base_value(track: &Track, param: AutomationParam) -> f32 {
         AutomationParam::Volume => track.strip.volume_db.max(-60.0),
         AutomationParam::Pan => track.strip.pan,
         AutomationParam::Send(i) => track.strip.send_at(usize::from(i)).level_db.max(-60.0),
+        AutomationParam::Device(slot, index) => device_effect(track, slot)
+            .and_then(|effect| effect.normal(index))
+            .unwrap_or(0.0),
+    }
+}
+
+fn device_effect(track: &Track, slot: Id) -> Option<fnoob_core::effects::BuiltinEffect> {
+    track
+        .strip
+        .inserts
+        .iter()
+        .find(|s| s.id == slot)
+        .and_then(|s| s.builtin)
+}
+
+pub(crate) fn device_params(track: &Track) -> Vec<AutomationParam> {
+    track
+        .strip
+        .inserts
+        .iter()
+        .filter_map(|s| s.builtin.map(|effect| (s.id, effect)))
+        .flat_map(|(slot, effect)| {
+            (0..effect.params().len() as u8).map(move |i| AutomationParam::Device(slot, i))
+        })
+        .collect()
+}
+
+pub(crate) fn automation_label(track: &Track, param: AutomationParam) -> String {
+    match param {
+        AutomationParam::Device(slot, index) => device_effect(track, slot)
+            .and_then(|effect| {
+                effect
+                    .params()
+                    .get(usize::from(index))
+                    .map(|info| format!("{}: {}", effect.label(), info.name))
+            })
+            .unwrap_or_else(|| "Removed device".to_string()),
+        other => other.label().to_string(),
+    }
+}
+
+fn automation_text(track: &Track, param: AutomationParam, value: f32) -> String {
+    match param {
+        AutomationParam::Volume | AutomationParam::Send(_) => format!("{value:+.1} dB"),
+        AutomationParam::Pan => format!("Pan {value:+.2}"),
+        AutomationParam::Device(slot, index) => device_effect(track, slot)
+            .and_then(|effect| effect.params().get(usize::from(index)).copied())
+            .map(|info| {
+                let real = info.from_normal(value);
+                if info.unit.is_empty() {
+                    format!("{} {real:.2}", info.name)
+                } else {
+                    format!("{} {real:.1}{}", info.name, info.unit)
+                }
+            })
+            .unwrap_or_else(|| format!("{value:.3}")),
     }
 }
 
@@ -1340,7 +1397,7 @@ impl App {
         painter.text(
             lane.left_top() + Vec2::new(6.0, 4.0),
             Align2::LEFT_TOP,
-            param.label(),
+            automation_label(track, param),
             FontId::proportional(11.0),
             color,
         );
@@ -1354,24 +1411,13 @@ impl App {
             let response = ui
                 .interact(
                     hit,
-                    ui.scope_id()
-                        .with(("point", track.id, param.label(), index)),
+                    ui.scope_id().with(("point", track.id, param, index)),
                     Sense::click_and_drag(),
                 )
-                .on_hover_text(match param {
-                    AutomationParam::Volume | AutomationParam::Send(_) => {
-                        format!(
-                            "{:+.1} dB. Right-click for the curve or to delete.",
-                            point.value
-                        )
-                    }
-                    AutomationParam::Pan => {
-                        format!(
-                            "Pan {:+.2}. Right-click for the curve or to delete.",
-                            point.value
-                        )
-                    }
-                });
+                .on_hover_text(format!(
+                    "{}. Right-click for the curve or to delete.",
+                    automation_text(track, param, point.value)
+                ));
             if response.drag_started() {
                 actions.push(UiAction::AutomationDragStart {
                     track: track.id,
@@ -1842,19 +1888,29 @@ impl App {
                 crate::ui_kit::compact(ui);
                 if self.automation_view {
                     let current = self.automation_param(id);
-                    egui::ComboBox::from_id_salt(("automation", id))
-                        .width(80.0)
-                        .selected_text(current.label())
-                        .show_ui(ui, |ui| {
-                            for param in AutomationParam::with_sends(self.project.returns.len()) {
-                                if ui
-                                    .selectable_label(param == current, param.label())
-                                    .clicked()
-                                {
-                                    actions.push(UiAction::SetAutomationParam { track: id, param });
+                    if let Some(track) = self.project.track(id) {
+                        let mut params = AutomationParam::with_sends(self.project.returns.len());
+                        params.extend(device_params(track));
+                        egui::ComboBox::from_id_salt(("automation", id))
+                            .width(80.0)
+                            .selected_text(automation_label(track, current))
+                            .show_ui(ui, |ui| {
+                                for param in params {
+                                    if ui
+                                        .selectable_label(
+                                            param == current,
+                                            automation_label(track, param),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.push(UiAction::SetAutomationParam {
+                                            track: id,
+                                            param,
+                                        });
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    }
                 }
                 self.track_io(ui, id);
             });

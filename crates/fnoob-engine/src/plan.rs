@@ -31,6 +31,7 @@ pub struct TrackPlan {
     pub audible: bool,
     pub strip: StripPlan,
     pub envelopes: Envelopes,
+    pub device_automation: Vec<DeviceAutomation>,
     pub notes: Vec<PlannedNote>,
     pub synth: Synth,
     pub session: Session,
@@ -61,6 +62,54 @@ pub struct Envelopes {
     pub volume: Vec<(u64, f32, f32)>,
     pub pan: Vec<(u64, f32, f32)>,
     pub sends: Vec<Vec<(u64, f32, f32)>>,
+}
+
+pub type Envelope = Vec<(u64, f32, f32)>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceAutomation {
+    pub slot: usize,
+    pub base: fnoob_core::effects::BuiltinEffect,
+    pub lanes: Vec<(u8, Envelope)>,
+}
+
+fn device_automation(
+    track: &fnoob_core::model::Track,
+    timeline: Timeline,
+    plugins: &PluginMap,
+) -> Vec<DeviceAutomation> {
+    if track.automation_off {
+        return Vec::new();
+    }
+    track
+        .strip
+        .inserts
+        .iter()
+        .filter_map(|slot| {
+            let base = slot.builtin?;
+            let index = *plugins.get(&slot.id)?;
+            let lanes: Vec<(u8, Envelope)> = track
+                .automation
+                .devices
+                .iter()
+                .filter(|l| l.slot == slot.id && !l.points.is_empty())
+                .map(|l| {
+                    (
+                        l.param,
+                        l.points
+                            .iter()
+                            .map(|p| (timeline.tick_to_sample(p.tick), p.value, p.curve))
+                            .collect(),
+                    )
+                })
+                .collect();
+            (!lanes.is_empty()).then_some(DeviceAutomation {
+                slot: index,
+                base,
+                lanes,
+            })
+        })
+        .collect()
 }
 
 pub fn envelope_at(points: &[(u64, f32, f32)], sample: u64, default: f32) -> f32 {
@@ -120,6 +169,7 @@ pub struct AudioTrackPlan {
     pub audible: bool,
     pub strip: StripPlan,
     pub envelopes: Envelopes,
+    pub device_automation: Vec<DeviceAutomation>,
     pub clips: Vec<Clip>,
     pub session: Session,
     pub cursor: usize,
@@ -191,6 +241,7 @@ pub struct GroupPlan {
     pub audible: bool,
     pub strip: StripPlan,
     pub envelopes: Envelopes,
+    pub device_automation: Vec<DeviceAutomation>,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
 }
@@ -303,6 +354,7 @@ fn audio_track_plans(
                 audible,
                 strip: member_strip(project, track, index, plugins),
                 envelopes: Envelopes::for_track(track, timeline),
+                device_automation: device_automation(track, timeline, plugins),
                 clips,
                 session: Session::build(track, timeline, pool, project.time_signature),
                 cursor: 0,
@@ -348,6 +400,7 @@ fn frozen_plan(
         audible,
         strip,
         envelopes: Envelopes::for_track(track, timeline),
+        device_automation: device_automation(track, timeline, plugins),
         clips,
         session: Session::default(),
         cursor: 0,
@@ -410,6 +463,7 @@ fn group_plans_unsorted(
             audible: project.is_track_audible(track),
             strip: member_strip(project, track, index, plugins),
             envelopes: Envelopes::for_track(track, timeline),
+            device_automation: device_automation(track, timeline, plugins),
             left: vec![0.0; MAX_BLOCK],
             right: vec![0.0; MAX_BLOCK],
         })
@@ -509,6 +563,7 @@ fn track_plans(
                 audible,
                 strip: member_strip(project, track, index, plugins),
                 envelopes: Envelopes::for_track(track, timeline),
+                device_automation: device_automation(track, timeline, plugins),
                 notes,
                 session: Session::build(track, timeline, pool, project.time_signature),
                 synth: Synth::for_instrument(track.instrument.as_ref(), timeline.sample_rate, pool),

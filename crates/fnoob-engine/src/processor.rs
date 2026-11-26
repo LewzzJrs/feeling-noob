@@ -1089,6 +1089,7 @@ impl Processor {
                     &transport,
                 );
             }
+            apply_device_automation(&mut self.plugins, &track.device_automation, start);
             run_inserts(
                 &mut self.plugins,
                 &track.strip.inserts,
@@ -1099,6 +1100,7 @@ impl Processor {
         }
         for track in &mut self.plan.audio_tracks {
             if track.audible {
+                apply_device_automation(&mut self.plugins, &track.device_automation, start);
                 run_inserts(
                     &mut self.plugins,
                     &track.strip.inserts,
@@ -1140,6 +1142,7 @@ impl Processor {
             }
             {
                 let group = &mut self.plan.groups[index];
+                apply_device_automation(&mut self.plugins, &group.device_automation, start);
                 run_inserts(
                     &mut self.plugins,
                     &group.strip.inserts,
@@ -1269,6 +1272,23 @@ fn run_plugin(
     for sample in left.iter_mut().chain(right.iter_mut()) {
         if !sample.is_finite() {
             *sample = 0.0;
+        }
+    }
+}
+
+fn apply_device_automation(
+    plugins: &mut [Option<EngineSlot>],
+    automation: &[crate::plan::DeviceAutomation],
+    position: u64,
+) {
+    for device in automation {
+        if let Some(Some(EngineSlot::Builtin(effect))) = plugins.get_mut(device.slot) {
+            let mut params = device.base;
+            for (param, lane) in &device.lanes {
+                let current = params.normal(*param).unwrap_or(0.0);
+                params.set_normal(*param, crate::plan::envelope_at(lane, position, current));
+            }
+            effect.set_params(params);
         }
     }
 }
@@ -2494,5 +2514,52 @@ mod tests {
         h.send(Command::RemovePlugin(3)).unwrap();
         p.process(&mut out);
         h.collect_garbage();
+    }
+
+    #[test]
+    fn device_automation_drives_builtin_params() {
+        let (mut project, track, _) = mixer_project();
+        let slot_id = project.alloc_id();
+        let effect = fnoob_core::effects::BuiltinEffect::all()[5];
+        project
+            .track_mut(track)
+            .unwrap()
+            .strip
+            .inserts
+            .push(fnoob_core::model::PluginSlot::builtin(slot_id, effect));
+        let render = |project: &Project| {
+            let pool = mixer_pool(project);
+            let mut map = crate::plan::PluginMap::new();
+            map.insert(slot_id, 3);
+            let plan = Box::new(RenderPlan::build(project, SR, &pool, &map));
+            let (mut p, mut h) = create(SR, 2, plan);
+            h.send(Command::InstallBuiltin {
+                slot: 3,
+                effect: Box::new(BuiltinProcessor::new(effect, SR)),
+            })
+            .unwrap();
+            h.send(Command::Play).unwrap();
+            let mut out = vec![0.0; 2 * 64];
+            p.process(&mut out);
+            h.send(Command::RemovePlugin(3)).unwrap();
+            p.process(&mut vec![0.0; 2 * 64]);
+            h.collect_garbage();
+            out.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        assert!(render(&project) > 0.1);
+        let param = fnoob_core::model::AutomationParam::Device(slot_id, 0);
+        project
+            .track_mut(track)
+            .unwrap()
+            .automation
+            .lane_mut(param)
+            .push(fnoob_core::model::AutomationPoint {
+                tick: 0,
+                value: 0.0,
+                curve: 0.0,
+            });
+        assert!(render(&project) < 0.001);
+        project.track_mut(track).unwrap().automation_off = true;
+        assert!(render(&project) > 0.1);
     }
 }
