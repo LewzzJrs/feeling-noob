@@ -104,6 +104,8 @@ pub enum Command {
     ExtendRight,
     ExtendUp,
     ExtendDown,
+    SessionRecord,
+    CaptureScene,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -261,6 +263,8 @@ pub const BINDINGS: &[(KeyCombo, Command)] = &[
     (ctrl_alt(letter('T')), Command::NewReturnTrack),
     (ctrl_shift(letter('M')), Command::InsertMidiClip),
     (ctrl(letter('I')), Command::InsertScene),
+    (ctrl_shift(letter('I')), Command::CaptureScene),
+    (ctrl_shift(Key::Function(9)), Command::SessionRecord),
     (plain(Key::Enter), Command::LaunchSelected),
     (ctrl(Key::Enter), Command::StopSelectedTrack),
     (ctrl(letter('E')), Command::SplitAtPlayhead),

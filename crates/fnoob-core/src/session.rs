@@ -151,6 +151,10 @@ pub struct SessionClip {
     pub launch: LaunchMode,
     #[serde(default)]
     pub follow: FollowActions,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legato: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantize: Option<LaunchQuantize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,6 +232,8 @@ fn new_clip(
         looping: true,
         launch: LaunchMode::Trigger,
         follow: FollowActions::default(),
+        legato: false,
+        quantize: None,
     }
 }
 
@@ -341,6 +347,33 @@ pub fn duplicate_clip(project: &mut Project, track: Id, scene: usize) -> Option<
     place(project, track, scene + 1, copy)
 }
 
+pub fn toggle_stop_button(project: &mut Project, track: Id, scene: usize) -> bool {
+    let Some(t) = project.track_mut(track) else {
+        return false;
+    };
+    match t.no_stop.iter().position(|s| *s == scene) {
+        Some(i) => {
+            t.no_stop.remove(i);
+        }
+        None => t.no_stop.push(scene),
+    }
+    true
+}
+
+pub fn capture_scene(project: &mut Project, at: usize, playing: &[(Id, usize)]) -> bool {
+    if !insert_scene(project, at) {
+        return false;
+    }
+    for &(track, slot) in playing {
+        let from = if slot >= at { slot + 1 } else { slot };
+        if let Some(mut copy) = clip(project, track, from).cloned() {
+            copy.region.id = project.alloc_id();
+            place(project, track, at, copy);
+        }
+    }
+    true
+}
+
 pub fn duplicate_scene(project: &mut Project, index: usize) -> bool {
     if index >= project.scenes.len() || !insert_scene(project, index + 1) {
         return false;
@@ -385,6 +418,8 @@ pub fn copy_from_arrangement(project: &mut Project, region: Id, scene: usize) ->
         looping: true,
         launch: LaunchMode::Trigger,
         follow: FollowActions::default(),
+        legato: false,
+        quantize: None,
     };
     place(project, track, scene, clip)
 }
@@ -399,6 +434,25 @@ mod tests {
         let inst = add_track(&mut p, TrackKind::Instrument);
         let audio = add_track(&mut p, TrackKind::Audio);
         (p, inst, audio)
+    }
+
+    #[test]
+    fn capturing_a_scene_copies_the_playing_clips() {
+        let mut p = Project::new("t", 48_000);
+        let a = add_track(&mut p, TrackKind::Instrument);
+        let b = add_track(&mut p, TrackKind::Instrument);
+        add_midi_clip(&mut p, a, 2, 960).unwrap();
+        add_midi_clip(&mut p, b, 0, 960).unwrap();
+        let scenes = p.scenes.len();
+        assert!(capture_scene(&mut p, 1, &[(a, 2), (b, 0)]));
+        assert_eq!(p.scenes.len(), scenes + 1);
+        assert!(clip(&p, a, 1).is_some());
+        assert!(clip(&p, b, 1).is_some());
+        assert!(clip(&p, a, 3).is_some());
+        assert_ne!(
+            clip(&p, a, 1).unwrap().region.id,
+            clip(&p, a, 3).unwrap().region.id
+        );
     }
 
     #[test]

@@ -162,6 +162,7 @@ pub struct App {
     pub(crate) zoom_history: crate::arrange::ZoomHistory,
     pub(crate) lanes_width: f32,
     pub(crate) automation_arm: bool,
+    pub(crate) session_take: Option<crate::session::SessionTake>,
     pub(crate) selected_device: Option<(crate::plugins::Owner, usize)>,
     pub(crate) device_focus: bool,
     pub(crate) device_clipboard: Option<crate::chain::DeviceClip>,
@@ -269,6 +270,7 @@ impl App {
             zoom_history: crate::arrange::ZoomHistory::default(),
             lanes_width: 800.0,
             automation_arm: false,
+            session_take: None,
             selected_device: None,
             device_focus: false,
             device_clipboard: None,
@@ -748,6 +750,8 @@ impl App {
                 self.time_selection = None;
             }
             Command::ZoomToSelection => self.zoom_to_selection(),
+            Command::SessionRecord => self.toggle_session_record(),
+            Command::CaptureScene => self.capture_scene(),
             Command::ExtendLeft
             | Command::ExtendRight
             | Command::ExtendUp
@@ -1502,6 +1506,7 @@ impl App {
                     "Insert Silence"
                 };
                 self.menu_item(ui, insert, Command::InsertScene);
+                self.menu_item(ui, "Capture and Insert Scene", Command::CaptureScene);
                 ui.separator();
                 self.menu_item(ui, "Insert Empty MIDI Clip", Command::InsertMidiClip);
                 self.menu_item(ui, "Capture MIDI", Command::CaptureMidi);
@@ -1522,6 +1527,7 @@ impl App {
                 );
                 ui.separator();
                 self.menu_item(ui, "Record", Command::Record);
+                self.menu_item(ui, "Record to Clip Grid", Command::SessionRecord);
                 let punch = self.project.punch;
                 if ui
                     .add(egui::Button::selectable(punch.punch_in, "Punch In"))
@@ -2018,6 +2024,7 @@ impl App {
         }
         self.poll_played();
         self.poll_take();
+        self.poll_session_take();
         self.poll_audio_take();
         self.poll_plugins();
         if self.audio.is_none() {
@@ -2045,6 +2052,13 @@ impl eframe::App for App {
             && self.bounce.is_none()
             && self.bounce_dialog.is_none()
         {
+            if !ctx.egui_wants_keyboard_input() {
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+            }
             for command in take_commands(&ctx) {
                 self.run(command);
             }

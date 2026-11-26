@@ -31,6 +31,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         folded: false,
         frozen: None,
         automation_off: false,
+        no_stop: Vec::new(),
     });
     id
 }

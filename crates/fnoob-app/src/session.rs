@@ -49,6 +49,7 @@ enum GridAction {
     Select(Id, Id),
     SelectTrack(Id),
     FocusTitle(Id, bool, bool),
+    ToggleStop(Id, usize),
     OpenDevices(Id),
     TitleCommand(Id, fnoob_core::keymap::Command),
     RenameTrack(Id, String),
@@ -111,6 +112,20 @@ impl App {
             ui.separator();
             if ui.button("Stop All Clips").clicked() {
                 self.send(EngineCommand::StopClips(None));
+            }
+            let recording = self.session_take.is_some();
+            let record = ui
+                .add(egui::Button::new(if recording { "Stop Session Record" } else { "Session Record" }).selected(recording))
+                .on_hover_text("Session Record (Ctrl+Shift+F9): record MIDI from the armed track into an empty slot, then play it as a loop");
+            if record.clicked() {
+                self.toggle_session_record();
+            }
+            if ui
+                .button("Capture Scene")
+                .on_hover_text("Capture and Insert Scene (Ctrl+Shift+I): a new scene with the clips that are playing now")
+                .clicked()
+            {
+                self.capture_scene();
             }
             let overriding = self.any_clip_override();
             if ui
@@ -337,8 +352,28 @@ impl App {
                         } else {
                             visuals.weak_text_color()
                         };
-                        square(&painter, launch, dim(stop_color, 0.7));
-                        if launch_response.clicked() {
+                        let keeps = self
+                            .project
+                            .track(*track)
+                            .is_some_and(|t| t.no_stop.contains(&scene));
+                        let recording_here = self
+                            .session_take
+                            .as_ref()
+                            .is_some_and(|t| t.track == *track && t.scene == scene);
+                        if recording_here {
+                            painter.circle_filled(
+                                cell.center(),
+                                6.0,
+                                if blink {
+                                    Color32::from_rgb(230, 70, 70)
+                                } else {
+                                    Color32::from_rgb(140, 40, 40)
+                                },
+                            );
+                        } else if !keeps {
+                            square(&painter, launch, dim(stop_color, 0.7));
+                        }
+                        if launch_response.clicked() && !keeps {
                             actions.push(GridAction::StopTrack(*track));
                         }
                         if body_response.double_clicked() && *kind == TrackKind::Instrument {
@@ -346,8 +381,8 @@ impl App {
                         } else if body_response.clicked() {
                             actions.push(GridAction::SelectTrack(*track));
                         }
-                        if *kind == TrackKind::Instrument {
-                            body_response.context_menu(|ui| {
+                        body_response.context_menu(|ui| {
+                            if *kind == TrackKind::Instrument {
                                 let mut button = egui::Button::new("Insert Empty MIDI Clip");
                                 if let Some(label) = fnoob_core::keymap::shortcut_label(
                                     fnoob_core::keymap::Command::InsertMidiClip,
@@ -358,8 +393,17 @@ impl App {
                                     actions.push(GridAction::NewClip(*track, scene));
                                     ui.close();
                                 }
-                            });
-                        }
+                            }
+                            let label = if keeps {
+                                "Add Stop Button"
+                            } else {
+                                "Remove Stop Button"
+                            };
+                            if ui.button(label).clicked() {
+                                actions.push(GridAction::ToggleStop(*track, scene));
+                                ui.close();
+                            }
+                        });
                     }
                 }
                 for response in [&body_response, &launch_response] {
@@ -387,6 +431,25 @@ impl App {
             );
             let stopping = status.queued == Some(None);
             painter.rect_filled(stop, 2.0, visuals.extreme_bg_color);
+            let follows_timeline = !status.overrides
+                && self.transport_state() != fnoob_engine::TransportState::Stopped
+                && self
+                    .project
+                    .track(*track)
+                    .is_some_and(|t| !t.regions.is_empty());
+            if follows_timeline {
+                let bar = Rect::from_min_max(
+                    Pos2::new(stop.left() + 4.0, stop.bottom() - 5.0),
+                    Pos2::new(stop.right() - 4.0, stop.bottom() - 2.0),
+                );
+                painter.rect_filled(bar, 1.0, PLAYING);
+                ui.interact(
+                    bar.expand(3.0),
+                    base.with(("timeline_on", track)),
+                    Sense::hover(),
+                )
+                .on_hover_text("This track is playing its timeline clips");
+            }
             let color = if status.playing.is_some() && !(stopping && blink) {
                 visuals.strong_text_color()
             } else {
@@ -679,6 +742,9 @@ impl App {
             }
             GridAction::StopAll => self.send(EngineCommand::StopClips(None)),
             GridAction::StopTrack(track) => self.send(EngineCommand::StopClips(Some(track))),
+            GridAction::ToggleStop(track, scene) => self.edit(|p| {
+                session::toggle_stop_button(p, track, scene);
+            }),
             GridAction::LaunchScene(scene) => {
                 if self.rate_matches() {
                     self.send(EngineCommand::LaunchScene(scene));
@@ -987,6 +1053,34 @@ impl App {
                 }
             });
         }
+        let mut legato = clip.legato;
+        if ui
+            .checkbox(&mut legato, "Legato")
+            .on_hover_text("Start from the position the previous clip on this track had reached")
+            .changed()
+        {
+            self.edit(|p| {
+                if let Some(c) = session::clip_mut(p, track, scene) {
+                    c.legato = legato;
+                }
+            });
+        }
+        let mut quantize = clip.quantize;
+        egui::ComboBox::from_label("Launch quantize")
+            .selected_text(quantize.map_or("Global", |q| q.label()))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut quantize, None, "Global");
+                for q in fnoob_core::session::LaunchQuantize::ALL {
+                    ui.selectable_value(&mut quantize, Some(q), q.label());
+                }
+            });
+        if quantize != clip.quantize {
+            self.edit(|p| {
+                if let Some(c) = session::clip_mut(p, track, scene) {
+                    c.quantize = quantize;
+                }
+            });
+        }
         let mut launch = clip.launch;
         egui::ComboBox::from_label("Launch mode")
             .selected_text(launch.label())
@@ -1062,5 +1156,170 @@ impl App {
                 self.apply_grid_action(GridAction::Delete(track, scene));
             }
         });
+    }
+}
+
+pub struct SessionTake {
+    pub track: Id,
+    pub scene: usize,
+    start: u64,
+    rolling: bool,
+}
+
+impl App {
+    pub(crate) fn toggle_session_record(&mut self) {
+        if self.session_take.is_some() {
+            self.finish_session_take();
+            return;
+        }
+        if self.audio.is_none() || !self.rate_matches() {
+            return;
+        }
+        let Some(track) = self
+            .project
+            .tracks
+            .iter()
+            .find(|t| t.record_enabled && t.kind == TrackKind::Instrument)
+            .map(|t| t.id)
+        else {
+            self.message = Some("Arm a MIDI track (C) to record into the clip grid.".into());
+            return;
+        };
+        let wanted = self
+            .session
+            .selected
+            .and_then(|id| session::clip_position(&self.project, id))
+            .map_or(0, |(_, scene)| scene);
+        let scenes = self.project.scenes.len();
+        let empty = (wanted..scenes)
+            .chain(0..wanted)
+            .find(|&s| clip_at(&self.project, track, s).is_none());
+        let scene = match empty {
+            Some(scene) => scene,
+            None => {
+                self.edit(|p| {
+                    session::insert_scene(p, scenes);
+                });
+                scenes
+            }
+        };
+        let stopped = self.transport_state() == fnoob_engine::TransportState::Stopped;
+        let now = self.playhead_tick();
+        let quantum = self
+            .project
+            .launch_quantize
+            .ticks(self.project.time_signature);
+        let start = if stopped || quantum == 0 {
+            now
+        } else {
+            now.div_ceil(quantum) * quantum
+        };
+        if stopped {
+            self.send(EngineCommand::Play);
+        }
+        self.played.clear();
+        self.session_take = Some(SessionTake {
+            track,
+            scene,
+            start,
+            rolling: false,
+        });
+        self.message = Some(format!(
+            "Recording into slot {} of the clip grid.",
+            scene + 1
+        ));
+    }
+
+    pub(crate) fn poll_session_take(&mut self) {
+        let stopped = self.transport_state() == fnoob_engine::TransportState::Stopped;
+        let Some(take) = &mut self.session_take else {
+            return;
+        };
+        if !stopped {
+            take.rolling = true;
+        } else if take.rolling {
+            self.finish_session_take();
+        }
+    }
+
+    fn finish_session_take(&mut self) {
+        let Some(take) = self.session_take.take() else {
+            return;
+        };
+        let timeline = self.timeline();
+        let events: Vec<fnoob_core::capture::Played> = self
+            .played
+            .iter()
+            .copied()
+            .filter(|e| {
+                e.position
+                    .is_some_and(|p| timeline.sample_to_tick(p) >= take.start)
+            })
+            .collect();
+        let end = self.playhead_tick().max(take.start + 1);
+        let bar = ticks_per_bar(self.project.time_signature);
+        let length = (end - take.start).div_ceil(bar).max(1) * bar;
+        let notes: Vec<fnoob_core::model::Note> =
+            fnoob_core::capture::notes(&events, timeline, take.start)
+                .into_iter()
+                .filter(|n| n.start_tick >= take.start)
+                .map(|mut n| {
+                    n.start_tick -= take.start;
+                    n.length_tick = n.length_tick.min(length - n.start_tick.min(length - 1));
+                    n
+                })
+                .filter(|n| n.start_tick < length)
+                .collect();
+        if notes.is_empty() {
+            self.message = Some("No MIDI notes were played, so no clip was made.".into());
+            return;
+        }
+        let count = notes.len();
+        let mut created = None;
+        self.edit(|p| {
+            created = session::add_midi_clip(p, take.track, take.scene, length);
+            if let Some(clip) = session::clip_mut(p, take.track, take.scene)
+                && let RegionContent::Midi { notes: target } = &mut clip.region.content
+            {
+                *target = notes;
+            }
+        });
+        if let Some(clip) = created {
+            self.session.selected = Some(clip);
+            if self.transport_state() != fnoob_engine::TransportState::Stopped {
+                self.send(EngineCommand::LaunchClip {
+                    track: take.track,
+                    slot: take.scene,
+                });
+            }
+            self.message = Some(format!("Recorded {count} notes into the clip grid."));
+        }
+    }
+
+    pub(crate) fn capture_scene(&mut self) {
+        let playing: Vec<(Id, usize)> = self
+            .project
+            .tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| self.clip_status(i).playing.map(|slot| (t.id, slot)))
+            .collect();
+        if playing.is_empty() {
+            self.message = Some("No clips are playing to capture.".into());
+            return;
+        }
+        let at = self
+            .session
+            .selected
+            .and_then(|id| session::clip_position(&self.project, id))
+            .map_or(self.project.scenes.len(), |(_, scene)| scene + 1);
+        self.edit(|p| {
+            session::capture_scene(p, at, &playing);
+        });
+        self.message = Some(format!(
+            "Captured {} playing clip(s) into scene {}.",
+            playing.len(),
+            at + 1
+        ));
     }
 }

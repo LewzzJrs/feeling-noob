@@ -23,6 +23,8 @@ pub struct SessionClipPlan {
     pub chance_a: f32,
     pub notes: Vec<PlannedNote>,
     pub audio: Option<SessionAudio>,
+    pub legato: bool,
+    pub quantum: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +48,7 @@ pub struct SessionPlay {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Session {
     pub slots: Vec<Option<SessionClipPlan>>,
+    pub keep: Vec<usize>,
     pub play: SessionPlay,
 }
 
@@ -66,7 +69,12 @@ pub fn random(state: &mut u64) -> f32 {
     (x >> 40) as f32 / (1u64 << 24) as f32
 }
 
-fn clip_plan(clip: &SessionClip, timeline: Timeline, pool: &AudioPool) -> Option<SessionClipPlan> {
+fn clip_plan(
+    clip: &SessionClip,
+    timeline: Timeline,
+    pool: &AudioPool,
+    ts: fnoob_core::model::TimeSignature,
+) -> Option<SessionClipPlan> {
     let region = &clip.region;
     let length = timeline.tick_to_sample(region.length_tick);
     if length == 0 {
@@ -115,17 +123,27 @@ fn clip_plan(clip: &SessionClip, timeline: Timeline, pool: &AudioPool) -> Option
         chance_a: clip.follow.chance_a,
         notes,
         audio,
+        legato: clip.legato,
+        quantum: clip
+            .quantize
+            .map(|q| (q.ticks(ts) as f64 * timeline.samples_per_tick()).round() as u64),
     })
 }
 
 impl Session {
-    pub fn build(track: &Track, timeline: Timeline, pool: &AudioPool) -> Self {
+    pub fn build(
+        track: &Track,
+        timeline: Timeline,
+        pool: &AudioPool,
+        ts: fnoob_core::model::TimeSignature,
+    ) -> Self {
         Self {
             slots: track
                 .session
                 .iter()
-                .map(|c| c.as_ref().and_then(|c| clip_plan(c, timeline, pool)))
+                .map(|c| c.as_ref().and_then(|c| clip_plan(c, timeline, pool, ts)))
                 .collect(),
+            keep: track.no_stop.clone(),
             play: SessionPlay::default(),
         }
     }
@@ -173,9 +191,12 @@ impl Session {
         scene: bool,
     ) {
         let Some(Some(clip)) = self.slots.get(slot) else {
-            self.stop(position, quantum, immediate);
+            if !self.keep.contains(&slot) {
+                self.stop(position, quantum, immediate);
+            }
             return;
         };
+        let quantum = clip.quantum.unwrap_or(quantum);
         let mode = if scene {
             LaunchMode::Trigger
         } else {
@@ -291,7 +312,17 @@ impl Session {
             && position >= queued.at
         {
             self.play.queued = None;
+            let before = self.play.playing.map(|_| self.play.elapsed);
             self.start(queued.slot);
+            if let (Some(elapsed), Some(clip)) = (before, self.clip())
+                && clip.legato
+                && clip.length > 0
+            {
+                let at = elapsed % clip.length;
+                let cursor = clip.notes.partition_point(|n| n.start < at);
+                self.play.elapsed = at;
+                self.play.cursor = cursor;
+            }
             fired = Some(queued.slot);
         }
         if let (Some(held), Some(playing)) = (self.play.held, self.play.playing)
@@ -408,14 +439,61 @@ mod tests {
             chance_a: 1.0,
             notes: Vec::new(),
             audio: None,
+            legato: false,
+            quantum: None,
         })
     }
 
     fn session(slots: Vec<Option<SessionClipPlan>>) -> Session {
         Session {
             slots,
+            keep: Vec::new(),
             play: SessionPlay::default(),
         }
+    }
+
+    #[test]
+    fn legato_clips_keep_the_position() {
+        let mut first = clip(100, true, LaunchMode::Trigger);
+        let mut second = clip(80, true, LaunchMode::Trigger);
+        if let Some(c) = second.as_mut() {
+            c.legato = true;
+        }
+        if let Some(c) = first.as_mut() {
+            c.legato = false;
+        }
+        let mut s = session(vec![first, second]);
+        s.launch(0, 0, 0, true, false);
+        run(&mut s, 0, 1, 0);
+        for _ in 0..30 {
+            s.advance();
+        }
+        s.launch(1, 30, 0, true, false);
+        run(&mut s, 30, 1, 0);
+        assert_eq!(s.play.playing, Some(1));
+        assert_eq!(s.play.elapsed, 32);
+    }
+
+    #[test]
+    fn slots_without_stop_buttons_leave_the_track_playing() {
+        let mut s = session(vec![clip(100, true, LaunchMode::Trigger), None]);
+        s.keep = vec![1];
+        s.launch(0, 0, 0, true, false);
+        run(&mut s, 0, 1, 0);
+        s.launch(1, 10, 0, true, true);
+        run(&mut s, 10, 1, 0);
+        assert_eq!(s.play.playing, Some(0));
+    }
+
+    #[test]
+    fn clips_can_use_their_own_launch_grid() {
+        let mut quick = clip(100, true, LaunchMode::Trigger);
+        if let Some(c) = quick.as_mut() {
+            c.quantum = Some(10);
+        }
+        let mut s = session(vec![quick]);
+        s.launch(0, 3, 400, false, false);
+        assert_eq!(s.play.queued.map(|q| q.at), Some(10));
     }
 
     fn run(s: &mut Session, from: u64, frames: u64, quantum: u64) -> Vec<(u64, Option<usize>)> {

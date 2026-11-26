@@ -715,6 +715,8 @@ pub struct Track {
     pub frozen: Option<Id>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub automation_off: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_stop: Vec<usize>,
 }
 
 impl Track {
