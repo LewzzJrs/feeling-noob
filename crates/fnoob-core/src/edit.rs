@@ -69,6 +69,34 @@ pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
     Some(id)
 }
 
+pub fn strip_audio(project: &mut Project) {
+    project.audio_files.clear();
+    for track in &mut project.tracks {
+        track
+            .regions
+            .retain(|r| !matches!(r.content, RegionContent::Audio { .. }));
+        track.takes.clear();
+        track.frozen = None;
+        for slot in &mut track.session {
+            if slot
+                .as_ref()
+                .is_some_and(|c| matches!(c.region.content, RegionContent::Audio { .. }))
+            {
+                *slot = None;
+            }
+        }
+        match &mut track.instrument {
+            Some(crate::model::Instrument::Sampler(params)) => params.file = None,
+            Some(crate::model::Instrument::DrumSampler(params)) => {
+                for pad in &mut params.pads {
+                    pad.file = None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn name_after_instrument(track: &mut Track, old_label: &str) -> bool {
     let new_label = track.instrument.as_ref().map_or_else(
         || TrackKind::Instrument.default_name().to_owned(),
@@ -1213,6 +1241,22 @@ mod tests {
 
     fn notes(p: &Project, id: Id) -> Vec<Note> {
         region(p, id).notes().to_vec()
+    }
+
+    #[test]
+    fn templates_keep_tracks_but_drop_audio() {
+        let mut p = Project::new("t", 48_000);
+        let audio = add_track(&mut p, TrackKind::Audio);
+        let midi = add_track(&mut p, TrackKind::Instrument);
+        let file = add_audio_file(&mut p, "audio/a.wav".into(), 1, 4800);
+        add_audio_region(&mut p, audio, 0, file, 0).unwrap();
+        add_midi_region(&mut p, midi, 0, 960).unwrap();
+        strip_audio(&mut p);
+        assert!(p.audio_files.is_empty());
+        assert!(p.track(audio).unwrap().regions.is_empty());
+        assert_eq!(p.track(midi).unwrap().regions.len(), 1);
+        assert_eq!(p.tracks.len(), 2);
+        assert!(crate::io::validate(&p).is_ok());
     }
 
     #[test]

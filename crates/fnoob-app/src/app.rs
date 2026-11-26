@@ -103,6 +103,7 @@ pub(crate) enum Pending {
     New,
     Open,
     OpenPath(PathBuf),
+    Template(PathBuf),
     Quit,
 }
 
@@ -1278,6 +1279,7 @@ impl App {
             }
             Pending::Open => self.open(),
             Pending::OpenPath(dir) => self.open_dir(dir),
+            Pending::Template(path) => self.new_from_template(&path),
             Pending::Quit => {
                 self.discard_autosave();
                 self.allow_close = true;
@@ -1454,6 +1456,7 @@ impl App {
                 ui.separator();
                 self.menu_item(ui, "Save Project", Command::Save);
                 self.menu_item(ui, "Save Project As...", Command::SaveAs);
+                self.menu_action(ui, "Save as Template", |app| app.save_as_template());
                 ui.separator();
                 self.menu_item(ui, "Export Audio...", Command::Bounce);
                 ui.separator();

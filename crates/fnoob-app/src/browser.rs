@@ -15,6 +15,8 @@ pub enum BrowserItem {
     Effect(CatalogEntry),
     Builtin(fnoob_core::effects::BuiltinEffect),
     Sample(PathBuf),
+    MidiEffect(fnoob_core::midi_fx::MidiEffect),
+    Template(PathBuf),
 }
 
 impl BrowserItem {
@@ -26,6 +28,10 @@ impl BrowserItem {
             Self::Sample(path) => path
                 .file_name()
                 .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+            Self::MidiEffect(effect) => effect.label().to_owned(),
+            Self::Template(path) => path
+                .file_stem()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
         }
     }
 }
@@ -34,10 +40,45 @@ impl BrowserItem {
 pub enum Category {
     #[default]
     Instruments,
+    Drums,
     AudioEffects,
+    MidiEffects,
     Plugins,
     Samples,
+    Templates,
     Folder(usize),
+}
+
+const DRUM_TAGS: [&str; 7] = [
+    "Kick",
+    "Snare",
+    "Hihat",
+    "Clap",
+    "Cymbal",
+    "Tom",
+    "Percussion",
+];
+
+pub fn templates_dir() -> Option<PathBuf> {
+    fnoob_core::settings::default_settings_path()
+        .and_then(|p| p.parent().map(|d| d.join("templates")))
+}
+
+fn find_templates() -> Vec<PathBuf> {
+    let Some(dir) = templates_dir() else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.join(fnoob_core::io::PROJECT_FILE).is_file())
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
 }
 
 #[derive(Default)]
@@ -49,6 +90,8 @@ pub struct Browser {
     samples: Vec<PathBuf>,
     scanned: bool,
     previewing: Option<PathBuf>,
+    waveform: Option<(PathBuf, Arc<fnoob_engine::audio_data::AudioData>)>,
+    templates: Vec<PathBuf>,
 }
 
 impl Browser {
@@ -132,7 +175,88 @@ impl App {
 
     fn rescan_samples(&mut self) {
         self.browser.samples = find_audio_files(&self.sample_folders());
+        self.browser.templates = find_templates();
         self.browser.scanned = true;
+    }
+
+    pub(crate) fn save_as_template(&mut self) {
+        let Some(dir) = templates_dir() else {
+            self.message = Some("No place to keep templates on this computer.".into());
+            return;
+        };
+        let mut project = self.project.clone();
+        let had_audio = !project.audio_files.is_empty();
+        fnoob_core::edit::strip_audio(&mut project);
+        let stem = crate::audio::file_stem_for(&project.name);
+        let mut target = dir.join(format!("{stem}.{}", fnoob_core::io::PROJECT_EXTENSION));
+        let mut n = 2;
+        while target.exists() {
+            target = dir.join(format!("{stem} {n}.{}", fnoob_core::io::PROJECT_EXTENSION));
+            n += 1;
+        }
+        match std::fs::create_dir_all(&target)
+            .map_err(|e| e.to_string())
+            .and_then(|()| fnoob_core::io::save(&target, &project).map_err(|e| e.to_string()))
+        {
+            Ok(()) => {
+                self.rescan_samples();
+                self.message = Some(if had_audio {
+                    "Saved as a template. Audio clips and samples are not kept in templates.".into()
+                } else {
+                    "Saved as a template.".into()
+                });
+            }
+            Err(e) => self.message = Some(format!("Cannot save the template. {e}")),
+        }
+    }
+
+    pub(crate) fn new_from_template(&mut self, path: &Path) {
+        match fnoob_core::io::load(path) {
+            Ok(mut project) => {
+                project.name = "Untitled".into();
+                fnoob_core::edit::strip_audio(&mut project);
+                self.replace_project(project, None);
+            }
+            Err(e) => self.message = Some(format!("Cannot open the template. {e}")),
+        }
+    }
+
+    fn waveform_preview(&mut self, ui: &mut egui::Ui) {
+        let Some((path, data)) = self.browser.waveform.clone() else {
+            return;
+        };
+        ui.separator();
+        ui.label(
+            RichText::new(
+                path.file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+            )
+            .small(),
+        );
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+        let columns = rect.width().max(1.0) as u64;
+        let color = ui.visuals().strong_text_color().gamma_multiply(0.7);
+        for column in 0..columns {
+            let from = data.frames * column / columns;
+            let to = data.frames * (column + 1) / columns;
+            let level = data.peak(from, to.max(from + 1)).min(1.0);
+            let x = rect.left() + column as f32;
+            let half = rect.height() * 0.5 * level;
+            painter.vline(
+                x,
+                rect.center().y - half..=rect.center().y + half,
+                egui::Stroke::new(1.0, color),
+            );
+        }
+        let seconds = data.frames as f64 / f64::from(self.sample_rate().max(1));
+        ui.label(
+            RichText::new(format!("{seconds:.2} s, {} channel(s)", data.channels))
+                .small()
+                .weak(),
+        );
     }
 
     fn preview_sample(&mut self, path: &Path) {
@@ -143,8 +267,10 @@ impl App {
         }
         match fnoob_engine::decode::load_any(path, self.sample_rate()) {
             Ok(data) => {
+                let data = Arc::new(data);
                 self.browser.previewing = Some(path.to_path_buf());
-                self.send(EngineCommand::PreviewAudio(Some(Arc::new(data))));
+                self.browser.waveform = Some((path.to_path_buf(), Arc::clone(&data)));
+                self.send(EngineCommand::PreviewAudio(Some(data)));
             }
             Err(e) => self.message = Some(format!("Cannot preview: {e}")),
         }
@@ -213,6 +339,46 @@ impl App {
             }
             BrowserItem::Sample(path) => {
                 self.import_files(std::slice::from_ref(path), track, tick);
+            }
+            BrowserItem::MidiEffect(effect) => {
+                let target = track.filter(|id| {
+                    self.project
+                        .track(*id)
+                        .is_some_and(|t| t.kind == TrackKind::Instrument)
+                });
+                let target = match target {
+                    Some(id) => id,
+                    None => {
+                        let mut created = 0;
+                        self.edit(|p| {
+                            created = fnoob_core::edit::add_track(p, TrackKind::Instrument)
+                        });
+                        created
+                    }
+                };
+                let full = self
+                    .project
+                    .track(target)
+                    .is_some_and(|t| t.midi_effects.len() >= fnoob_core::midi_fx::MAX_MIDI_EFFECTS);
+                if full {
+                    self.message = Some("This track already has 4 MIDI effects.".into());
+                    return;
+                }
+                let effect = *effect;
+                self.edit(|p| {
+                    if let Some(t) = p.track_mut(target) {
+                        t.midi_effects.push(fnoob_core::midi_fx::MidiDevice {
+                            effect,
+                            bypass: false,
+                        });
+                    }
+                });
+                self.selection.track = Some(target);
+                self.show_devices();
+            }
+            BrowserItem::Template(path) => {
+                let path = path.clone();
+                self.request(crate::app::Pending::Template(path));
             }
         }
     }
@@ -303,13 +469,16 @@ impl App {
                             for category in [
                                 Category::Instruments,
                                 Category::AudioEffects,
+                                Category::MidiEffects,
                                 Category::Plugins,
                                 Category::Samples,
+                                Category::Templates,
                             ] {
                                 self.category_items(ui, category, &search);
                             }
                         }
                     });
+                self.waveform_preview(ui);
             });
         });
     }
@@ -318,9 +487,12 @@ impl App {
         ui.label(RichText::new("Categories").small().weak());
         for (category, name) in [
             (Category::Instruments, "🎹 Instruments"),
+            (Category::Drums, "🥁 Drums"),
             (Category::AudioEffects, "🎚 Audio Effects"),
+            (Category::MidiEffects, "🎼 MIDI Effects"),
             (Category::Plugins, "🔌 Plug-ins"),
             (Category::Samples, "🎵 Samples"),
+            (Category::Templates, "📄 Templates"),
         ] {
             ui.selectable_value(&mut self.browser.category, category, name);
         }
@@ -387,6 +559,39 @@ impl App {
                     items.push((BrowserItem::Builtin(effect), "Built-in effect".to_owned()));
                 }
             }
+            Category::MidiEffects => {
+                for effect in fnoob_core::midi_fx::MidiEffect::all() {
+                    items.push((
+                        BrowserItem::MidiEffect(effect),
+                        "MIDI effect for MIDI tracks".to_owned(),
+                    ));
+                }
+            }
+            Category::Drums => {
+                items.push((
+                    BrowserItem::Instrument(InstrumentChoice::DrumSampler),
+                    "16 one-shot pads".to_owned(),
+                ));
+                for path in &self.browser.samples {
+                    let name = path
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    if DRUM_TAGS.iter().any(|tag| has_tag(&name, tag)) {
+                        items.push((
+                            BrowserItem::Sample(path.clone()),
+                            path.display().to_string(),
+                        ));
+                    }
+                }
+            }
+            Category::Templates => {
+                for path in &self.browser.templates {
+                    items.push((
+                        BrowserItem::Template(path.clone()),
+                        "Start a new project from this template".to_owned(),
+                    ));
+                }
+            }
             Category::Plugins => {
                 for entry in &self.plugins.catalog.plugins {
                     let detail = entry.class.vendor.clone();
@@ -436,9 +641,12 @@ impl App {
         if titled && !items.is_empty() {
             let title = match category {
                 Category::Instruments => "Instruments",
+                Category::Drums => "Drums",
                 Category::AudioEffects => "Audio Effects",
+                Category::MidiEffects => "MIDI Effects",
                 Category::Plugins => "Plug-ins",
                 Category::Samples | Category::Folder(_) => "Samples",
+                Category::Templates => "Templates",
             };
             ui.label(RichText::new(title).small().weak());
         }
@@ -448,6 +656,7 @@ impl App {
                 Category::Samples | Category::Folder(_) => {
                     "No WAV files. Use Add Folder... under Places."
                 }
+                Category::Templates => "No templates yet. Use File > Save as Template.",
                 _ => "Nothing here.",
             };
             ui.label(RichText::new(text).weak());
