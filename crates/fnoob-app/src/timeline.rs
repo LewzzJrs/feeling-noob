@@ -2012,8 +2012,8 @@ impl App {
                 self.mix_send(ui, crate::mixer::MixTarget::Track(id));
             });
             let meter = Rect::from_min_max(
-                Pos2::new(row.right() - 9.0, row.top() + 4.0),
-                Pos2::new(row.right() - 4.0, row.bottom() - 4.0),
+                Pos2::new(row.right() - 11.0, row.top() + 4.0),
+                Pos2::new(row.right() - 3.0, row.bottom() - 4.0),
             );
             self.paint_meter(&painter, meter, crate::mixer::MixTarget::Track(id));
             let edge =
@@ -2142,8 +2142,8 @@ impl App {
                 self.mix_levels(ui, target);
             });
             let meter = Rect::from_min_max(
-                Pos2::new(header.right() - 9.0, y + 4.0),
-                Pos2::new(header.right() - 4.0, y + PINNED_ROW - 4.0),
+                Pos2::new(header.right() - 11.0, y + 4.0),
+                Pos2::new(header.right() - 3.0, y + PINNED_ROW - 4.0),
             );
             self.paint_meter(&painter, meter, target);
         }

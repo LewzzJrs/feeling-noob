@@ -13,30 +13,86 @@ const ARM: Color32 = Color32::from_rgb(230, 70, 70);
 const ACTIVE: Color32 = Color32::from_rgb(235, 170, 60);
 const SOLO: Color32 = Color32::from_rgb(70, 150, 230);
 
+const HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
+const CLIP_SHOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[derive(Clone, Copy)]
+struct MeterState {
+    left: f32,
+    right: f32,
+    hold: f32,
+    held_at: std::time::Instant,
+    clipped_at: Option<std::time::Instant>,
+}
+
 pub struct Meters {
-    levels: Vec<f32>,
+    states: Vec<MeterState>,
 }
 
 impl Default for Meters {
     fn default() -> Self {
+        let now = std::time::Instant::now();
         Self {
-            levels: vec![0.0; METER_SLOTS],
+            states: vec![
+                MeterState {
+                    left: 0.0,
+                    right: 0.0,
+                    hold: 0.0,
+                    held_at: now,
+                    clipped_at: None,
+                };
+                METER_SLOTS
+            ],
         }
     }
 }
 
 impl Meters {
-    pub fn update(&mut self, take: impl Fn(usize) -> f32) {
-        for (slot, level) in self.levels.iter_mut().enumerate() {
-            *level = take(slot).max(*level * METER_DECAY);
-            if *level < 1e-5 {
-                *level = 0.0;
+    pub fn update(&mut self, take: impl Fn(usize) -> (f32, f32)) {
+        let now = std::time::Instant::now();
+        for (slot, state) in self.states.iter_mut().enumerate() {
+            let (left, right) = take(slot);
+            state.left = left.max(state.left * METER_DECAY);
+            state.right = right.max(state.right * METER_DECAY);
+            for level in [&mut state.left, &mut state.right] {
+                if *level < 1e-5 {
+                    *level = 0.0;
+                }
+            }
+            let top = left.max(right);
+            if top >= state.hold {
+                state.hold = top;
+                state.held_at = now;
+            } else if now.duration_since(state.held_at) > HOLD {
+                state.hold *= METER_DECAY;
+            }
+            if top > 1.0 {
+                state.clipped_at = Some(now);
             }
         }
     }
 
-    fn level(&self, slot: usize) -> f32 {
-        self.levels.get(slot).copied().unwrap_or(0.0)
+    fn state(&self, slot: usize) -> Option<MeterState> {
+        self.states.get(slot).copied()
+    }
+}
+
+const METER_ZONES: [(f32, f32, Color32); 3] = [
+    (FADER_FLOOR_DB, -12.0, Color32::from_rgb(70, 190, 100)),
+    (-12.0, -3.0, Color32::from_rgb(220, 200, 70)),
+    (-3.0, MAX_FADER_DB, Color32::from_rgb(230, 80, 60)),
+];
+
+fn paint_bar(painter: &Painter, rect: Rect, level: f32) {
+    let db = level_db(level);
+    let y = |db: f32| rect.bottom() - rect.height() * meter_fraction(db);
+    for (low, high, color) in METER_ZONES {
+        let zone = Rect::from_x_y_ranges(rect.x_range(), y(high)..=y(low));
+        painter.rect_filled(zone, 0.0, color.gamma_multiply(0.12));
+        if db > low {
+            let lit = Rect::from_x_y_ranges(rect.x_range(), y(db.min(high))..=y(low));
+            painter.rect_filled(lit, 0.0, color);
+        }
     }
 }
 
@@ -242,26 +298,60 @@ impl App {
 
     pub(crate) fn update_meters(&mut self) {
         if let Some((_, engine)) = &self.audio {
-            self.meters.update(|slot| engine.take_peak(slot));
+            self.meters.update(|slot| engine.take_peaks(slot));
         }
     }
 
     pub(crate) fn paint_meter(&self, painter: &Painter, rect: Rect, target: MixTarget) {
-        painter.rect_filled(rect, CornerRadius::same(1), Color32::from_gray(28));
-        let db = level_db(self.meters.level(target.meter(&self.project)));
-        let top = rect.bottom() - rect.height() * meter_fraction(db);
-        let color = if db >= 0.0 {
-            Color32::from_rgb(230, 70, 60)
-        } else if db >= -6.0 {
-            Color32::from_rgb(230, 200, 70)
-        } else {
-            Color32::from_rgb(90, 200, 110)
+        painter.rect_filled(rect, CornerRadius::same(1), Color32::from_gray(20));
+        let Some(state) = self.meters.state(target.meter(&self.project)) else {
+            return;
         };
-        painter.rect_filled(
-            Rect::from_min_max(egui::pos2(rect.left(), top), rect.max),
-            CornerRadius::same(1),
-            color,
+        let clip_height = if rect.height() >= 40.0 { 3.0 } else { 0.0 };
+        let body = Rect::from_min_max(
+            egui::pos2(rect.left(), rect.top() + clip_height + 1.0),
+            rect.max,
         );
+        if rect.width() >= 6.0 {
+            let half = (body.width() - 1.0) / 2.0;
+            let left = Rect::from_min_size(body.min, egui::vec2(half, body.height()));
+            let right = Rect::from_min_size(
+                egui::pos2(body.right() - half, body.top()),
+                egui::vec2(half, body.height()),
+            );
+            paint_bar(painter, left, state.left);
+            paint_bar(painter, right, state.right);
+        } else {
+            paint_bar(painter, body, state.left.max(state.right));
+        }
+        let hold_db = level_db(state.hold);
+        if hold_db > FADER_FLOOR_DB {
+            let y = body.bottom() - body.height() * meter_fraction(hold_db);
+            painter.hline(
+                body.x_range(),
+                y,
+                egui::Stroke::new(1.0, Color32::from_gray(230)),
+            );
+        }
+        let zero = body.bottom() - body.height() * meter_fraction(0.0);
+        painter.hline(
+            body.x_range(),
+            zero,
+            egui::Stroke::new(1.0, Color32::from_black_alpha(160)),
+        );
+        if clip_height > 0.0 {
+            let lamp = Rect::from_min_size(rect.min, egui::vec2(rect.width(), clip_height));
+            let lit = state.clipped_at.is_some_and(|at| at.elapsed() < CLIP_SHOW);
+            painter.rect_filled(
+                lamp,
+                0.0,
+                if lit {
+                    Color32::from_rgb(240, 60, 50)
+                } else {
+                    Color32::from_gray(45)
+                },
+            );
+        }
     }
 
     pub(crate) fn mix_buttons(&mut self, ui: &mut Ui, target: MixTarget) {
@@ -487,7 +577,7 @@ impl App {
                 });
             }
             let (meter, _) =
-                ui.allocate_exact_size(egui::vec2(6.0, fader_height), egui::Sense::hover());
+                ui.allocate_exact_size(egui::vec2(11.0, fader_height), egui::Sense::hover());
             self.paint_meter(ui.painter(), meter, target);
             ui.vertical(|ui| {
                 ui.label(
@@ -749,11 +839,17 @@ mod tests {
     #[test]
     fn meters_hold_peaks_and_decay() {
         let mut meters = Meters::default();
-        meters.update(|slot| if slot == 3 { 0.5 } else { 0.0 });
-        assert_eq!(meters.level(3), 0.5);
-        meters.update(|_| 0.0);
-        assert!((meters.level(3) - 0.5 * METER_DECAY).abs() < 1e-6);
-        assert_eq!(meters.level(METER_SLOTS + 5), 0.0);
+        meters.update(|slot| if slot == 3 { (0.5, 0.25) } else { (0.0, 0.0) });
+        let state = meters.state(3).unwrap();
+        assert_eq!((state.left, state.right, state.hold), (0.5, 0.25, 0.5));
+        meters.update(|_| (0.0, 0.0));
+        let state = meters.state(3).unwrap();
+        assert!((state.left - 0.5 * METER_DECAY).abs() < 1e-6);
+        assert_eq!(state.hold, 0.5);
+        assert!(state.clipped_at.is_none());
+        meters.update(|slot| if slot == 3 { (1.2, 0.0) } else { (0.0, 0.0) });
+        assert!(meters.state(3).unwrap().clipped_at.is_some());
+        assert!(meters.state(METER_SLOTS + 5).is_none());
         assert!((meter_fraction(0.0) - 60.0 / 66.0).abs() < 1e-6);
     }
 }

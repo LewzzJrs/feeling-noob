@@ -228,10 +228,18 @@ impl EngineHandle {
     }
 
     pub fn take_peak(&self, slot: usize) -> f32 {
-        self.shared
-            .meters
-            .get(slot)
-            .map_or(0.0, |m| f32::from_bits(m.swap(0, Ordering::Relaxed)))
+        let (left, right) = self.take_peaks(slot);
+        left.max(right)
+    }
+
+    pub fn take_peaks(&self, slot: usize) -> (f32, f32) {
+        let take = |index: usize| {
+            self.shared
+                .meters
+                .get(index)
+                .map_or(0.0, |m| f32::from_bits(m.swap(0, Ordering::Relaxed)))
+        };
+        (take(slot * 2), take(slot * 2 + 1))
     }
 
     pub fn session_status(&self, track_index: usize) -> SessionStatus {
@@ -321,7 +329,7 @@ pub struct Processor {
     preview: Option<Arc<AudioData>>,
     preview_at: u64,
     frame: usize,
-    peaks: [f32; METER_SLOTS],
+    peaks: [f32; METER_SLOTS * 2],
     input_channels: usize,
     input_frame: [f32; MAX_INPUT_CHANNELS],
     sink: Option<Producer<f32>>,
@@ -358,7 +366,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         take_start: AtomicU64::new(NO_TAKE),
         overruns: AtomicU64::new(0),
         cpu: AtomicU32::new(0),
-        meters: (0..METER_SLOTS).map(|_| AtomicU32::new(0)).collect(),
+        meters: (0..METER_SLOTS * 2).map(|_| AtomicU32::new(0)).collect(),
         session: (0..TRACK_METERS).map(|_| AtomicU64::new(0)).collect(),
     });
     let mut processor = Processor {
@@ -376,7 +384,7 @@ pub fn create(sample_rate: u32, channels: u16, plan: Box<RenderPlan>) -> (Proces
         preview: None,
         preview_at: 0,
         frame: 0,
-        peaks: [0.0; METER_SLOTS],
+        peaks: [0.0; METER_SLOTS * 2],
         input_channels: 0,
         input_frame: [0.0; MAX_INPUT_CHANNELS],
         sink: None,
@@ -1394,9 +1402,11 @@ fn passes(chance: u8, rng: &mut u64) -> bool {
 }
 
 fn peak(peaks: &mut [f32], slot: usize, left: f32, right: f32) {
-    if let Some(p) = peaks.get_mut(slot) {
-        let level = left.abs().max(right.abs());
-        if level.is_finite() && level > *p {
+    for (index, level) in [(slot * 2, left.abs()), (slot * 2 + 1, right.abs())] {
+        if let Some(p) = peaks.get_mut(index)
+            && level.is_finite()
+            && level > *p
+        {
             *p = level;
         }
     }
