@@ -553,7 +553,15 @@ impl App {
             }
             TrackKind::Group => {
                 let count = self.project.group_members(id).count();
-                ui.label(RichText::new(format!("{count} tracks")).small().weak());
+                ui.label(
+                    RichText::new(if count == 1 {
+                        "1 track".to_owned()
+                    } else {
+                        format!("{count} tracks")
+                    })
+                    .small()
+                    .weak(),
+                );
             }
         }
         let mut chosen = output;

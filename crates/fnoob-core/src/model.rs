@@ -1061,19 +1061,42 @@ impl Project {
         self.tracks.iter().any(|t| t.solo)
     }
 
+    pub fn ancestors(&self, track: &Track) -> Vec<&Track> {
+        let mut found = Vec::new();
+        let mut next = track.group;
+        while let Some(id) = next {
+            match self.track(id) {
+                Some(parent) if !found.iter().any(|t: &&Track| t.id == parent.id) => {
+                    next = parent.group;
+                    found.push(parent);
+                }
+                _ => break,
+            }
+        }
+        found
+    }
+
+    pub fn depth(&self, track: &Track) -> usize {
+        self.ancestors(track).len()
+    }
+
+    pub fn is_inside(&self, track: &Track, group: Id) -> bool {
+        self.ancestors(track).iter().any(|g| g.id == group)
+    }
+
     pub fn is_track_audible(&self, track: &Track) -> bool {
-        let group = track.group.and_then(|g| self.track(g));
-        if track.mute || group.is_some_and(|g| g.mute) {
+        let ancestors = self.ancestors(track);
+        if track.mute || ancestors.iter().any(|g| g.mute) {
             return false;
         }
         !self.any_solo()
             || track.solo
-            || group.is_some_and(|g| g.solo)
+            || ancestors.iter().any(|g| g.solo)
             || (track.kind == TrackKind::Group
                 && self
                     .tracks
                     .iter()
-                    .any(|t| t.group == Some(track.id) && t.solo))
+                    .any(|t| t.solo && self.is_inside(t, track.id)))
     }
 
     pub fn group_members(&self, group: Id) -> impl Iterator<Item = &Track> {
@@ -1081,10 +1104,7 @@ impl Project {
     }
 
     pub fn is_folded_away(&self, track: &Track) -> bool {
-        track
-            .group
-            .and_then(|g| self.track(g))
-            .is_some_and(|g| g.folded)
+        self.ancestors(track).iter().any(|g| g.folded)
     }
 
     pub fn end_tick(&self) -> u64 {
@@ -1111,7 +1131,9 @@ mod tests {
         assert!(value_at(&fast, 50, 0.0) > 0.7);
         assert_eq!(value_at(&slow, 100, 0.0), 1.0);
         let mut automation = Automation::default();
-        automation.lane_mut(AutomationParam::Send(1)).push(point(0, -6.0, 0.0));
+        automation
+            .lane_mut(AutomationParam::Send(1))
+            .push(point(0, -6.0, 0.0));
         assert_eq!(automation.lane(AutomationParam::Send(1)).len(), 1);
         assert!(automation.lane(AutomationParam::Send(0)).is_empty());
         assert_eq!(automation.lanes().count(), 4);

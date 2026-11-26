@@ -1625,13 +1625,13 @@ impl App {
                 ui.visuals().faint_bg_color
             };
             painter.rect_filled(row.shrink2(Vec2::new(0.0, 1.0)), 0.0, fill);
-            let indent = if is_group {
-                18.0
-            } else if member_of.is_some() {
-                10.0
-            } else {
-                0.0
-            };
+            let depth = self
+                .project
+                .track(id)
+                .map_or(0, |t| self.project.depth(t))
+                .min(4) as f32;
+            let base = depth * 10.0;
+            let indent = base + if is_group { 18.0 } else { 0.0 };
             let name_rect = Rect::from_min_size(
                 row.min + Vec2::new(2.0 + indent, 2.0),
                 Vec2::new(NAME_WIDTH - indent, LANE_HEIGHT - 4.0),
@@ -1642,7 +1642,7 @@ impl App {
             {
                 painter.rect_filled(
                     Rect::from_min_size(
-                        row.min + Vec2::new(2.0, 2.0),
+                        row.min + Vec2::new(base - 8.0, 2.0),
                         Vec2::new(6.0, LANE_HEIGHT - 4.0),
                     ),
                     CornerRadius::same(1),
@@ -1650,8 +1650,10 @@ impl App {
                 );
             }
             if is_group {
-                let fold_rect =
-                    Rect::from_min_size(row.min + Vec2::new(2.0, 2.0), Vec2::new(16.0, 20.0));
+                let fold_rect = Rect::from_min_size(
+                    row.min + Vec2::new(2.0 + base, 2.0),
+                    Vec2::new(16.0, 20.0),
+                );
                 let fold = ui
                     .put(
                         fold_rect.intersect(g.headers),

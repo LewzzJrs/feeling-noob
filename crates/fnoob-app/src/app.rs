@@ -1108,7 +1108,8 @@ impl App {
                     }
                     None => {
                         self.message = Some(
-                            "Select tracks that are not in a group yet, then group them.".into(),
+                            "Select tracks that sit in the same group (or in none), then group them."
+                                .into(),
                         );
                     }
                 }

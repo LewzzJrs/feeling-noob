@@ -360,11 +360,16 @@ fn frozen_plan(
 }
 
 fn group_ids(project: &Project) -> Vec<Id> {
-    project
+    let mut groups: Vec<(usize, Id)> = project
         .tracks
         .iter()
         .filter(|t| t.kind == TrackKind::Group)
-        .map(|t| t.id)
+        .map(|t| (project.depth(t), t.id))
+        .collect();
+    groups.sort_by_key(|g| std::cmp::Reverse(g.0));
+    groups
+        .into_iter()
+        .map(|(_, id)| id)
         .take(MAX_GROUPS)
         .collect()
 }
@@ -384,6 +389,17 @@ fn member_strip(
 
 fn group_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Vec<GroupPlan> {
     let ids = group_ids(project);
+    let mut plans = group_plans_unsorted(project, timeline, plugins, &ids);
+    plans.sort_by_key(|g| ids.iter().position(|id| *id == g.id).unwrap_or(usize::MAX));
+    plans
+}
+
+fn group_plans_unsorted(
+    project: &Project,
+    timeline: Timeline,
+    plugins: &PluginMap,
+    ids: &[Id],
+) -> Vec<GroupPlan> {
     project
         .tracks
         .iter()
@@ -392,7 +408,7 @@ fn group_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Ve
         .map(|(index, track)| GroupPlan {
             id: track.id,
             audible: project.is_track_audible(track),
-            strip: StripPlan::new(&track.strip, index, plugins, track.output == Output::Main),
+            strip: member_strip(project, track, index, plugins),
             envelopes: Envelopes::for_track(track, timeline),
             left: vec![0.0; MAX_BLOCK],
             right: vec![0.0; MAX_BLOCK],

@@ -1134,8 +1134,12 @@ impl Processor {
                 group.right[f] = *right;
             }
         }
-        for group in &mut self.plan.groups {
-            if group.audible {
+        for index in 0..self.plan.groups.len() {
+            if !self.plan.groups[index].audible {
+                continue;
+            }
+            {
+                let group = &mut self.plan.groups[index];
                 run_inserts(
                     &mut self.plugins,
                     &group.strip.inserts,
@@ -1144,22 +1148,23 @@ impl Processor {
                     &transport,
                 );
             }
-        }
-        if !self.plan.groups.is_empty() {
             for f in 0..frames {
-                let mut mix = Mix::default();
                 let position = self.positions[f];
-                for group in &self.plan.groups {
-                    if group.audible {
-                        let strip = group.strip.at(&group.envelopes, position);
-                        mix.add(&strip, group.left[f], group.right[f], &mut self.peaks);
-                    }
-                }
+                let group = &self.plan.groups[index];
+                let strip = group.strip.at(&group.envelopes, position);
+                let mut mix = Mix::default();
+                mix.add(&strip, group.left[f], group.right[f], &mut self.peaks);
                 self.main_left[f] += mix.main.0;
                 self.main_right[f] += mix.main.1;
-                for (index, (left, right)) in mix.returns.iter().enumerate() {
-                    self.return_left[index][f] += *left;
-                    self.return_right[index][f] += *right;
+                for (r, (left, right)) in mix.returns.iter().enumerate() {
+                    self.return_left[r][f] += *left;
+                    self.return_right[r][f] += *right;
+                }
+                if let Some(parent) = strip.group.filter(|p| *p != index)
+                    && let Some(target) = self.plan.groups.get_mut(parent)
+                {
+                    target.left[f] += mix.groups[parent].0;
+                    target.right[f] += mix.groups[parent].1;
                 }
             }
         }
@@ -2086,6 +2091,18 @@ mod tests {
         assert!((frame[0] - 0.5 * 0.501_187).abs() < 1e-5);
         assert!(frame[1].abs() < 1e-6);
         project.track_mut(track).unwrap().strip.volume_db = SILENT_DB;
+        assert_eq!(first_frame(&project).0, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn nested_groups_pass_sound_upward() {
+        let (mut project, track, _) = mixer_project();
+        let inner = fnoob_core::edit::group_tracks(&mut project, &[track]).unwrap();
+        let outer = fnoob_core::edit::group_tracks(&mut project, &[inner]).unwrap();
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        let (frame, _) = first_frame(&project);
+        assert_close(&frame, &[0.5 * c * c * c, 0.5 * c * c * c]);
+        project.track_mut(outer).unwrap().mute = true;
         assert_eq!(first_frame(&project).0, [0.0, 0.0]);
     }
 

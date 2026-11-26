@@ -220,10 +220,24 @@ pub fn ramp_velocities(
 }
 
 pub fn group_tracks(project: &mut Project, ids: &[Id]) -> Option<Id> {
+    let parent = project
+        .tracks
+        .iter()
+        .find(|t| ids.contains(&t.id))
+        .and_then(|t| t.group);
     let members: Vec<Id> = project
         .tracks
         .iter()
-        .filter(|t| ids.contains(&t.id) && t.kind != TrackKind::Group && t.group.is_none())
+        .filter(|t| ids.contains(&t.id) && t.group == parent)
+        .map(|t| t.id)
+        .collect();
+    if members.is_empty() {
+        return None;
+    }
+    let carried: Vec<Id> = project
+        .tracks
+        .iter()
+        .filter(|t| members.contains(&t.id) || members.iter().any(|m| project.is_inside(t, *m)))
         .map(|t| t.id)
         .collect();
     let first = project
@@ -240,9 +254,10 @@ pub fn group_tracks(project: &mut Project, ids: &[Id]) -> Option<Id> {
     let mut track = project.tracks.pop()?;
     track.name = format!("{number} Group");
     track.color = project.tracks[first].color;
+    track.group = parent;
     let mut moved: Vec<Track> = Vec::new();
     project.tracks.retain(|t| {
-        if members.contains(&t.id) {
+        if carried.contains(&t.id) {
             moved.push(t.clone());
             false
         } else {
@@ -250,7 +265,9 @@ pub fn group_tracks(project: &mut Project, ids: &[Id]) -> Option<Id> {
         }
     });
     for member in &mut moved {
-        member.group = Some(group);
+        if members.contains(&member.id) {
+            member.group = Some(group);
+        }
     }
     let at = first.min(project.tracks.len());
     project.tracks.insert(at, track);
@@ -264,9 +281,10 @@ pub fn ungroup(project: &mut Project, group: Id) -> bool {
     if project.track(group).map(|t| t.kind) != Some(TrackKind::Group) {
         return false;
     }
+    let parent = project.track(group).and_then(|t| t.group);
     for track in &mut project.tracks {
         if track.group == Some(group) {
-            track.group = None;
+            track.group = parent;
         }
     }
     project.tracks.retain(|t| t.id != group);
@@ -337,9 +355,10 @@ pub fn default_set(project: &mut Project) {
 }
 
 pub fn delete_track(project: &mut Project, track_id: Id) -> bool {
+    let parent = project.track(track_id).and_then(|t| t.group);
     for track in &mut project.tracks {
         if track.group == Some(track_id) {
-            track.group = None;
+            track.group = parent;
         }
     }
     let before = project.tracks.len();
@@ -1372,7 +1391,20 @@ mod tests {
         assert_eq!(p.track(c).unwrap().group, Some(group));
         assert_eq!(p.track(b).unwrap().group, None);
         assert_eq!(p.track(group).unwrap().name, "1 Group");
-        assert!(group_tracks(&mut p, &[a]).is_none());
+        let outer = group_tracks(&mut p, &[group, b]).unwrap();
+        assert_eq!(p.track(group).unwrap().group, Some(outer));
+        assert_eq!(p.track(a).unwrap().group, Some(group));
+        let order: Vec<Id> = p.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(order, vec![outer, group, a, c, b]);
+        assert_eq!(p.depth(p.track(a).unwrap()), 2);
+        p.track_mut(outer).unwrap().folded = true;
+        assert!(p.is_folded_away(p.track(a).unwrap()));
+        p.track_mut(outer).unwrap().folded = false;
+        p.track_mut(outer).unwrap().mute = true;
+        assert!(!p.is_track_audible(p.track(a).unwrap()));
+        p.track_mut(outer).unwrap().mute = false;
+        assert!(ungroup(&mut p, outer));
+        assert_eq!(p.track(group).unwrap().group, None);
         p.track_mut(group).unwrap().mute = true;
         assert!(!p.is_track_audible(p.track(a).unwrap()));
         assert!(p.is_track_audible(p.track(b).unwrap()));
