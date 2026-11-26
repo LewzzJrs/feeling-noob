@@ -1,5 +1,7 @@
 use crate::audio_data::{AudioData, AudioPool};
-use fnoob_core::model::{DRUM_PADS, DrumParams, Instrument, SamplerParams, SynthParams, Waveform};
+use fnoob_core::model::{
+    DRUM_PADS, DrumParams, FmParams, Instrument, SamplerParams, SynthParams, Waveform,
+};
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
@@ -63,6 +65,10 @@ enum Source {
         root: u8,
     },
     Drums(Box<[Pad; DRUM_PADS]>),
+    Fm {
+        ratio: f32,
+        amount: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +151,23 @@ impl Synth {
         )
     }
 
+    pub fn fm(params: &FmParams, sample_rate: u32) -> Self {
+        Self::with(
+            Source::Fm {
+                ratio: params.ratio,
+                amount: params.amount,
+            },
+            &Envelope {
+                attack_ms: params.attack_ms,
+                decay_ms: params.decay_ms,
+                sustain: params.sustain,
+                release_ms: params.release_ms,
+                level_db: params.level_db,
+            },
+            sample_rate,
+        )
+    }
+
     pub fn sampler(params: &SamplerParams, sample_rate: u32, pool: &AudioPool) -> Self {
         Self::with(
             Source::Sampler {
@@ -196,6 +219,7 @@ impl Synth {
             Some(Instrument::Sampler(params)) => Self::sampler(params, sample_rate, pool),
             Some(Instrument::DrumSampler(params)) => Self::drums(params, sample_rate, pool),
             Some(Instrument::Vst3(_)) => Self::new(&SynthParams::default(), sample_rate),
+            Some(Instrument::FmSynth(params)) => Self::fm(params, sample_rate),
             None => Self::sampler(
                 &fnoob_core::model::SamplerParams::default(),
                 sample_rate,
@@ -232,7 +256,7 @@ impl Synth {
     pub fn note_on(&mut self, pitch: u8, velocity: u8, off_at: u64, live: bool) {
         let pitch = pitch.min(127);
         let (one_shot, pad, rate) = match &self.source {
-            Source::Oscillator(_) => (false, 0, 0.0),
+            Source::Oscillator(_) | Source::Fm { .. } => (false, 0, 0.0),
             Source::Sampler { data, root } => {
                 if data.is_none() {
                     return;
@@ -322,6 +346,13 @@ impl Synth {
             Source::Oscillator(waveform) => {
                 let x = Self::oscillator(*waveform, voice.phase, voice.increment);
                 voice.phase = (voice.phase + voice.increment).fract();
+                Some((x, x))
+            }
+            Source::Fm { ratio, amount } => {
+                let modulator = (TAU * voice.cursor as f32).sin();
+                let x = (TAU * voice.phase + amount * voice.level * modulator).sin();
+                voice.phase = (voice.phase + voice.increment).fract();
+                voice.cursor = (voice.cursor + f64::from(voice.increment * ratio)).fract();
                 Some((x, x))
             }
             Source::Sampler { data, .. } => {
@@ -423,6 +454,34 @@ mod tests {
         (from..from + frames)
             .map(|p| synth.next_frame(p).0)
             .collect()
+    }
+
+    #[test]
+    fn fm_synth_sounds_and_changes_with_amount() {
+        let render = |amount: f32| {
+            let params = FmParams {
+                amount,
+                attack_ms: 0.0,
+                sustain: 1.0,
+                level_db: 0.0,
+                ..FmParams::default()
+            };
+            let mut synth = Synth::fm(&params, SR);
+            synth.note_on(69, 127, u64::MAX, true);
+            (0..2000)
+                .map(|i| synth.next_frame(i).0)
+                .collect::<Vec<f32>>()
+        };
+        let plain = render(0.0);
+        let bright = render(5.0);
+        assert!(plain.iter().any(|v| v.abs() > 0.5));
+        assert!(
+            plain
+                .iter()
+                .chain(&bright)
+                .all(|v| v.is_finite() && v.abs() <= 1.0001)
+        );
+        assert!(plain.iter().zip(&bright).any(|(a, b)| (a - b).abs() > 0.1));
     }
 
     #[test]

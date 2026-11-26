@@ -308,4 +308,45 @@ impl App {
             self.edit(|p| set_instrument(p, track, Instrument::BasicSynth(SynthParams::default())));
         }
     }
+
+    pub(crate) fn fm_controls(
+        &mut self,
+        ui: &mut Ui,
+        track: Id,
+        params: fnoob_core::model::FmParams,
+    ) {
+        let mut next = params;
+        let mut responses = vec![
+            ui.add(
+                Slider::new(&mut next.ratio, 0.25..=16.0)
+                    .logarithmic(true)
+                    .text("Ratio"),
+            ),
+            ui.add(Slider::new(&mut next.amount, 0.0..=10.0).text("Amount")),
+        ];
+        responses.extend(envelope_controls(
+            ui,
+            EnvelopeFields {
+                attack_ms: &mut next.attack_ms,
+                decay_ms: &mut next.decay_ms,
+                sustain: &mut next.sustain,
+                release_ms: &mut next.release_ms,
+                level_db: &mut next.level_db,
+            },
+        ));
+        for response in &responses {
+            self.live_edit(response, |p| {
+                set_instrument(p, track, Instrument::FmSynth(next));
+            });
+        }
+        if ui.button("Reset").clicked() {
+            self.edit(|p| {
+                set_instrument(
+                    p,
+                    track,
+                    Instrument::FmSynth(fnoob_core::model::FmParams::default()),
+                );
+            });
+        }
+    }
 }

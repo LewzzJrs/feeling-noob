@@ -35,6 +35,8 @@ pub struct TrackPlan {
     pub synth: Synth,
     pub session: Session,
     pub instrument: Option<usize>,
+    pub midi_fx: Vec<fnoob_core::midi_fx::MidiDevice>,
+    pub arp: Option<crate::arp::Arp>,
     pub pending_offs: [u64; 128],
     pub next_off: u64,
     pub cursor: usize,
@@ -380,6 +382,24 @@ fn group_plans(project: &Project, timeline: Timeline, plugins: &PluginMap) -> Ve
         .collect()
 }
 
+pub fn apply_midi_fx(
+    effects: &[fnoob_core::midi_fx::MidiDevice],
+    notes: Vec<PlannedNote>,
+) -> Vec<PlannedNote> {
+    if effects.is_empty() {
+        return notes;
+    }
+    let mut out = [0u8; fnoob_core::midi_fx::MAX_OUT];
+    let mut result = Vec::with_capacity(notes.len());
+    for note in notes {
+        let count = fnoob_core::midi_fx::pitches(effects, note.pitch, &mut out);
+        for &pitch in &out[..count] {
+            result.push(PlannedNote { pitch, ..note });
+        }
+    }
+    result
+}
+
 fn track_plans(
     project: &Project,
     timeline: Timeline,
@@ -397,7 +417,7 @@ fn track_plans(
                 _ => None,
             };
             let audible = project.is_track_audible(track);
-            let mut notes: Vec<PlannedNote> = if audible {
+            let notes: Vec<PlannedNote> = if audible {
                 track
                     .regions
                     .iter()
@@ -438,8 +458,19 @@ fn track_plans(
             } else {
                 Vec::new()
             };
+            let notes = apply_midi_fx(&track.midi_effects, notes);
+            let mut notes = notes;
             notes.sort_unstable_by_key(|n| (n.start, n.pitch));
+            let arp = fnoob_core::midi_fx::arpeggiator(&track.midi_effects).map(
+                |(style, rate, octaves, gate)| {
+                    let step = fnoob_core::time::grid_ticks(rate, project.time_signature) as f64
+                        * timeline.samples_per_tick();
+                    crate::arp::Arp::new(style, step.round() as u64, octaves, gate)
+                },
+            );
             TrackPlan {
+                midi_fx: track.midi_effects.clone(),
+                arp,
                 id: track.id,
                 audible,
                 strip: member_strip(project, track, index, plugins),
@@ -594,6 +625,27 @@ mod tests {
                 .envelopes
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn midi_effects_shape_the_planned_notes() {
+        use fnoob_core::midi_fx::{MidiDevice, MidiEffect};
+        let mut p = Project::new("t", 48_000);
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        let region = add_midi_region(&mut p, inst, 0, 960).unwrap();
+        add_note(&mut p, region, note(61, 0, 100));
+        p.track_mut(inst).unwrap().midi_effects = MidiEffect::all()
+            .into_iter()
+            .map(|effect| MidiDevice {
+                effect,
+                bypass: false,
+            })
+            .collect();
+        p.track_mut(inst).unwrap().midi_effects.swap(0, 1);
+        let plan = RenderPlan::from_project(&p, 48_000);
+        let pitches: Vec<u8> = plan.tracks[0].notes.iter().map(|n| n.pitch).collect();
+        assert_eq!(pitches, vec![60, 64, 67]);
+        assert!(plan.tracks[0].arp.is_some());
     }
 
     #[test]

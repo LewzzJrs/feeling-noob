@@ -112,6 +112,32 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal_top(|ui| {
                     if let (Owner::Track(id), Some(TrackKind::Instrument)) = (owner, kind) {
+                        let count = self.project.track(id).map_or(0, |t| t.midi_effects.len());
+                        for index in 0..count {
+                            self.midi_effect_card(ui, id, index);
+                        }
+                        if count < fnoob_core::midi_fx::MAX_MIDI_EFFECTS {
+                            Self::card(ui, 130.0, |ui| {
+                                ui.label(RichText::new("MIDI effect").weak());
+                                ui.menu_button("+ MIDI Effect", |ui| {
+                                    for effect in fnoob_core::midi_fx::MidiEffect::all() {
+                                        if ui.button(effect.label()).clicked() {
+                                            self.edit(|p| {
+                                                if let Some(t) = p.track_mut(id) {
+                                                    t.midi_effects.push(
+                                                        fnoob_core::midi_fx::MidiDevice {
+                                                            effect,
+                                                            bypass: false,
+                                                        },
+                                                    );
+                                                }
+                                            });
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            });
+                        }
                         self.instrument_card(ui, id);
                     }
                     let count = inserts.len();
@@ -175,6 +201,152 @@ impl App {
                 }
             }
             _ => self.message = Some("Drop effects or instruments here.".into()),
+        }
+    }
+
+    fn midi_effect_card(&mut self, ui: &mut Ui, track: fnoob_core::model::Id, index: usize) {
+        use fnoob_core::midi_fx::{ArpStyle, MidiEffect};
+        let Some(device) = self
+            .project
+            .track(track)
+            .and_then(|t| t.midi_effects.get(index))
+            .copied()
+        else {
+            return;
+        };
+        let accent = self.accent(Owner::Track(track)).gamma_multiply(0.8);
+        let mut toggle = false;
+        let mut remove = false;
+        let mut moved = None;
+        let mut next = device.effect;
+        let mut responses = Vec::new();
+        Self::card(ui, 220.0, |ui| {
+            let (toggled, _) =
+                Self::title_bar(ui, device.effect.label(), Some(!device.bypass), accent);
+            toggle = toggled;
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(index > 0, egui::Button::new("<").small())
+                    .clicked()
+                {
+                    moved = Some(index - 1);
+                }
+                if ui.small_button(">").clicked() {
+                    moved = Some(index + 1);
+                }
+                if ui.small_button("Remove").clicked() {
+                    remove = true;
+                }
+            });
+            ui.separator();
+            match &mut next {
+                MidiEffect::Chord { shifts } => {
+                    ui.label(
+                        RichText::new("Semitones added to every note (0 = off)")
+                            .small()
+                            .weak(),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        for shift in shifts.iter_mut() {
+                            responses.push(ui.add(egui::DragValue::new(shift).range(-36..=36)));
+                        }
+                    });
+                }
+                MidiEffect::Scale { root, kind } => {
+                    egui::ComboBox::from_id_salt(("midi_scale_root", track, index))
+                        .width(50.0)
+                        .selected_text(fnoob_core::scale::NOTE_NAMES[usize::from(*root % 12)])
+                        .show_ui(ui, |ui| {
+                            for (i, name) in fnoob_core::scale::NOTE_NAMES.iter().enumerate() {
+                                responses.push(ui.selectable_value(root, i as u8, *name));
+                            }
+                        });
+                    egui::ComboBox::from_id_salt(("midi_scale_kind", track, index))
+                        .width(110.0)
+                        .selected_text(kind.label())
+                        .show_ui(ui, |ui| {
+                            for option in fnoob_core::scale::ScaleKind::ALL {
+                                responses.push(ui.selectable_value(kind, option, option.label()));
+                            }
+                        });
+                    ui.label(
+                        RichText::new("Notes outside the scale move down to it")
+                            .small()
+                            .weak(),
+                    );
+                }
+                MidiEffect::Arpeggiator {
+                    style,
+                    rate,
+                    octaves,
+                    gate,
+                } => {
+                    ui.horizontal_wrapped(|ui| {
+                        for option in ArpStyle::ALL {
+                            responses.push(ui.selectable_value(style, option, option.label()));
+                        }
+                    });
+                    egui::ComboBox::from_id_salt(("arp_rate", track, index))
+                        .width(64.0)
+                        .selected_text(rate.label())
+                        .show_ui(ui, |ui| {
+                            for option in fnoob_core::model::Grid::ALL
+                                .into_iter()
+                                .chain(fnoob_core::model::Grid::TRIPLETS)
+                                .filter(|g| g.bars().is_none())
+                            {
+                                responses.push(ui.selectable_value(rate, option, option.label()));
+                            }
+                        });
+                    responses.push(ui.add(egui::Slider::new(octaves, 1..=4).text("Octaves")));
+                    responses.push(ui.add(egui::Slider::new(gate, 0.05..=1.0).text("Gate")));
+                    ui.label(
+                        RichText::new("Plays held notes one by one while the song plays")
+                            .small()
+                            .weak(),
+                    );
+                }
+            }
+        });
+        if toggle {
+            self.edit(|p| {
+                if let Some(d) = p
+                    .track_mut(track)
+                    .and_then(|t| t.midi_effects.get_mut(index))
+                {
+                    d.bypass = !d.bypass;
+                }
+            });
+        }
+        if remove {
+            self.edit(|p| {
+                if let Some(t) = p.track_mut(track)
+                    && index < t.midi_effects.len()
+                {
+                    t.midi_effects.remove(index);
+                }
+            });
+            return;
+        }
+        if let Some(to) = moved {
+            self.edit(|p| {
+                if let Some(t) = p.track_mut(track)
+                    && to < t.midi_effects.len()
+                {
+                    t.midi_effects.swap(index, to);
+                }
+            });
+            return;
+        }
+        for response in &responses {
+            self.live_edit(response, |p| {
+                if let Some(d) = p
+                    .track_mut(track)
+                    .and_then(|t| t.midi_effects.get_mut(index))
+                {
+                    d.effect = next;
+                }
+            });
         }
     }
 
@@ -520,6 +692,7 @@ impl App {
             ui.separator();
             match instrument {
                 Instrument::BasicSynth(params) => self.synth_controls(ui, track, params),
+                Instrument::FmSynth(params) => self.fm_controls(ui, track, params),
                 Instrument::Sampler(params) => self.sampler_controls(ui, track, params),
                 Instrument::DrumSampler(params) => self.drum_controls(ui, track, *params),
                 Instrument::Vst3(slot) => self.plugin_body(ui, &slot),

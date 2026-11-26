@@ -315,8 +315,14 @@ fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
         Some(Instrument::BasicSynth(params)) => params.is_valid(),
         Some(Instrument::Sampler(params)) => params.is_valid(),
         Some(Instrument::DrumSampler(params)) => params.is_valid(),
+        Some(Instrument::FmSynth(params)) => params.is_valid(),
         Some(Instrument::Vst3(_)) | None => true,
     };
+    if track.midi_effects.len() > crate::midi_fx::MAX_MIDI_EFFECTS
+        || !track.midi_effects.iter().all(|d| d.effect.is_valid())
+    {
+        return Err(format!("track {} has invalid MIDI effects", track.id));
+    }
     if !instrument_ok {
         return Err(format!(
             "track {} has invalid instrument settings",

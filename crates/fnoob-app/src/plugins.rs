@@ -29,17 +29,24 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[derive(Debug, Clone, PartialEq)]
 pub enum InstrumentChoice {
     BasicSynth,
+    FmSynth,
     Sampler,
     DrumSampler,
     Vst3(CatalogEntry),
 }
 
 impl InstrumentChoice {
-    pub const BUILTIN: [Self; 3] = [Self::BasicSynth, Self::Sampler, Self::DrumSampler];
+    pub const BUILTIN: [Self; 4] = [
+        Self::BasicSynth,
+        Self::FmSynth,
+        Self::Sampler,
+        Self::DrumSampler,
+    ];
 
     pub fn label(&self) -> String {
         match self {
             Self::BasicSynth => "Basic Synth".to_owned(),
+            Self::FmSynth => "FM Synth".to_owned(),
             Self::Sampler => "Sampler".to_owned(),
             Self::DrumSampler => "Drum Sampler".to_owned(),
             Self::Vst3(entry) => entry.class.name.clone(),
@@ -49,6 +56,7 @@ impl InstrumentChoice {
     pub fn detail(&self) -> String {
         match self {
             Self::BasicSynth => "Built-in synthesizer".to_owned(),
+            Self::FmSynth => "Two-operator FM synthesizer".to_owned(),
             Self::Sampler => "Plays one sample across the keyboard".to_owned(),
             Self::DrumSampler => "16 one-shot pads".to_owned(),
             Self::Vst3(entry) => entry.class.vendor.clone(),
@@ -635,6 +643,9 @@ impl App {
             let instrument = match choice {
                 InstrumentChoice::Vst3(e) => Instrument::Vst3(Self::new_slot(p, e)),
                 InstrumentChoice::BasicSynth => Instrument::BasicSynth(SynthParams::default()),
+                InstrumentChoice::FmSynth => {
+                    Instrument::FmSynth(fnoob_core::model::FmParams::default())
+                }
                 InstrumentChoice::Sampler => Instrument::Sampler(SamplerParams::default()),
                 InstrumentChoice::DrumSampler => Instrument::DrumSampler(Box::default()),
             };

@@ -32,6 +32,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
         frozen: None,
         automation_off: false,
         no_stop: Vec::new(),
+        midi_effects: Vec::new(),
     });
     id
 }

@@ -200,6 +200,44 @@ pub struct SynthParams {
     pub level_db: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FmParams {
+    pub ratio: f32,
+    pub amount: f32,
+    pub attack_ms: f32,
+    pub decay_ms: f32,
+    pub sustain: f32,
+    pub release_ms: f32,
+    pub level_db: f32,
+}
+
+impl Default for FmParams {
+    fn default() -> Self {
+        Self {
+            ratio: 2.0,
+            amount: 2.5,
+            attack_ms: 5.0,
+            decay_ms: 300.0,
+            sustain: 0.4,
+            release_ms: 300.0,
+            level_db: -12.0,
+        }
+    }
+}
+
+impl FmParams {
+    pub fn is_valid(&self) -> bool {
+        let time = 0.0..=MAX_ENVELOPE_MS;
+        (0.25..=16.0).contains(&self.ratio)
+            && (0.0..=10.0).contains(&self.amount)
+            && time.contains(&self.attack_ms)
+            && time.contains(&self.decay_ms)
+            && time.contains(&self.release_ms)
+            && (0.0..=1.0).contains(&self.sustain)
+            && (MIN_LEVEL_DB..=MAX_LEVEL_DB).contains(&self.level_db)
+    }
+}
+
 pub const MAX_ENVELOPE_MS: f32 = 10_000.0;
 pub const MIN_LEVEL_DB: f32 = -60.0;
 pub const MAX_LEVEL_DB: f32 = 6.0;
@@ -320,6 +358,7 @@ pub enum Instrument {
     Vst3(PluginSlot),
     Sampler(SamplerParams),
     DrumSampler(Box<DrumParams>),
+    FmSynth(FmParams),
 }
 
 impl Instrument {
@@ -329,6 +368,7 @@ impl Instrument {
             Self::Vst3(slot) => &slot.name,
             Self::Sampler(_) => "Sampler",
             Self::DrumSampler(_) => "Drum Sampler",
+            Self::FmSynth(_) => "FM Synth",
         }
     }
 
@@ -336,7 +376,7 @@ impl Instrument {
         match self {
             Self::Sampler(p) => p.file.into_iter().collect(),
             Self::DrumSampler(p) => p.pads.iter().filter_map(|pad| pad.file).collect(),
-            Self::BasicSynth(_) | Self::Vst3(_) => Vec::new(),
+            Self::BasicSynth(_) | Self::Vst3(_) | Self::FmSynth(_) => Vec::new(),
         }
     }
 }
@@ -775,6 +815,8 @@ pub struct Track {
     pub automation_off: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_stop: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub midi_effects: Vec<crate::midi_fx::MidiDevice>,
 }
 
 impl Track {
@@ -798,7 +840,12 @@ impl Track {
             (TrackKind::Instrument, Some(Instrument::BasicSynth(params))) => Some(*params),
             (
                 TrackKind::Instrument,
-                Some(Instrument::Vst3(_) | Instrument::Sampler(_) | Instrument::DrumSampler(_)),
+                Some(
+                    Instrument::Vst3(_)
+                    | Instrument::Sampler(_)
+                    | Instrument::DrumSampler(_)
+                    | Instrument::FmSynth(_),
+                ),
             ) => None,
             (TrackKind::Instrument, None) => Some(SynthParams::default()),
             (TrackKind::Audio | TrackKind::Group, _) => None,

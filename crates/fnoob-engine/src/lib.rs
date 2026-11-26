@@ -1,3 +1,4 @@
+pub mod arp;
 pub mod audio_data;
 pub mod bounce;
 pub mod decode;

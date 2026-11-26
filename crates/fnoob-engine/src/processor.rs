@@ -632,14 +632,24 @@ impl Processor {
     }
 
     fn play_live(&mut self, track: Id, event: MidiEvent) {
+        let playing = self.state == TransportState::Playing;
         if let Some(plan) = self.plan.tracks.iter_mut().find(|t| t.id == track) {
-            if let Some(plugin) = plugin_of(&self.plugins, plan.instrument) {
-                plugin.note(self.frame, event.pitch, event.velocity);
-            } else if event.velocity > 0 {
-                plan.synth
-                    .note_on(event.pitch, event.velocity, u64::MAX, true);
-            } else {
-                plan.synth.note_off_live(event.pitch);
+            let mut out = [0u8; fnoob_core::midi_fx::MAX_OUT];
+            let count = fnoob_core::midi_fx::pitches(&plan.midi_fx, event.pitch, &mut out);
+            for &pitch in &out[..count] {
+                if let (Some(arp), true) = (&mut plan.arp, playing) {
+                    if event.velocity > 0 {
+                        arp.hold(pitch, event.velocity, NO_OFF);
+                    } else {
+                        arp.release(pitch);
+                    }
+                } else if let Some(plugin) = plugin_of(&self.plugins, plan.instrument) {
+                    plugin.note(self.frame, pitch, event.velocity);
+                } else if event.velocity > 0 {
+                    plan.synth.note_on(pitch, event.velocity, u64::MAX, true);
+                } else {
+                    plan.synth.note_off_live(pitch);
+                }
             }
         }
     }
@@ -916,6 +926,11 @@ impl Processor {
                 }
             }
             track.session.advance();
+            if let Some((pitch, velocity, end)) =
+                track.arp.as_mut().and_then(|arp| arp.tick(position))
+            {
+                sound(track, &self.plugins, frame, pitch, velocity, end);
+            }
         }
         for track in &mut self.plan.audio_tracks {
             track.session.step(position, quantum, &mut self.rng);
@@ -1323,6 +1338,9 @@ fn peak(peaks: &mut [f32], slot: usize, left: f32, right: f32) {
 
 fn release_track(track: &mut TrackPlan, plugins: &[Option<EngineSlot>], frame: usize) {
     track.synth.release_scheduled();
+    if let Some(arp) = &mut track.arp {
+        arp.clear();
+    }
     if let Some(plugin) = plugin_of(plugins, track.instrument) {
         for pitch in 0..128u8 {
             if track.pending_offs[usize::from(pitch)] != NO_OFF {
@@ -1335,6 +1353,21 @@ fn release_track(track: &mut TrackPlan, plugins: &[Option<EngineSlot>], frame: u
 }
 
 fn trigger(
+    track: &mut TrackPlan,
+    plugins: &[Option<EngineSlot>],
+    frame: usize,
+    pitch: u8,
+    velocity: u8,
+    end: u64,
+) {
+    if let Some(arp) = &mut track.arp {
+        arp.hold(pitch, velocity, end);
+        return;
+    }
+    sound(track, plugins, frame, pitch, velocity, end);
+}
+
+fn sound(
     track: &mut TrackPlan,
     plugins: &[Option<EngineSlot>],
     frame: usize,

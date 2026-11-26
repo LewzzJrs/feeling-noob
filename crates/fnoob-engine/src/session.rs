@@ -142,7 +142,16 @@ impl Session {
             slots: track
                 .session
                 .iter()
-                .map(|c| c.as_ref().and_then(|c| clip_plan(c, timeline, pool, ts)))
+                .map(|c| {
+                    c.as_ref()
+                        .and_then(|c| clip_plan(c, timeline, pool, ts))
+                        .map(|mut plan| {
+                            let notes = std::mem::take(&mut plan.notes);
+                            plan.notes = crate::plan::apply_midi_fx(&track.midi_effects, notes);
+                            plan.notes.sort_unstable_by_key(|n| (n.start, n.pitch));
+                            plan
+                        })
+                })
                 .collect(),
             keep: track.no_stop.clone(),
             play: SessionPlay::default(),
