@@ -1529,6 +1529,13 @@ fn clip_frame(track: &mut AudioTrackPlan, position: u64) -> (f32, f32) {
             if left_over < clip.fade_out {
                 gain *= left_over as f32 / clip.fade_out as f32;
             }
+            if into < clip.xfade_in {
+                gain *= (into as f32 / clip.xfade_in as f32 * std::f32::consts::FRAC_PI_2).sin();
+            }
+            if left_over < clip.xfade_out {
+                gain *=
+                    (left_over as f32 / clip.xfade_out as f32 * std::f32::consts::FRAC_PI_2).sin();
+            }
             let (l, r) = match &clip.warp {
                 Some(warp) => warped_frame(clip, warp, position),
                 None => {
@@ -2755,5 +2762,30 @@ mod tests {
             .iter()
             .fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.3 && peak < 0.75, "{peak}");
+    }
+
+    #[test]
+    fn overlapping_audio_clips_crossfade() {
+        let data = AudioData::from_samples(1, vec![0.5; 4000]);
+        let (mut project, track, pool) = audio_project(&data, 0);
+        let file = project.audio_files[0].id;
+        add_audio_region(&mut project, track, 40, file, 0).unwrap();
+        let mut plan = audio_plan(&project, &pool);
+        let out = render_clips(&mut plan.audio_tracks[0], 0, 6000);
+        assert!((out[500 * 2] - 0.5).abs() < 1e-4);
+        let middle = out[2500 * 2];
+        assert!(
+            (middle - 0.5 * std::f32::consts::SQRT_2).abs() < 1e-2,
+            "{middle}"
+        );
+        assert!((out[4500 * 2] - 0.5).abs() < 1e-4);
+        project.crossfade_overlaps = false;
+        let mut plan = audio_plan(&project, &pool);
+        let out = render_clips(&mut plan.audio_tracks[0], 0, 6000);
+        assert!((out[2500 * 2] - 1.0).abs() < 1e-4);
+        assert_eq!(
+            fnoob_core::model::crossfades(project.track(track).unwrap()),
+            vec![(40, 160)]
+        );
     }
 }

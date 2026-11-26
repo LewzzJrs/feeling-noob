@@ -1423,6 +1423,24 @@ impl App {
                 self.draw_automation(ui, g, track, lane, actions);
             }
         }
+        if self.project.crossfade_overlaps {
+            let stroke = Stroke::new(1.5, Color32::from_white_alpha(200));
+            for (index, track) in self.project.tracks.iter().enumerate() {
+                if self.project.is_folded_away(track) {
+                    continue;
+                }
+                let top = g.lane_top(index) + 18.0;
+                let bottom = g.lane_top(index) + g.lane_h(index) - 3.0;
+                if bottom <= top {
+                    continue;
+                }
+                for (from, to) in fnoob_core::model::crossfades(track) {
+                    let (left, right) = (g.x(from), g.x(to));
+                    painter.line_segment([Pos2::new(left, bottom), Pos2::new(right, top)], stroke);
+                    painter.line_segment([Pos2::new(left, top), Pos2::new(right, bottom)], stroke);
+                }
+            }
+        }
     }
 
     fn draw_automation(

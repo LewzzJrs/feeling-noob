@@ -57,6 +57,20 @@ pub struct Clip {
     pub loop_len: u64,
     pub data: Arc<AudioData>,
     pub warp: Option<ClipWarp>,
+    pub xfade_in: u64,
+    pub xfade_out: u64,
+}
+
+fn crossfade(clips: &mut [Clip]) {
+    for index in 1..clips.len() {
+        let (before, after) = clips.split_at_mut(index);
+        let (a, b) = (&mut before[index - 1], &mut after[0]);
+        if b.start < a.end && b.end > a.end {
+            let length = a.end - b.start;
+            a.xfade_out = length;
+            b.xfade_in = length;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -487,10 +501,15 @@ fn audio_track_plans(
                         },
                         data: Arc::clone(data),
                         warp,
+                        xfade_in: 0,
+                        xfade_out: 0,
                     })
                 })
                 .collect();
             clips.sort_by_key(|c| c.start);
+            if project.crossfade_overlaps {
+                crossfade(&mut clips);
+            }
             AudioTrackPlan {
                 id: track.id,
                 audible,
@@ -534,6 +553,8 @@ fn frozen_plan(
             loop_len: 0,
             data: Arc::clone(data),
             warp: None,
+            xfade_in: 0,
+            xfade_out: 0,
         })
         .into_iter()
         .collect();

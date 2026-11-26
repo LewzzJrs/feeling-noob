@@ -474,6 +474,24 @@ pub const DEFAULT_LANE_HEIGHT: f32 = 60.0;
 pub const MIN_LANE_HEIGHT: f32 = 24.0;
 pub const MAX_LANE_HEIGHT: f32 = 300.0;
 
+fn crossfade_default() -> bool {
+    true
+}
+
+pub fn crossfades(track: &Track) -> Vec<(u64, u64)> {
+    let mut audio: Vec<&Region> = track
+        .regions
+        .iter()
+        .filter(|r| !r.muted && matches!(r.content, RegionContent::Audio { .. }))
+        .collect();
+    audio.sort_by_key(|r| r.start_tick);
+    audio
+        .windows(2)
+        .filter(|w| w[1].start_tick < w[0].end_tick() && w[1].end_tick() > w[0].end_tick())
+        .map(|w| (w[1].start_tick, w[0].end_tick()))
+        .collect()
+}
+
 fn default_lane_height() -> f32 {
     DEFAULT_LANE_HEIGHT
 }
@@ -1054,6 +1072,8 @@ pub struct Project {
     pub midi_overdub: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub midi_map: Vec<crate::midi_map::MidiMapping>,
+    #[serde(default = "crossfade_default")]
+    pub crossfade_overlaps: bool,
     pub tracks: Vec<Track>,
 }
 
@@ -1143,6 +1163,7 @@ impl Project {
             launch_quantize: crate::session::LaunchQuantize::default(),
             midi_overdub: false,
             midi_map: Vec::new(),
+            crossfade_overlaps: true,
             tracks: Vec::new(),
         }
     }

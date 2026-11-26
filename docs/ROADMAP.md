@@ -83,7 +83,7 @@ Done in Phase 30: MIDI file export (Ctrl+Shift+E) and import, stem export with o
 
 Done in Phase 31: track heights that can be dragged per track or for all selected tracks, and H to fit all tracks to the window and back, and dragging a device by its title to reorder the chain. The control bar wraps by group on narrow windows and the status bar shortens its text.
 
-Done in Phase 32: audio clip warping in the clip view: a clip follows the song tempo from the tempo it was played at, in Stretch mode (keeps pitch) or Repitch mode (speed and pitch together).
+Done in Phase 32: audio clip warping in the clip view: a clip follows the song tempo from the tempo it was played at, in Stretch mode (keeps pitch) or Repitch mode (speed and pitch together), and equal-power crossfades where audio clips on a track overlap (Options > Crossfade Overlapping Clips).
 
 Not started, in rough priority order:
 
@@ -91,7 +91,7 @@ Not started, in rough priority order:
 - MIDI tools: chop, ornament, rhythm, shape and euclidean generators
 - Scale mode: fold the piano roll to scale notes, scale-aware MIDI tools
 - Automation of plugin parameters, clip envelopes
-- Crossfades between overlapping regions, fade curves
+- Fade curve shapes and crossfade length handles
 - Quantize strength and swing, groove templates
 - Rubber-band selection, draw mode and chance lane in the piano roll
 - Recording one track's output into another, sidechain for plugins

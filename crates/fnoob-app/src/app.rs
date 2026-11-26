@@ -1652,6 +1652,18 @@ impl App {
                 self.menu_item(ui, "Next Locator", Command::NextMarker);
             });
             ui.menu_button("Options", |ui| {
+                let crossfade = self.project.crossfade_overlaps;
+                if ui
+                    .add(egui::Button::selectable(
+                        crossfade,
+                        "Crossfade Overlapping Clips",
+                    ))
+                    .on_hover_text("Where audio clips on a track overlap, fade one into the other")
+                    .clicked()
+                {
+                    self.edit(|p| p.crossfade_overlaps = !crossfade);
+                    ui.close();
+                }
                 self.menu_toggle(
                     ui,
                     "Computer MIDI Keyboard",
