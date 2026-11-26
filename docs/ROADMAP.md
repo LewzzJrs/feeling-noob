@@ -85,15 +85,14 @@ Done in Phase 31: track heights that can be dragged per track or for all selecte
 
 Done in Phase 32: audio clip warping in the clip view: a clip follows the song tempo from the tempo it was played at, in Stretch mode (keeps pitch) or Repitch mode (speed and pitch together), and equal-power crossfades where audio clips on a track overlap (Options > Crossfade Overlapping Clips).
 
+Done in Phase 33: filled waveforms with peak and RMS layers and stereo lanes, stereo level meters with peak hold and a clip lamp, quantize amount, swing and note ends, key-aware transpose and Fit to Key, fade curve shapes and crossfade length, box selection and a chance lane in the piano roll, euclidean, chop and flam tools, VST3 parameter automation, warp markers, tempo detection and a Beats warp mode.
+
 Not started, in rough priority order:
 
-- Warp markers, tempo detection, transient-aware stretching and warping of Clip Grid clips
-- MIDI tools: chop, ornament, rhythm, shape and euclidean generators
-- Scale mode: fold the piano roll to scale notes, scale-aware MIDI tools
-- Automation of plugin parameters, clip envelopes
-- Fade curve shapes and crossfade length handles
-- Quantize strength and swing, groove templates
-- Rubber-band selection, draw mode and chance lane in the piano roll
+- Warping of Clip Grid clips
+- MIDI tools: rhythm and shape generators
+- Clip envelopes
+- Groove templates
 - Recording one track's output into another, sidechain for plugins
 - Crossfader and cue output
 - CPU meter per track
