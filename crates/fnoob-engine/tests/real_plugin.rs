@@ -72,3 +72,28 @@ fn insert_plugin_adds_a_reverb_tail() {
     processor.process(&mut out);
     handle.collect_garbage();
 }
+
+#[test]
+#[ignore = "needs ValhallaSupermassive installed"]
+fn plugin_lists_its_automatable_parameters() {
+    let path = Path::new(EFFECT);
+    let info = scan(path).unwrap().remove(0);
+    let module = Module::load(path).unwrap();
+    let (plugin, mut instance) = instantiate(&module, &info, 48_000.0, MAX_BLOCK, None).unwrap();
+    let params = plugin.parameters();
+    assert!(params.len() > 3, "{}", params.len());
+    assert!(params.iter().all(|p| !p.name.is_empty()));
+    let mix = params[0].id;
+    instance.set_param(mix, 0.25);
+    let (mut left, mut right) = (vec![0.0; 256], vec![0.0; 256]);
+    let transport = fnoob_platform::plugin::Transport {
+        playing: false,
+        position: 0,
+        tempo: 120.0,
+        numerator: 4,
+        denominator: 4,
+        quarter_notes: 0.0,
+    };
+    assert_no_alloc(|| instance.process(&mut left, &mut right, &transport));
+    assert!(plugin.normalized(mix).is_some());
+}
