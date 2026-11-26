@@ -655,7 +655,7 @@ mod tests {
                 p.returns[0].inserts.push(slot);
             },
             |p| {
-                for _ in 0..5 {
+                for _ in 0..=MAX_INSERTS {
                     let slot = test_slot(p.next_id);
                     p.next_id += 1;
                     p.tracks[0].strip.inserts.push(slot);

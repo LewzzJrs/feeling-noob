@@ -341,7 +341,7 @@ impl Instrument {
     }
 }
 
-pub const MAX_INSERTS: usize = 4;
+pub const MAX_INSERTS: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginSlot {

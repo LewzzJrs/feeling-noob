@@ -93,6 +93,89 @@ pub struct UtilityParams {
     pub invert_right: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FilterMode {
+    LowPass,
+    HighPass,
+    BandPass,
+}
+
+impl FilterMode {
+    pub const ALL: [FilterMode; 3] = [
+        FilterMode::LowPass,
+        FilterMode::HighPass,
+        FilterMode::BandPass,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FilterMode::LowPass => "Low-pass",
+            FilterMode::HighPass => "High-pass",
+            FilterMode::BandPass => "Band-pass",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AutoFilterParams {
+    pub mode: FilterMode,
+    pub cutoff_hz: f32,
+    pub resonance: f32,
+    pub lfo_hz: f32,
+    pub lfo_depth: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ChorusParams {
+    pub rate_hz: f32,
+    pub depth_ms: f32,
+    pub delay_ms: f32,
+    pub feedback: f32,
+    pub mix: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SaturatorCurve {
+    Soft,
+    Hard,
+    Warm,
+}
+
+impl SaturatorCurve {
+    pub const ALL: [SaturatorCurve; 3] = [
+        SaturatorCurve::Soft,
+        SaturatorCurve::Hard,
+        SaturatorCurve::Warm,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SaturatorCurve::Soft => "Soft",
+            SaturatorCurve::Hard => "Hard",
+            SaturatorCurve::Warm => "Warm",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SaturatorParams {
+    pub curve: SaturatorCurve,
+    pub drive_db: f32,
+    pub output_db: f32,
+    pub mix: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GateParams {
+    pub threshold_db: f32,
+    pub attack_ms: f32,
+    pub hold_ms: f32,
+    pub release_ms: f32,
+    pub floor_db: f32,
+}
+
+pub const MAX_CHORUS_MS: f32 = 50.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BuiltinEffect {
     Eq(EqParams),
@@ -101,6 +184,10 @@ pub enum BuiltinEffect {
     Reverb(ReverbParams),
     Limiter(LimiterParams),
     Utility(UtilityParams),
+    AutoFilter(AutoFilterParams),
+    Chorus(ChorusParams),
+    Saturator(SaturatorParams),
+    Gate(GateParams),
 }
 
 pub const MAX_DELAY_MS: f32 = 2000.0;
@@ -110,7 +197,7 @@ fn within(value: f32, low: f32, high: f32) -> bool {
 }
 
 impl BuiltinEffect {
-    pub fn all() -> [BuiltinEffect; 6] {
+    pub fn all() -> [BuiltinEffect; 10] {
         [
             Self::Eq(EqParams {
                 low_cut_hz: 0.0,
@@ -154,6 +241,33 @@ impl BuiltinEffect {
                 invert_left: false,
                 invert_right: false,
             }),
+            Self::AutoFilter(AutoFilterParams {
+                mode: FilterMode::LowPass,
+                cutoff_hz: 1200.0,
+                resonance: 1.0,
+                lfo_hz: 0.0,
+                lfo_depth: 0.0,
+            }),
+            Self::Chorus(ChorusParams {
+                rate_hz: 0.8,
+                depth_ms: 3.0,
+                delay_ms: 12.0,
+                feedback: 0.1,
+                mix: 0.5,
+            }),
+            Self::Saturator(SaturatorParams {
+                curve: SaturatorCurve::Soft,
+                drive_db: 6.0,
+                output_db: 0.0,
+                mix: 1.0,
+            }),
+            Self::Gate(GateParams {
+                threshold_db: -40.0,
+                attack_ms: 1.0,
+                hold_ms: 20.0,
+                release_ms: 100.0,
+                floor_db: -80.0,
+            }),
         ]
     }
 
@@ -165,6 +279,10 @@ impl BuiltinEffect {
             Self::Reverb(_) => "Reverb",
             Self::Limiter(_) => "Limiter",
             Self::Utility(_) => "Utility",
+            Self::AutoFilter(_) => "Auto Filter",
+            Self::Chorus(_) => "Chorus",
+            Self::Saturator(_) => "Saturator",
+            Self::Gate(_) => "Gate",
         }
     }
 
@@ -208,6 +326,31 @@ impl BuiltinEffect {
                     && within(p.release_ms, 1.0, 1000.0)
             }
             Self::Utility(p) => within(p.gain_db, -60.0, 24.0) && within(p.width, 0.0, 2.0),
+            Self::AutoFilter(p) => {
+                within(p.cutoff_hz, 20.0, 20_000.0)
+                    && within(p.resonance, 0.3, 12.0)
+                    && within(p.lfo_hz, 0.0, 20.0)
+                    && within(p.lfo_depth, 0.0, 1.0)
+            }
+            Self::Chorus(p) => {
+                within(p.rate_hz, 0.01, 10.0)
+                    && within(p.depth_ms, 0.0, 10.0)
+                    && within(p.delay_ms, 1.0, 30.0)
+                    && within(p.feedback, 0.0, 0.9)
+                    && within(p.mix, 0.0, 1.0)
+            }
+            Self::Saturator(p) => {
+                within(p.drive_db, 0.0, 36.0)
+                    && within(p.output_db, -24.0, 12.0)
+                    && within(p.mix, 0.0, 1.0)
+            }
+            Self::Gate(p) => {
+                within(p.threshold_db, -80.0, 0.0)
+                    && within(p.attack_ms, 0.1, 100.0)
+                    && within(p.hold_ms, 0.0, 500.0)
+                    && within(p.release_ms, 5.0, 2000.0)
+                    && within(p.floor_db, -80.0, 0.0)
+            }
         }
     }
 }

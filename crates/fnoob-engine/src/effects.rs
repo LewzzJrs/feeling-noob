@@ -1,6 +1,7 @@
 use fnoob_core::effects::{
-    BuiltinEffect, CompressorParams, DelayParams, EqParams, LimiterParams, MAX_DELAY_MS,
-    ReverbParams, UtilityParams,
+    AutoFilterParams, BuiltinEffect, ChorusParams, CompressorParams, DelayParams, EqParams,
+    FilterMode, GateParams, LimiterParams, MAX_CHORUS_MS, MAX_DELAY_MS, ReverbParams,
+    SaturatorCurve, SaturatorParams, UtilityParams,
 };
 use fnoob_core::model::db_to_gain;
 use std::f32::consts::PI;
@@ -88,6 +89,141 @@ fn high_pass(rate: f32, hz: f32) -> [f32; 5] {
         [(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0],
         [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
     )
+}
+
+fn filter(rate: f32, mode: FilterMode, hz: f32, q: f32) -> [f32; 5] {
+    let w = 2.0 * PI * hz.clamp(10.0, rate * 0.45) / rate;
+    let alpha = w.sin() / (2.0 * q.max(0.1));
+    let cos = w.cos();
+    let b = match mode {
+        FilterMode::LowPass => [(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0],
+        FilterMode::HighPass => [(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0],
+        FilterMode::BandPass => [alpha, 0.0, -alpha],
+    };
+    normalize(b, [1.0 + alpha, -2.0 * cos, 1.0 - alpha])
+}
+
+const FILTER_STEP: u32 = 32;
+
+#[derive(Debug, Clone, PartialEq)]
+struct AutoFilter {
+    params: AutoFilterParams,
+    bands: [Biquad; 2],
+    phase: f32,
+    countdown: u32,
+}
+
+impl AutoFilter {
+    fn retune(&mut self, rate: f32) {
+        let p = self.params;
+        let swing = (self.phase * 2.0 * PI).sin() * p.lfo_depth * 3.0;
+        let hz = p.cutoff_hz * 2f32.powf(swing);
+        let coefficients = filter(rate, p.mode, hz, p.resonance);
+        for band in &mut self.bands {
+            band.set(coefficients);
+        }
+    }
+
+    fn run(&mut self, left: &mut f32, right: &mut f32, rate: f32) {
+        if self.countdown == 0 {
+            self.retune(rate);
+            self.countdown = FILTER_STEP;
+        }
+        self.countdown -= 1;
+        self.phase = (self.phase + self.params.lfo_hz / rate).fract();
+        *left = self.bands[0].run(*left);
+        *right = self.bands[1].run(*right);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Chorus {
+    params: ChorusParams,
+    left: Vec<f32>,
+    right: Vec<f32>,
+    write: usize,
+    phase: f32,
+}
+
+fn read_delayed(buffer: &[f32], write: usize, delay: f32) -> f32 {
+    let len = buffer.len();
+    let delay = delay.clamp(1.0, (len - 2) as f32);
+    let whole = delay.floor() as usize;
+    let fraction = delay - whole as f32;
+    let a = buffer[(write + len - whole) % len];
+    let b = buffer[(write + len - whole - 1) % len];
+    a + (b - a) * fraction
+}
+
+impl Chorus {
+    fn run(&mut self, left: &mut f32, right: &mut f32, rate: f32) {
+        let p = self.params;
+        let base = p.delay_ms * 0.001 * rate;
+        let depth = p.depth_ms * 0.001 * rate;
+        let swing_l = (self.phase * 2.0 * PI).sin();
+        let swing_r = ((self.phase + 0.25) * 2.0 * PI).sin();
+        let wet_l = read_delayed(&self.left, self.write, base + depth * swing_l);
+        let wet_r = read_delayed(&self.right, self.write, base + depth * swing_r);
+        self.left[self.write] = *left + wet_l * p.feedback;
+        self.right[self.write] = *right + wet_r * p.feedback;
+        self.write = (self.write + 1) % self.left.len();
+        self.phase = (self.phase + p.rate_hz / rate).fract();
+        *left += (wet_l - *left) * p.mix;
+        *right += (wet_r - *right) * p.mix;
+    }
+}
+
+fn saturate(curve: SaturatorCurve, x: f32) -> f32 {
+    match curve {
+        SaturatorCurve::Soft => x.tanh(),
+        SaturatorCurve::Hard => x.clamp(-1.0, 1.0),
+        SaturatorCurve::Warm => (x + 0.2 * x * x).tanh(),
+    }
+}
+
+fn saturator(p: &SaturatorParams, left: &mut f32, right: &mut f32) {
+    let drive = db_to_gain(p.drive_db);
+    let output = db_to_gain(p.output_db);
+    for sample in [left, right] {
+        let wet = saturate(p.curve, *sample * drive) * output;
+        *sample += (wet - *sample) * p.mix;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Gate {
+    params: GateParams,
+    gain: f32,
+    held: u32,
+    attack: f32,
+    release: f32,
+}
+
+impl Gate {
+    fn configure(&mut self, rate: f32) {
+        self.attack = coefficient(self.params.attack_ms, rate);
+        self.release = coefficient(self.params.release_ms, rate);
+    }
+
+    fn run(&mut self, left: &mut f32, right: &mut f32, rate: f32) {
+        let p = self.params;
+        let level = left.abs().max(right.abs());
+        if level >= db_to_gain(p.threshold_db) {
+            self.held = (p.hold_ms * 0.001 * rate) as u32;
+        } else {
+            self.held = self.held.saturating_sub(1);
+        }
+        let open = level >= db_to_gain(p.threshold_db) || self.held > 0;
+        let target = if open { 1.0 } else { db_to_gain(p.floor_db) };
+        let k = if target > self.gain {
+            self.attack
+        } else {
+            self.release
+        };
+        self.gain = target + (self.gain - target) * k;
+        *left *= self.gain;
+        *right *= self.gain;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -351,6 +487,10 @@ enum State {
     Reverb(Reverb),
     Limiter(Limiter),
     Utility(UtilityParams),
+    AutoFilter(AutoFilter),
+    Chorus(Chorus),
+    Saturator(SaturatorParams),
+    Gate(Gate),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -391,6 +531,30 @@ impl BuiltinProcessor {
                 release: 0.0,
             }),
             BuiltinEffect::Utility(params) => State::Utility(params),
+            BuiltinEffect::AutoFilter(params) => State::AutoFilter(AutoFilter {
+                params,
+                bands: Default::default(),
+                phase: 0.0,
+                countdown: 0,
+            }),
+            BuiltinEffect::Chorus(params) => {
+                let size = (MAX_CHORUS_MS * 0.001 * rate) as usize + 4;
+                State::Chorus(Chorus {
+                    params,
+                    left: vec![0.0; size],
+                    right: vec![0.0; size],
+                    write: 0,
+                    phase: 0.0,
+                })
+            }
+            BuiltinEffect::Saturator(params) => State::Saturator(params),
+            BuiltinEffect::Gate(params) => State::Gate(Gate {
+                params,
+                gain: 0.0,
+                held: 0,
+                attack: 0.0,
+                release: 0.0,
+            }),
         };
         let mut processor = Self { state, rate };
         processor.configure();
@@ -403,7 +567,13 @@ impl BuiltinProcessor {
             State::Eq(eq) => eq.configure(rate),
             State::Compressor(c) => c.configure(rate),
             State::Limiter(l) => l.release = coefficient(l.params.release_ms, rate),
-            State::Delay(_) | State::Reverb(_) | State::Utility(_) => {}
+            State::Gate(g) => g.configure(rate),
+            State::AutoFilter(f) => f.countdown = 0,
+            State::Delay(_)
+            | State::Reverb(_)
+            | State::Utility(_)
+            | State::Chorus(_)
+            | State::Saturator(_) => {}
         }
     }
 
@@ -415,6 +585,10 @@ impl BuiltinProcessor {
             (State::Reverb(s), BuiltinEffect::Reverb(p)) => s.params = p,
             (State::Limiter(s), BuiltinEffect::Limiter(p)) => s.params = p,
             (State::Utility(s), BuiltinEffect::Utility(p)) => *s = p,
+            (State::AutoFilter(s), BuiltinEffect::AutoFilter(p)) => s.params = p,
+            (State::Chorus(s), BuiltinEffect::Chorus(p)) => s.params = p,
+            (State::Saturator(s), BuiltinEffect::Saturator(p)) => *s = p,
+            (State::Gate(s), BuiltinEffect::Gate(p)) => s.params = p,
             _ => return,
         }
         self.configure();
@@ -428,6 +602,7 @@ impl BuiltinProcessor {
     }
 
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32], tempo: f64) {
+        let rate = self.rate;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             match &mut self.state {
                 State::Eq(eq) => eq.run(l, r),
@@ -436,6 +611,10 @@ impl BuiltinProcessor {
                 State::Reverb(v) => v.run(l, r),
                 State::Limiter(m) => m.run(l, r),
                 State::Utility(p) => utility(p, l, r),
+                State::AutoFilter(f) => f.run(l, r, rate),
+                State::Chorus(c) => c.run(l, r, rate),
+                State::Saturator(p) => saturator(p, l, r),
+                State::Gate(g) => g.run(l, r, rate),
             }
         }
     }
@@ -467,6 +646,48 @@ mod tests {
         let (mut l, mut r) = (input.to_vec(), input.to_vec());
         p.process(&mut l, &mut r, 120.0);
         (l, r)
+    }
+
+    #[test]
+    fn auto_filter_low_pass_quiets_highs() {
+        let input = sine(8000.0, 4800, 0.5);
+        let (l, _) = run(defaults(6), &input);
+        assert!(rms(&l[2400..]) < rms(&input[2400..]) * 0.2);
+        let low = sine(100.0, 4800, 0.5);
+        let (l, _) = run(defaults(6), &low);
+        assert!(rms(&l[2400..]) > rms(&low[2400..]) * 0.8);
+    }
+
+    #[test]
+    fn chorus_stays_bounded_and_changes_the_sound() {
+        let input = sine(440.0, 9600, 0.5);
+        let (l, r) = run(defaults(7), &input);
+        assert!(l.iter().chain(&r).all(|v| v.is_finite() && v.abs() < 2.0));
+        assert!(l.iter().zip(&input).any(|(a, b)| (a - b).abs() > 0.01));
+        assert!(l.iter().zip(&r).any(|(a, b)| (a - b).abs() > 0.001));
+    }
+
+    #[test]
+    fn saturator_limits_peaks() {
+        let input = sine(220.0, 4800, 0.9);
+        let mut effect = defaults(8);
+        if let BuiltinEffect::Saturator(p) = &mut effect {
+            p.drive_db = 24.0;
+            p.curve = SaturatorCurve::Hard;
+        }
+        let (l, _) = run(effect, &input);
+        assert!(l.iter().all(|v| v.abs() <= 1.0 + 1e-6));
+        assert!(rms(&l) > rms(&input));
+    }
+
+    #[test]
+    fn gate_silences_quiet_sound_and_passes_loud_sound() {
+        let quiet = sine(220.0, 9600, 0.001);
+        let (l, _) = run(defaults(9), &quiet);
+        assert!(rms(&l[4800..]) < 1e-5);
+        let loud = sine(220.0, 9600, 0.5);
+        let (l, _) = run(defaults(9), &loud);
+        assert!(rms(&l[4800..]) > rms(&loud[4800..]) * 0.9);
     }
 
     #[test]
