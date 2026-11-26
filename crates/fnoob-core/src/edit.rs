@@ -11,6 +11,7 @@ pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
     let color = (project.tracks.len() % usize::from(TRACK_COLORS)) as u8;
     project.tracks.push(Track {
         id,
+        lane_height: crate::model::DEFAULT_LANE_HEIGHT,
         name: format!("{number} {}", kind.default_name()),
         kind,
         color,

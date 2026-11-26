@@ -233,6 +233,11 @@ pub enum UiAction {
     RenameMarker(Id),
     DeleteMarker(Id),
     ExportMidi(Id),
+    ResizeTrack {
+        id: Id,
+        height: f32,
+        start: bool,
+    },
 }
 
 fn automation_y(lane: Rect, param: AutomationParam, value: f32) -> f32 {
@@ -325,9 +330,21 @@ struct Geometry {
     scroll_tick: f32,
     scroll_y: f32,
     offsets: Vec<f32>,
+    heights: Vec<f32>,
+}
+
+pub(crate) fn lane_height(track: &Track) -> f32 {
+    track.lane_height.clamp(
+        fnoob_core::model::MIN_LANE_HEIGHT,
+        fnoob_core::model::MAX_LANE_HEIGHT,
+    )
 }
 
 impl Geometry {
+    fn lane_h(&self, index: usize) -> f32 {
+        self.heights.get(index).copied().unwrap_or(LANE_HEIGHT)
+    }
+
     fn track_at(&self, y: f32) -> Option<usize> {
         let y = y - self.lanes.top() + self.scroll_y;
         self.offsets.windows(2).position(|w| y >= w[0] && y < w[1])
@@ -386,7 +403,9 @@ impl App {
             scroll_tick: self.view.scroll_tick,
             scroll_y: self.view.scroll_y,
             offsets: self.track_offsets(),
+            heights: self.project.tracks.iter().map(lane_height).collect(),
         };
+        self.view.lanes_height = geometry.lanes.height();
         let mut actions = Vec::new();
         if area_response.contains_pointer() {
             let (scroll, zoom, pointer) = ui.input(|i| {
@@ -499,7 +518,49 @@ impl App {
         actions.push(UiAction::DropFiles { paths, track, tick });
     }
 
-    fn track_offsets(&self) -> Vec<f32> {
+    pub(crate) fn optimize_height(&mut self) {
+        if let Some(backup) = self.height_backup.take() {
+            self.edit(|p| {
+                for track in &mut p.tracks {
+                    if let Some((_, height)) = backup.iter().find(|(id, _)| *id == track.id) {
+                        track.lane_height = *height;
+                    }
+                }
+            });
+            return;
+        }
+        let visible: Vec<Id> = self
+            .project
+            .tracks
+            .iter()
+            .filter(|t| !self.project.is_folded_away(t))
+            .map(|t| t.id)
+            .collect();
+        if visible.is_empty() || self.view.lanes_height <= 0.0 {
+            return;
+        }
+        let backup: Vec<(Id, f32)> = self
+            .project
+            .tracks
+            .iter()
+            .map(|t| (t.id, t.lane_height))
+            .collect();
+        let height = (self.view.lanes_height / visible.len() as f32).clamp(
+            fnoob_core::model::MIN_LANE_HEIGHT,
+            fnoob_core::model::MAX_LANE_HEIGHT,
+        );
+        self.edit(|p| {
+            for track in &mut p.tracks {
+                if visible.contains(&track.id) {
+                    track.lane_height = height;
+                }
+            }
+        });
+        self.view.scroll_y = 0.0;
+        self.height_backup = Some(backup);
+    }
+
+    pub(crate) fn track_offsets(&self) -> Vec<f32> {
         let mut offsets = vec![0.0];
         let mut total = 0.0;
         for track in &self.project.tracks {
@@ -507,7 +568,7 @@ impl App {
                 offsets.push(total);
                 continue;
             }
-            total += LANE_HEIGHT;
+            total += lane_height(track);
             if self.takes_open.contains(&track.id) {
                 total += track.takes.len() as f32 * TAKE_H;
             }
@@ -548,7 +609,7 @@ impl App {
         let header_painter = ui.painter_at(g.headers);
         for (index, track, color, takes) in lanes {
             for (lane, (name, regions)) in takes.into_iter().enumerate() {
-                let top = g.lane_top(index) + LANE_HEIGHT + lane as f32 * TAKE_H;
+                let top = g.lane_top(index) + g.lane_h(index) + lane as f32 * TAKE_H;
                 let row = Rect::from_x_y_ranges(g.lanes.x_range(), top..=top + TAKE_H - 1.0);
                 if row.bottom() < g.lanes.top() || row.top() > g.lanes.bottom() {
                     continue;
@@ -673,12 +734,14 @@ impl App {
             .and_then(|id| self.project.tracks.iter().position(|t| t.id == id))
             .unwrap_or(self.project.tracks.len());
         let top = g.lane_top(index);
-        let rect =
-            Rect::from_x_y_ranges(g.lanes.left()..=g.headers.right(), top..=top + LANE_HEIGHT)
-                .intersect(Rect::from_x_y_ranges(
-                    g.lanes.left()..=g.headers.right(),
-                    g.lanes.y_range(),
-                ));
+        let rect = Rect::from_x_y_ranges(
+            g.lanes.left()..=g.headers.right(),
+            top..=top + g.lane_h(index),
+        )
+        .intersect(Rect::from_x_y_ranges(
+            g.lanes.left()..=g.headers.right(),
+            g.lanes.y_range(),
+        ));
         let painter = ui.painter_at(area);
         painter.rect_filled(rect, 0.0, MARKER.gamma_multiply(0.18));
         painter.rect_stroke(rect, 0.0, Stroke::new(2.0, MARKER), StrokeKind::Inside);
@@ -1113,7 +1176,7 @@ impl App {
                 continue;
             }
             let top = g.lane_top(index);
-            let lane = Rect::from_x_y_ranges(g.lanes.x_range(), top..=top + LANE_HEIGHT);
+            let lane = Rect::from_x_y_ranges(g.lanes.x_range(), top..=top + g.lane_h(index));
             if lane.bottom() < g.lanes.top() || lane.top() > g.lanes.bottom() {
                 continue;
             }
@@ -1667,7 +1730,8 @@ impl App {
                     (t.kind == TrackKind::Group, t.folded, t.group)
                 });
             let top = g.lane_top(index);
-            let row = Rect::from_x_y_ranges(g.headers.x_range(), top..=top + LANE_HEIGHT);
+            let height = g.lane_h(index);
+            let row = Rect::from_x_y_ranges(g.headers.x_range(), top..=top + height);
             if row.bottom() < g.headers.top() || row.top() > g.headers.bottom() {
                 continue;
             }
@@ -1687,7 +1751,7 @@ impl App {
             let indent = base + if is_group { 18.0 } else { 0.0 };
             let name_rect = Rect::from_min_size(
                 row.min + Vec2::new(2.0 + indent, 2.0),
-                Vec2::new(NAME_WIDTH - indent, LANE_HEIGHT - 4.0),
+                Vec2::new(NAME_WIDTH - indent, height - 4.0),
             );
             if let Some(group_color) = member_of
                 .and_then(|g| self.project.track(g))
@@ -1696,7 +1760,7 @@ impl App {
                 painter.rect_filled(
                     Rect::from_min_size(
                         row.min + Vec2::new(base - 8.0, 2.0),
-                        Vec2::new(6.0, LANE_HEIGHT - 4.0),
+                        Vec2::new(6.0, height - 4.0),
                     ),
                     CornerRadius::same(1),
                     group_color,
@@ -1883,7 +1947,7 @@ impl App {
             });
             let io_rect = Rect::from_min_size(
                 Pos2::new(name_rect.right() + 4.0, row.top() + 3.0),
-                Vec2::new(IO_WIDTH, LANE_HEIGHT - 6.0),
+                Vec2::new(IO_WIDTH, height - 6.0),
             );
             let mix_rect = Rect::from_min_max(
                 Pos2::new(io_rect.right() + 4.0, row.top() + 3.0),
@@ -1934,6 +1998,32 @@ impl App {
                 Pos2::new(row.right() - 4.0, row.bottom() - 4.0),
             );
             self.paint_meter(&painter, meter, crate::mixer::MixTarget::Track(id));
+            let edge =
+                Rect::from_x_y_ranges(g.headers.x_range(), row.bottom() - 3.0..=row.bottom() + 2.0)
+                    .intersect(g.headers);
+            let resize = ui
+                .interact(edge, ui.scope_id().with(("lane_resize", id)), Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+            let resize = crate::ui_kit::hint(
+                resize,
+                "Drag to change the track height. Selected tracks change together. H fits all tracks to the window.",
+            );
+            if resize.drag_started() {
+                actions.push(UiAction::ResizeTrack {
+                    id,
+                    height,
+                    start: true,
+                });
+            }
+            if resize.dragged()
+                && let Some(pointer) = resize.interact_pointer_pos()
+            {
+                actions.push(UiAction::ResizeTrack {
+                    id,
+                    height: pointer.y - row.top(),
+                    start: false,
+                });
+            }
         }
         if renaming.is_some()
             && !actions
@@ -2389,6 +2479,27 @@ impl App {
                     (self.view.scroll_y + pixels).clamp(0.0, (content - LANE_HEIGHT).max(0.0));
             }
             UiAction::Zoom { factor, anchor } => self.zoom_at(factor, anchor),
+            UiAction::ResizeTrack { id, height, start } => {
+                if start {
+                    self.history.record(self.project.clone());
+                }
+                let height = height.clamp(
+                    fnoob_core::model::MIN_LANE_HEIGHT,
+                    fnoob_core::model::MAX_LANE_HEIGHT,
+                );
+                let together = self.title_selection();
+                let ids = if together.contains(&id) {
+                    together
+                } else {
+                    vec![id]
+                };
+                for track in &mut self.project.tracks {
+                    if ids.contains(&track.id) {
+                        track.lane_height = height;
+                    }
+                }
+                self.height_backup = None;
+            }
             UiAction::ExportMidi(region) => {
                 self.selection.regions = vec![region];
                 self.export_midi_clip();
@@ -3015,7 +3126,7 @@ impl App {
             if selection.tracks.contains(&track.id) {
                 let top = g.lane_top(index);
                 painter.rect_filled(
-                    Rect::from_x_y_ranges(left..=right, top..=top + LANE_HEIGHT),
+                    Rect::from_x_y_ranges(left..=right, top..=top + g.lane_h(index)),
                     0.0,
                     fill,
                 );
@@ -3057,7 +3168,7 @@ impl App {
             }
             if marked.is_empty() || marked.contains(&track.id) {
                 let top = g.lane_top(index);
-                painter.vline(x, top..=top + LANE_HEIGHT, Stroke::new(1.5, color));
+                painter.vline(x, top..=top + g.lane_h(index), Stroke::new(1.5, color));
             }
         }
     }
@@ -3186,15 +3297,25 @@ impl App {
         let delta_ticks = ((pointer.x - anchor.x) / self.view.pixels_per_tick) as i64;
         let wanted = (primary_region.start_tick as i64 + delta_ticks).max(0) as u64;
         let delta = self.snapped(wanted) as i64 - primary_region.start_tick as i64;
-        let lane_delta = ((pointer.y - anchor.y) / LANE_HEIGHT).round() as i64;
         let ids = self.selection.regions.clone();
         let source_index = origin
             .tracks
             .iter()
             .position(|t| t.id == primary_track.id)
             .unwrap_or(0);
-        let target =
-            (source_index as i64 + lane_delta).clamp(0, origin.tracks.len() as i64 - 1) as usize;
+        let offsets = self.track_offsets();
+        let middle = offsets.get(source_index).copied().unwrap_or(0.0)
+            + lane_height(&origin.tracks[source_index]) / 2.0
+            + (pointer.y - anchor.y);
+        let target = offsets
+            .windows(2)
+            .position(|w| middle >= w[0] && middle < w[1])
+            .unwrap_or(if middle < 0.0 {
+                0
+            } else {
+                origin.tracks.len() - 1
+            })
+            .min(origin.tracks.len() - 1);
         let mut project = origin.clone();
         let min_start = ids
             .iter()

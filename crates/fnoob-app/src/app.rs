@@ -1,7 +1,7 @@
 use crate::keys::take_commands;
 use crate::midi::Take;
 use crate::piano_roll::Editor;
-use crate::timeline::{LANE_HEIGHT, MAX_PIXELS_PER_TICK, MIN_PIXELS_PER_TICK};
+use crate::timeline::{MAX_PIXELS_PER_TICK, MIN_PIXELS_PER_TICK};
 use eframe::egui::{self, Pos2, Rect};
 use fnoob_core::edit;
 use fnoob_core::history::History;
@@ -96,6 +96,7 @@ pub struct View {
     pub scroll_tick: f32,
     pub scroll_y: f32,
     pub follow: bool,
+    pub lanes_height: f32,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -143,6 +144,7 @@ pub struct App {
     pub(crate) track_clipboard: Vec<Track>,
     pub(crate) header_focus: bool,
     pub(crate) view: View,
+    pub(crate) height_backup: Option<Vec<(Id, f32)>>,
     pub(crate) drag: Option<Drag>,
     pub(crate) renaming: Option<(Id, String)>,
     pub(crate) editor: Editor,
@@ -246,11 +248,13 @@ impl App {
             system_clipboard: None,
             track_clipboard: Vec::new(),
             header_focus: false,
+            height_backup: None,
             view: View {
                 pixels_per_tick: 0.04,
                 scroll_tick: 0.0,
                 scroll_y: 0.0,
                 follow: true,
+                lanes_height: 0.0,
             },
             drag: None,
             renaming: None,
@@ -713,7 +717,7 @@ impl App {
             None => 0,
         };
         self.selection.track = Some(self.project.tracks[next].id);
-        let top = next as f32 * LANE_HEIGHT;
+        let top = self.track_offsets().get(next).copied().unwrap_or(0.0);
         if top < self.view.scroll_y {
             self.view.scroll_y = top;
         }
@@ -774,6 +778,7 @@ impl App {
                     self.view.scroll_tick = state.scroll_tick;
                 }
             }
+            Command::OptimizeHeight => self.optimize_height(),
             Command::FitSong => {
                 let end = crate::arrange::song_end(&self.project);
                 self.zoom_to(0, end);

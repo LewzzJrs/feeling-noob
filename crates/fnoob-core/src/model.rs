@@ -470,6 +470,17 @@ impl Note {
 pub const MIN_GAIN_DB: f32 = -60.0;
 pub const MAX_GAIN_DB: f32 = 24.0;
 pub const SILENT_DB: f32 = -144.0;
+pub const DEFAULT_LANE_HEIGHT: f32 = 60.0;
+pub const MIN_LANE_HEIGHT: f32 = 24.0;
+pub const MAX_LANE_HEIGHT: f32 = 300.0;
+
+fn default_lane_height() -> f32 {
+    DEFAULT_LANE_HEIGHT
+}
+
+fn is_default_lane_height(height: &f32) -> bool {
+    *height == DEFAULT_LANE_HEIGHT
+}
 pub const MAX_FADER_DB: f32 = 6.0;
 
 pub fn db_to_gain(db: f32) -> f32 {
@@ -889,6 +900,11 @@ impl Region {
 pub struct Track {
     pub id: Id,
     pub name: String,
+    #[serde(
+        default = "default_lane_height",
+        skip_serializing_if = "is_default_lane_height"
+    )]
+    pub lane_height: f32,
     pub kind: TrackKind,
     pub color: u8,
     pub mute: bool,
