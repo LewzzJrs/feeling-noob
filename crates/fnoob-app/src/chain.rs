@@ -29,6 +29,12 @@ fn inserts_mut(project: &mut Project, owner: Owner) -> Option<&mut Vec<PluginSlo
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct DeviceDrag {
+    owner: Owner,
+    index: usize,
+}
+
 impl App {
     pub(crate) fn reveal_device(&mut self, slot: fnoob_core::model::Id) {
         if let Some(index) = self
@@ -403,7 +409,7 @@ impl App {
                     }
                     let (rect, response) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), 16.0),
-                        egui::Sense::click(),
+                        egui::Sense::click_and_drag(),
                     );
                     ui.painter_at(rect).text(
                         rect.left_center(),
@@ -750,8 +756,11 @@ impl App {
             if let Some(title) = title {
                 let title = crate::ui_kit::hint(
                     title,
-                    "Device title: click to select it, then Delete, Ctrl+X, Ctrl+C, Ctrl+V or Ctrl+D. Right-click for more.",
+                    "Device title: click to select it, then Delete, Ctrl+X, Ctrl+C, Ctrl+V or Ctrl+D. Drag it to move the device. Right-click for more.",
                 );
+                if title.dragged() {
+                    title.dnd_set_drag_payload(DeviceDrag { owner, index });
+                }
                 if title.clicked() || title.secondary_clicked() {
                     chosen = Some(None);
                 }
@@ -824,6 +833,38 @@ impl App {
                 None => self.plugin_body(ui, slot),
             }
         });
+        if let Some(drag) = card.response.dnd_hover_payload::<DeviceDrag>()
+            && drag.owner == owner
+            && drag.index != index
+            && let Some(pointer) = ui.input(|i| i.pointer.latest_pos())
+        {
+            let rect = card.response.rect;
+            let x = if pointer.x < rect.center().x {
+                rect.left() - 2.0
+            } else {
+                rect.right() + 2.0
+            };
+            ui.painter().vline(
+                x,
+                rect.y_range(),
+                egui::Stroke::new(3.0, ui.visuals().selection.bg_fill),
+            );
+        }
+        if let Some(drag) = card.response.dnd_release_payload::<DeviceDrag>()
+            && drag.owner == owner
+            && let Some(pointer) = ui.input(|i| i.pointer.latest_pos())
+        {
+            let place = if pointer.x < card.response.rect.center().x {
+                index
+            } else {
+                index + 1
+            };
+            let to = if place > drag.index { place - 1 } else { place };
+            if to != drag.index {
+                self.move_insert(owner, drag.index, to);
+                self.selected_device = Some((owner, to));
+            }
+        }
         if self.selected_device == Some((owner, index)) {
             ui.painter().rect_stroke(
                 card.response.rect,

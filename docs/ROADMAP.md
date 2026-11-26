@@ -81,7 +81,7 @@ Done in Phase 29: automation curves, send and built-in device parameter automati
 
 Done in Phase 30: MIDI file export (Ctrl+Shift+E) and import, stem export with one WAV per track, and a default set that new projects start from, and MIDI Map Mode (Ctrl+M) to link controller knobs, faders and buttons to mixer and built-in device controls.
 
-Done in Phase 31: track heights that can be dragged per track or for all selected tracks, and H to fit all tracks to the window and back.
+Done in Phase 31: track heights that can be dragged per track or for all selected tracks, and H to fit all tracks to the window and back, and dragging a device by its title to reorder the chain.
 
 Not started, in rough priority order:
 
