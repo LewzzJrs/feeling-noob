@@ -1,7 +1,7 @@
 use crate::fsutil::{write_atomic, write_atomic_with};
 use crate::model::{
-    AutomationParam, FORMAT_VERSION, Id, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MAX_INSERTS,
-    MIN_GAIN_DB, PluginSlot, Project, RegionContent, SILENT_DB, Track,
+    FORMAT_VERSION, Id, Instrument, MAX_FADER_DB, MAX_GAIN_DB, MAX_INSERTS, MIN_GAIN_DB,
+    PluginSlot, Project, RegionContent, SILENT_DB, Track,
 };
 use crate::time::{MAX_BPM, MIN_BPM};
 use serde::Deserialize;
@@ -304,10 +304,13 @@ fn validate_track(project: &Project, track: &Track) -> Result<(), String> {
     if !track.strip.is_valid() {
         return Err(format!("track {} has invalid mixer settings", track.id));
     }
-    for param in AutomationParam::ALL {
-        let lane = track.automation.lane(param);
+    for (param, lane) in track.automation.lanes() {
         let sorted = lane.windows(2).all(|w| w[0].tick < w[1].tick);
-        if !sorted || !lane.iter().all(|p| param.is_valid(p.value)) {
+        if !sorted
+            || !lane
+                .iter()
+                .all(|p| param.is_valid(p.value) && (-1.0..=1.0).contains(&p.curve))
+        {
             return Err(format!("track {} has invalid automation", track.id));
         }
     }
@@ -629,10 +632,12 @@ mod tests {
                     AutomationPoint {
                         tick: 10,
                         value: 0.0,
+                        curve: 0.0,
                     },
                     AutomationPoint {
                         tick: 5,
                         value: 0.0,
+                        curve: 0.0,
                     },
                 ]
             },
@@ -640,6 +645,7 @@ mod tests {
                 p.tracks[0].automation.pan = vec![AutomationPoint {
                     tick: 0,
                     value: 3.0,
+                    curve: 0.0,
                 }]
             },
             |p| {

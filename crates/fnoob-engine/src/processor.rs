@@ -2357,10 +2357,12 @@ mod tests {
             fnoob_core::model::AutomationPoint {
                 tick: 0,
                 value: -60.0,
+                curve: 0.0,
             },
             fnoob_core::model::AutomationPoint {
                 tick: 96,
                 value: 0.0,
+                curve: 0.0,
             },
         ];
         let pool = mixer_pool(&project);
@@ -2381,6 +2383,7 @@ mod tests {
             vec![fnoob_core::model::AutomationPoint {
                 tick: 0,
                 value: 1.0,
+                curve: 0.0,
             }];
         let (frame, _) = first_frame(&project);
         assert!(frame[0].abs() < 1e-6);

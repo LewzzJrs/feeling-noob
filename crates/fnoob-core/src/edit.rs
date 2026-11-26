@@ -1036,7 +1036,14 @@ pub fn add_automation_point(
     if lane.get(index).is_some_and(|p| p.tick == tick) {
         lane[index].value = value;
     } else {
-        lane.insert(index, AutomationPoint { tick, value });
+        lane.insert(
+            index,
+            AutomationPoint {
+                tick,
+                value,
+                curve: 0.0,
+            },
+        );
     }
     Some(index)
 }
@@ -1055,6 +1062,22 @@ pub fn move_automation_point(
     }
     lane.remove(index);
     add_automation_point(project, track, param, tick, value)
+}
+
+pub fn set_automation_curve(
+    project: &mut Project,
+    track: Id,
+    param: AutomationParam,
+    index: usize,
+    curve: f32,
+) -> bool {
+    match automation_lane(project, track, param).and_then(|lane| lane.get_mut(index)) {
+        Some(point) => {
+            point.curve = curve.clamp(-1.0, 1.0);
+            true
+        }
+        None => false,
+    }
 }
 
 pub fn delete_automation_point(
@@ -1773,10 +1796,12 @@ mod tests {
             AutomationPoint {
                 tick: 100,
                 value: 0.0,
+                curve: 0.0,
             },
             AutomationPoint {
                 tick: 300,
                 value: -10.0,
+                curve: 0.0,
             },
         ];
         assert_eq!(crate::model::value_at(&points, 0, 5.0), 0.0);

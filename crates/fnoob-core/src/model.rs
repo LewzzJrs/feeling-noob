@@ -661,35 +661,62 @@ pub struct Region {
 pub struct AutomationPoint {
     pub tick: u64,
     pub value: f32,
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub curve: f32,
 }
+
+fn is_linear(curve: &f32) -> bool {
+    *curve == 0.0
+}
+
+pub fn shape(t: f32, curve: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if curve >= 0.0 {
+        t.powf(1.0 + 4.0 * curve)
+    } else {
+        1.0 - (1.0 - t).powf(1.0 - 4.0 * curve)
+    }
+}
+
+const SEND_LABELS: [&str; 8] = [
+    "Send A", "Send B", "Send C", "Send D", "Send E", "Send F", "Send G", "Send H",
+];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutomationParam {
     #[default]
     Volume,
     Pan,
+    Send(u8),
 }
 
 impl AutomationParam {
     pub const ALL: [AutomationParam; 2] = [AutomationParam::Volume, AutomationParam::Pan];
 
+    pub fn with_sends(returns: usize) -> Vec<AutomationParam> {
+        let mut all = Self::ALL.to_vec();
+        all.extend((0..returns.min(MAX_RETURNS) as u8).map(Self::Send));
+        all
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Volume => "Volume",
             Self::Pan => "Pan",
+            Self::Send(i) => SEND_LABELS.get(usize::from(i)).copied().unwrap_or("Send"),
         }
     }
 
     pub fn range(self) -> (f32, f32) {
         match self {
-            Self::Volume => (-60.0, MAX_FADER_DB),
+            Self::Volume | Self::Send(_) => (-60.0, MAX_FADER_DB),
             Self::Pan => (-1.0, 1.0),
         }
     }
 
     pub fn is_valid(self, value: f32) -> bool {
         match self {
-            Self::Volume => (SILENT_DB..=MAX_FADER_DB).contains(&value),
+            Self::Volume | Self::Send(_) => (SILENT_DB..=MAX_FADER_DB).contains(&value),
             Self::Pan => (-1.0..=1.0).contains(&value),
         }
     }
@@ -700,6 +727,8 @@ impl AutomationParam {
 pub struct Automation {
     pub volume: Vec<AutomationPoint>,
     pub pan: Vec<AutomationPoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<Vec<AutomationPoint>>,
 }
 
 impl Automation {
@@ -707,6 +736,7 @@ impl Automation {
         match param {
             AutomationParam::Volume => &self.volume,
             AutomationParam::Pan => &self.pan,
+            AutomationParam::Send(i) => self.sends.get(usize::from(i)).map_or(&[], Vec::as_slice),
         }
     }
 
@@ -714,7 +744,28 @@ impl Automation {
         match param {
             AutomationParam::Volume => &mut self.volume,
             AutomationParam::Pan => &mut self.pan,
+            AutomationParam::Send(i) => {
+                let i = usize::from(i);
+                if self.sends.len() <= i {
+                    self.sends.resize(i + 1, Vec::new());
+                }
+                &mut self.sends[i]
+            }
         }
+    }
+
+    pub fn lanes(&self) -> impl Iterator<Item = (AutomationParam, &[AutomationPoint])> {
+        [
+            (AutomationParam::Volume, self.volume.as_slice()),
+            (AutomationParam::Pan, self.pan.as_slice()),
+        ]
+        .into_iter()
+        .chain(
+            self.sends
+                .iter()
+                .enumerate()
+                .map(|(i, lane)| (AutomationParam::Send(i as u8), lane.as_slice())),
+        )
     }
 }
 
@@ -731,7 +782,7 @@ pub fn value_at(points: &[AutomationPoint], tick: u64, default: f32) -> f32 {
             } else {
                 1.0
             };
-            a.value + (b.value - a.value) * t
+            a.value + (b.value - a.value) * shape(t, a.curve)
         }
     }
 }
@@ -1048,6 +1099,23 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automation_curves_bend_the_line() {
+        let point = |tick, value, curve| AutomationPoint { tick, value, curve };
+        let straight = [point(0, 0.0, 0.0), point(100, 1.0, 0.0)];
+        let slow = [point(0, 0.0, 0.6), point(100, 1.0, 0.0)];
+        let fast = [point(0, 0.0, -0.6), point(100, 1.0, 0.0)];
+        assert!((value_at(&straight, 50, 0.0) - 0.5).abs() < 1e-6);
+        assert!(value_at(&slow, 50, 0.0) < 0.3);
+        assert!(value_at(&fast, 50, 0.0) > 0.7);
+        assert_eq!(value_at(&slow, 100, 0.0), 1.0);
+        let mut automation = Automation::default();
+        automation.lane_mut(AutomationParam::Send(1)).push(point(0, -6.0, 0.0));
+        assert_eq!(automation.lane(AutomationParam::Send(1)).len(), 1);
+        assert!(automation.lane(AutomationParam::Send(0)).is_empty());
+        assert_eq!(automation.lanes().count(), 4);
+    }
 
     #[test]
     fn pan_law_is_minus_3_db_in_the_middle() {

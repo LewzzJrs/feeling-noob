@@ -146,6 +146,11 @@ pub enum UiAction {
         tick: u64,
         value: f32,
     },
+    SetAutomationCurve {
+        track: Id,
+        index: usize,
+        curve: f32,
+    },
     DeleteAutomationPoint {
         track: Id,
         index: usize,
@@ -241,7 +246,7 @@ fn automation_value(lane: Rect, param: AutomationParam, y: f32) -> f32 {
     let t = ((inner.bottom() - y) / inner.height()).clamp(0.0, 1.0);
     let value = low + (high - low) * t;
     match param {
-        AutomationParam::Volume => (value * 2.0).round() / 2.0,
+        AutomationParam::Volume | AutomationParam::Send(_) => (value * 2.0).round() / 2.0,
         AutomationParam::Pan => (value * 100.0).round() / 100.0,
     }
 }
@@ -250,6 +255,7 @@ fn base_value(track: &Track, param: AutomationParam) -> f32 {
     match param {
         AutomationParam::Volume => track.strip.volume_db.max(-60.0),
         AutomationParam::Pan => track.strip.pan,
+        AutomationParam::Send(i) => track.strip.send_at(usize::from(i)).level_db.max(-60.0),
     }
 }
 
@@ -1319,22 +1325,16 @@ impl App {
                 Stroke::new(1.0, color.gamma_multiply(0.5)),
             );
         } else {
-            let first = g.tick(g.lanes.left());
-            let last = g.tick(g.lanes.right());
-            let mut line = vec![Pos2::new(
-                g.lanes.left(),
-                automation_y(lane, param, value_at(points, first, default)),
-            )];
-            line.extend(
-                points
-                    .iter()
-                    .filter(|p| p.tick > first && p.tick < last)
-                    .map(|p| Pos2::new(g.x(p.tick), automation_y(lane, param, p.value))),
-            );
-            line.push(Pos2::new(
-                g.lanes.right(),
-                automation_y(lane, param, value_at(points, last, default)),
-            ));
+            let mut line = Vec::new();
+            let mut x = g.lanes.left();
+            while x <= g.lanes.right() {
+                let tick = g.tick(x);
+                line.push(Pos2::new(
+                    x,
+                    automation_y(lane, param, value_at(points, tick, default)),
+                ));
+                x += 3.0;
+            }
             painter.add(egui::Shape::line(line, Stroke::new(2.0, color)));
         }
         painter.text(
@@ -1359,8 +1359,18 @@ impl App {
                     Sense::click_and_drag(),
                 )
                 .on_hover_text(match param {
-                    AutomationParam::Volume => format!("{:+.1} dB", point.value),
-                    AutomationParam::Pan => format!("Pan {:+.2}", point.value),
+                    AutomationParam::Volume | AutomationParam::Send(_) => {
+                        format!(
+                            "{:+.1} dB. Right-click for the curve or to delete.",
+                            point.value
+                        )
+                    }
+                    AutomationParam::Pan => {
+                        format!(
+                            "Pan {:+.2}. Right-click for the curve or to delete.",
+                            point.value
+                        )
+                    }
                 });
             if response.drag_started() {
                 actions.push(UiAction::AutomationDragStart {
@@ -1374,12 +1384,32 @@ impl App {
                     tick: self.snapped(g.tick(pos.x)),
                     value: automation_value(lane, param, pos.y),
                 });
-            } else if response.secondary_clicked() {
-                actions.push(UiAction::DeleteAutomationPoint {
-                    track: track.id,
-                    index,
-                });
             }
+            response.context_menu(|ui| {
+                for (label, curve) in [("Straight", 0.0), ("Slow start", 0.6), ("Fast start", -0.6)]
+                {
+                    if ui
+                        .selectable_label((point.curve - curve).abs() < 0.01, label)
+                        .on_hover_text("Shape of the line from this point to the next")
+                        .clicked()
+                    {
+                        actions.push(UiAction::SetAutomationCurve {
+                            track: track.id,
+                            index,
+                            curve,
+                        });
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("Delete point").clicked() {
+                    actions.push(UiAction::DeleteAutomationPoint {
+                        track: track.id,
+                        index,
+                    });
+                    ui.close();
+                }
+            });
             if response.drag_stopped() {
                 actions.push(UiAction::DragEnd);
             }
@@ -1814,7 +1844,7 @@ impl App {
                         .width(80.0)
                         .selected_text(current.label())
                         .show_ui(ui, |ui| {
-                            for param in AutomationParam::ALL {
+                            for param in AutomationParam::with_sends(self.project.returns.len()) {
                                 if ui
                                     .selectable_label(param == current, param.label())
                                     .clicked()
@@ -2071,6 +2101,16 @@ impl App {
                         self.sync_plan();
                     }
                 }
+            }
+            UiAction::SetAutomationCurve {
+                track,
+                index,
+                curve,
+            } => {
+                let param = self.automation_param(track);
+                self.edit(|p| {
+                    edit::set_automation_curve(p, track, param, index, curve);
+                });
             }
             UiAction::DeleteAutomationPoint { track, index } => {
                 let param = self.automation_param(track);

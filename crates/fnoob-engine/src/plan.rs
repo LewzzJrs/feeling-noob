@@ -58,11 +58,12 @@ pub struct Clip {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Envelopes {
-    pub volume: Vec<(u64, f32)>,
-    pub pan: Vec<(u64, f32)>,
+    pub volume: Vec<(u64, f32, f32)>,
+    pub pan: Vec<(u64, f32, f32)>,
+    pub sends: Vec<Vec<(u64, f32, f32)>>,
 }
 
-pub fn envelope_at(points: &[(u64, f32)], sample: u64, default: f32) -> f32 {
+pub fn envelope_at(points: &[(u64, f32, f32)], sample: u64, default: f32) -> f32 {
     let next = points.partition_point(|p| p.0 <= sample);
     match (next.checked_sub(1).map(|i| points[i]), points.get(next)) {
         (None, None) => default,
@@ -75,7 +76,7 @@ pub fn envelope_at(points: &[(u64, f32)], sample: u64, default: f32) -> f32 {
             } else {
                 1.0
             };
-            a.1 + (b.1 - a.1) * t
+            a.1 + (b.1 - a.1) * fnoob_core::model::shape(t, a.2)
         }
     }
 }
@@ -90,20 +91,26 @@ impl Envelopes {
     }
 
     fn new(automation: &Automation, timeline: Timeline) -> Self {
-        let convert = |points: &[fnoob_core::model::AutomationPoint]| {
+        let convert = |points: &[fnoob_core::model::AutomationPoint]| -> Vec<(u64, f32, f32)> {
             points
                 .iter()
-                .map(|p| (timeline.tick_to_sample(p.tick), p.value))
+                .map(|p| (timeline.tick_to_sample(p.tick), p.value, p.curve))
                 .collect()
         };
         Self {
             volume: convert(&automation.volume),
             pan: convert(&automation.pan),
+            sends: automation
+                .sends
+                .iter()
+                .take(MAX_RETURNS)
+                .map(|lane| convert(lane))
+                .collect(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.volume.is_empty() && self.pan.is_empty()
+        self.volume.is_empty() && self.pan.is_empty() && self.sends.iter().all(Vec::is_empty)
     }
 }
 
@@ -226,9 +233,17 @@ impl StripPlan {
         let pan = envelope_at(&envelopes.pan, sample, self.pan);
         let gain = db_to_gain(if volume <= -60.0 { -144.0 } else { volume });
         let (left, right) = pan_gains(pan);
+        let mut sends = self.sends;
+        for (target, lane) in sends.iter_mut().zip(&envelopes.sends) {
+            if !lane.is_empty() {
+                let db = envelope_at(lane, sample, 0.0);
+                *target = db_to_gain(if db <= -60.0 { -144.0 } else { db });
+            }
+        }
         StripPlan {
             left: gain * left,
             right: gain * right,
+            sends,
             ..*self
         }
     }
@@ -604,6 +619,25 @@ mod tests {
             length_tick,
             chance: 100,
         }
+    }
+
+    #[test]
+    fn send_automation_sets_the_send_level() {
+        let mut p = Project::new("t", 48_000);
+        fnoob_core::edit::add_return(&mut p, "A", None);
+        let inst = add_track(&mut p, TrackKind::Instrument);
+        fnoob_core::edit::add_automation_point(
+            &mut p,
+            inst,
+            fnoob_core::model::AutomationParam::Send(0),
+            0,
+            0.0,
+        );
+        let plan = RenderPlan::from_project(&p, 48_000);
+        let track = &plan.tracks[0];
+        assert_eq!(track.strip.sends[0], 0.0);
+        let strip = track.strip.at(&track.envelopes, 100);
+        assert!((strip.sends[0] - 1.0).abs() < 1e-6);
     }
 
     #[test]
