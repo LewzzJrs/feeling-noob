@@ -123,7 +123,7 @@ impl AudioData {
         const RADIUS: usize = 12;
         let flux = self.onset_strength(HOP);
         let mean = flux.iter().sum::<f32>() / flux.len().max(1) as f32;
-        let gap = (self.frames as usize / HOP).min(9).max(1);
+        let gap = (self.frames as usize / HOP).clamp(1, 9);
         let mut found = vec![0u64];
         let mut last = 0usize;
         for i in 1..flux.len().saturating_sub(1) {
