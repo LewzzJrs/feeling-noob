@@ -1501,6 +1501,38 @@ fn frame_at(data: &AudioData, position: f64) -> (f32, f32) {
     (a.0 + (b.0 - a.0) * frac, a.1 + (b.1 - a.1) * frac)
 }
 
+const SLICE_FADE: f64 = 96.0;
+
+fn beat_frame(
+    clip: &crate::plan::Clip,
+    warp: &crate::plan::ClipWarp,
+    onsets: &[u64],
+    position: u64,
+) -> (f32, f32) {
+    let (musical, now) = warp.musical_at(position);
+    let stretched = warp.map.frame(musical);
+    let index = onsets
+        .partition_point(|&o| o as f64 <= stretched)
+        .saturating_sub(1);
+    let Some(&onset) = onsets.get(index) else {
+        return (0.0, 0.0);
+    };
+    let begin = warp.map.tick(onset as f64);
+    let behind = (musical - begin).max(0.0);
+    let elapsed = warp.timeline.tick_to_sample_f64(now)
+        - warp.timeline.tick_to_sample_f64((now - behind).max(0.0));
+    let source = onset as f64 + elapsed;
+    let gain = match onsets.get(index + 1) {
+        Some(&next) => ((next as f64 - source) / SLICE_FADE).clamp(0.0, 1.0),
+        None => 1.0,
+    } as f32;
+    if gain <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let (l, r) = frame_at(&clip.data, source);
+    (l * gain, r * gain)
+}
+
 fn warped_frame(
     clip: &crate::plan::Clip,
     warp: &crate::plan::ClipWarp,
@@ -1508,6 +1540,9 @@ fn warped_frame(
 ) -> (f32, f32) {
     if warp.repitch {
         return frame_at(&clip.data, warp.source_at(position));
+    }
+    if let Some(onsets) = &warp.onsets {
+        return beat_frame(clip, warp, onsets, position);
     }
     let into = position - clip.start;
     let grain = into / HOP;
@@ -2881,5 +2916,33 @@ mod tests {
         let device = &plan.audio_tracks[0].device_automation[0];
         assert_eq!((device.slot, device.base), (2, None));
         assert_eq!(device.lanes[0].0, 7001);
+    }
+
+    #[test]
+    fn beats_mode_keeps_each_hit_at_its_speed() {
+        let period = 12_000usize;
+        let hits: Vec<f32> = (0..period * 8)
+            .map(|i| {
+                let phase = i % period;
+                if phase < 600 {
+                    (1.0 - phase as f32 / 600.0) * 0.9
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let data = AudioData::from_samples(1, hits.clone());
+        let mut plan = warped_project(&data, fnoob_core::model::WarpMode::Beats);
+        let out = render_clips(&mut plan.audio_tracks[0], 0, 24_000);
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        for k in 0..4 {
+            let at = k * period / 2;
+            assert!(
+                (left[at + 100] - hits[100]).abs() < 0.02,
+                "hit {k}: {}",
+                left[at + 100]
+            );
+            assert!(left[at + 5000].abs() < 1e-3);
+        }
     }
 }

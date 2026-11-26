@@ -194,6 +194,9 @@ impl App {
                             fnoob_core::model::WarpMode::Stretch => {
                                 "Stretch: change the speed and keep the pitch"
                             }
+                            fnoob_core::model::WarpMode::Beats => {
+                                "Beats: cut the audio at each hit and play every slice at its own speed; best for drums"
+                            }
                             fnoob_core::model::WarpMode::Repitch => {
                                 "Repitch: speed and pitch change together, like a turntable"
                             }

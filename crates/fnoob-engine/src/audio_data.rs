@@ -27,6 +27,7 @@ pub struct AudioData {
     pub samples: Vec<f32>,
     pub peaks: Vec<f32>,
     pub summaries: [Vec<Summary>; 2],
+    onsets: std::sync::OnceLock<Arc<[u64]>>,
 }
 
 #[derive(Debug)]
@@ -95,7 +96,49 @@ impl AudioData {
             samples,
             peaks,
             summaries,
+            onsets: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn onsets(&self) -> Arc<[u64]> {
+        Arc::clone(self.onsets.get_or_init(|| self.find_onsets().into()))
+    }
+
+    fn refine_onset(&self, from: usize, to: usize) -> usize {
+        let width = usize::from(self.channels);
+        let to = to.min(self.frames as usize);
+        let level = |frame: usize| {
+            self.samples[frame * width..frame * width + width]
+                .iter()
+                .fold(0f32, |m, s| m.max(s.abs()))
+        };
+        let top = (from..to).map(level).fold(0f32, f32::max);
+        (from..to)
+            .find(|&frame| level(frame) >= top * 0.3)
+            .map_or(from, |frame| frame.saturating_sub(16))
+    }
+
+    fn find_onsets(&self) -> Vec<u64> {
+        const HOP: usize = 256;
+        const RADIUS: usize = 12;
+        let flux = self.onset_strength(HOP);
+        let mean = flux.iter().sum::<f32>() / flux.len().max(1) as f32;
+        let gap = (self.frames as usize / HOP).min(9).max(1);
+        let mut found = vec![0u64];
+        let mut last = 0usize;
+        for i in 1..flux.len().saturating_sub(1) {
+            let (from, to) = (i.saturating_sub(RADIUS), (i + RADIUS + 1).min(flux.len()));
+            let local = flux[from..to].iter().sum::<f32>() / (to - from) as f32;
+            let peak = flux[i] >= flux[i - 1] && flux[i] > flux[i + 1];
+            if peak && flux[i] > local * 1.5 + mean * 0.5 && i - last >= gap {
+                let frame = self.refine_onset((i - 1) * HOP, (i + 1) * HOP) as u64;
+                if frame > 0 && frame + 64 < self.frames {
+                    found.push(frame);
+                    last = i;
+                }
+            }
+        }
+        found
     }
 
     pub fn onset_strength(&self, hop: usize) -> Vec<f32> {
@@ -285,6 +328,31 @@ mod tests {
             w.write_sample(*v).unwrap();
         }
         w.finalize().unwrap();
+    }
+
+    #[test]
+    fn onsets_land_on_each_hit() {
+        let period = 12_000usize;
+        let samples: Vec<f32> = (0..period * 8)
+            .map(|i| {
+                let phase = i % period;
+                if phase < 600 {
+                    (1.0 - phase as f32 / 600.0) * 0.9
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let data = AudioData::from_samples(1, samples);
+        let onsets = data.onsets();
+        assert_eq!(onsets.len(), 8, "{onsets:?}");
+        for (k, onset) in onsets.iter().enumerate().skip(1) {
+            let expected = (k * period) as i64;
+            assert!(
+                (*onset as i64 - expected).abs() <= 512,
+                "{onset} vs {expected}"
+            );
+        }
     }
 
     #[test]

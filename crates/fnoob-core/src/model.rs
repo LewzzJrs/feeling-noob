@@ -809,15 +809,17 @@ impl WarpMap {
 pub enum WarpMode {
     #[default]
     Stretch,
+    Beats,
     Repitch,
 }
 
 impl WarpMode {
-    pub const ALL: [WarpMode; 2] = [WarpMode::Stretch, WarpMode::Repitch];
+    pub const ALL: [WarpMode; 3] = [WarpMode::Stretch, WarpMode::Beats, WarpMode::Repitch];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Stretch => "Stretch",
+            Self::Beats => "Beats",
             Self::Repitch => "Repitch",
         }
     }

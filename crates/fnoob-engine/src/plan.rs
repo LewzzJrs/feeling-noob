@@ -85,6 +85,7 @@ fn crossfade(clips: &mut [Clip]) {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipWarp {
     pub repitch: bool,
+    pub onsets: Option<Arc<[u64]>>,
     pub start_tick: f64,
     pub origin: f64,
     pub loop_ticks: f64,
@@ -93,12 +94,17 @@ pub struct ClipWarp {
 }
 
 impl ClipWarp {
-    pub fn source_at(&self, sample: u64) -> f64 {
-        let mut ticks = self.timeline.sample_to_tick_f64(sample as f64) - self.start_tick;
+    pub fn musical_at(&self, sample: u64) -> (f64, f64) {
+        let now = self.timeline.sample_to_tick_f64(sample as f64);
+        let mut ticks = now - self.start_tick;
         if self.loop_ticks > 0.0 {
             ticks = ticks.rem_euclid(self.loop_ticks);
         }
-        self.map.frame(self.origin + ticks)
+        (self.origin + ticks, now)
+    }
+
+    pub fn source_at(&self, sample: u64) -> f64 {
+        self.map.frame(self.musical_at(sample).0)
     }
 }
 
@@ -493,6 +499,8 @@ fn audio_track_plans(
                         );
                         ClipWarp {
                             repitch: w.mode == fnoob_core::model::WarpMode::Repitch,
+                            onsets: (w.mode == fnoob_core::model::WarpMode::Beats)
+                                .then(|| data.onsets()),
                             start_tick: region.start_tick as f64,
                             origin: map.tick(offset_frames as f64),
                             loop_ticks: region.loop_ticks.map_or(0.0, |t| t as f64),
