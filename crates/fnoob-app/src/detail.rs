@@ -177,22 +177,25 @@ impl App {
             );
             return;
         };
-        let width = rect.width().max(1.0) as u64;
-        let color = Color32::from_rgb(120, 190, 230);
-        let mid = rect.center().y;
-        let half = rect.height() * 0.45;
-        for x in 0..width {
-            let from = offset + frames * x / width;
-            let to = offset + frames * (x + 1) / width;
-            let peak = data.peak(from, to.max(from + 1)).min(1.0);
-            let px = rect.left() + x as f32;
-            painter.line_segment(
-                [
-                    egui::pos2(px, mid - peak * half),
-                    egui::pos2(px, mid + peak * half),
-                ],
-                Stroke::new(1.0, color),
+        let body = rect.shrink2(vec2(6.0, 8.0));
+        let width = f64::from(body.width().max(1.0));
+        let left = body.left();
+        for fraction in [0.25, 0.5, 0.75] {
+            let x = body.left() + body.width() * fraction;
+            painter.vline(
+                x,
+                body.y_range(),
+                Stroke::new(1.0, Color32::from_white_alpha(14)),
             );
         }
+        crate::waveform::paint(
+            &painter,
+            body,
+            rect,
+            data,
+            1.0,
+            crate::waveform::Style::on_dark(Color32::from_rgb(120, 190, 230)),
+            |x| offset as f64 + f64::from(x - left) / width * frames as f64,
+        );
     }
 }

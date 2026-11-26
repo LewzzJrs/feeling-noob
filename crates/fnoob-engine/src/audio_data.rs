@@ -7,6 +7,15 @@ use fnoob_core::model::Id;
 use fnoob_core::settings::RecordFormat;
 
 pub const PEAK_BLOCK: usize = 256;
+pub const SUMMARY_BLOCK: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Summary {
+    pub min: f32,
+    pub max: f32,
+    pub rms: f32,
+}
+
 pub const MAX_FILE_CHANNELS: u16 = 32;
 
 pub type AudioPool = HashMap<Id, Arc<AudioData>>;
@@ -17,6 +26,7 @@ pub struct AudioData {
     pub frames: u64,
     pub samples: Vec<f32>,
     pub peaks: Vec<f32>,
+    pub summaries: [Vec<Summary>; 2],
 }
 
 #[derive(Debug)]
@@ -59,12 +69,71 @@ impl AudioData {
             .chunks(PEAK_BLOCK * width)
             .map(|block| block.iter().fold(0f32, |m, s| m.max(s.abs())))
             .collect();
+        let summaries = std::array::from_fn(|lane| {
+            let channel = lane.min(width - 1);
+            samples
+                .chunks(SUMMARY_BLOCK * width)
+                .map(|block| {
+                    let mut summary = Summary::default();
+                    let mut energy = 0.0;
+                    let mut count = 0;
+                    for frame in block.chunks(width) {
+                        let s = frame[channel];
+                        summary.min = summary.min.min(s);
+                        summary.max = summary.max.max(s);
+                        energy += s * s;
+                        count += 1;
+                    }
+                    summary.rms = (energy / count.max(1) as f32).sqrt();
+                    summary
+                })
+                .collect()
+        });
         Self {
             channels: channels.max(1),
             frames,
             samples,
             peaks,
+            summaries,
         }
+    }
+
+    pub fn summary(&self, lane: usize, from: f64, to: f64) -> Summary {
+        let width = usize::from(self.channels);
+        let channel = lane.min(width - 1).min(1);
+        let from = from.max(0.0);
+        let to = to.max(from + 1.0).min(self.frames as f64);
+        if from >= to {
+            return Summary::default();
+        }
+        let (first, last) = (from as usize, to.ceil() as usize);
+        if last - first < SUMMARY_BLOCK * 2 {
+            let mut summary = Summary::default();
+            let mut energy = 0.0;
+            for frame in first..last {
+                let s = self.samples[frame * width + lane.min(width - 1)];
+                summary.min = summary.min.min(s);
+                summary.max = summary.max.max(s);
+                energy += s * s;
+            }
+            summary.rms = (energy / (last - first) as f32).sqrt();
+            return summary;
+        }
+        let blocks = &self.summaries[channel];
+        let (a, b) = (
+            first / SUMMARY_BLOCK,
+            last.div_ceil(SUMMARY_BLOCK).min(blocks.len()),
+        );
+        let span = &blocks[a..b.max(a)];
+        let mut total = Summary::default();
+        let mut energy = 0.0;
+        for block in span {
+            total.min = total.min.min(block.min);
+            total.max = total.max.max(block.max);
+            energy += block.rms * block.rms;
+        }
+        total.rms = (energy / span.len().max(1) as f32).sqrt();
+        total
     }
 
     pub fn frame(&self, index: u64) -> (f32, f32) {
@@ -158,6 +227,25 @@ mod tests {
             w.write_sample(*v).unwrap();
         }
         w.finalize().unwrap();
+    }
+
+    #[test]
+    fn summaries_keep_each_side_of_the_wave() {
+        let samples: Vec<f32> = (0..4000)
+            .flat_map(|i| {
+                let v = if i % 2 == 0 { 0.5 } else { -0.25 };
+                [v, v * 0.5]
+            })
+            .collect();
+        let data = AudioData::from_samples(2, samples);
+        for (from, to) in [(0.0, 50.0), (0.0, 4000.0), (100.0, 3000.0)] {
+            let left = data.summary(0, from, to);
+            assert_eq!((left.min, left.max), (-0.25, 0.5));
+            let right = data.summary(1, from, to);
+            assert_eq!((right.min, right.max), (-0.125, 0.25));
+            assert!((left.rms - (0.15625f32).sqrt()).abs() < 1e-3);
+        }
+        assert_eq!(data.summary(0, 5000.0, 6000.0), Summary::default());
     }
 
     #[test]

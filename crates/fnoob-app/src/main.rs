@@ -23,6 +23,7 @@ mod plugins;
 mod session;
 mod timeline;
 mod ui_kit;
+mod waveform;
 
 #[cfg(debug_assertions)]
 #[global_allocator]

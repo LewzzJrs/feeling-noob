@@ -293,20 +293,12 @@ impl App {
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
-        let columns = rect.width().max(1.0) as u64;
-        let color = ui.visuals().strong_text_color().gamma_multiply(0.7);
-        for column in 0..columns {
-            let from = data.frames * column / columns;
-            let to = data.frames * (column + 1) / columns;
-            let level = data.peak(from, to.max(from + 1)).min(1.0);
-            let x = rect.left() + column as f32;
-            let half = rect.height() * 0.5 * level;
-            painter.vline(
-                x,
-                rect.center().y - half..=rect.center().y + half,
-                egui::Stroke::new(1.0, color),
-            );
-        }
+        crate::waveform::paint_simple(
+            &painter,
+            rect.shrink2(egui::vec2(2.0, 3.0)),
+            &data,
+            egui::Color32::from_rgb(120, 190, 230),
+        );
         let seconds = data.frames as f64 / f64::from(self.sample_rate().max(1));
         ui.label(
             RichText::new(format!("{seconds:.2} s, {} channel(s)", data.channels))

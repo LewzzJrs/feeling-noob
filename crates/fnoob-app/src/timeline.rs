@@ -2584,29 +2584,44 @@ impl App {
         let rate = self.project.sample_rate;
         let warp = region.warp;
         let (region_tick, looped) = (region.start_tick, region.loop_ticks);
-        let frame_at = |x: f32| match warp {
-            Some(w) => {
-                let mut ticks = g.tick(x).saturating_sub(region_tick);
-                if let Some(length) = looped.filter(|l| *l > 0) {
-                    ticks %= length;
+        let tick_at = |x: f32| {
+            (x - g.lanes.left()) as f64 / f64::from(g.pixels_per_tick) + f64::from(g.scroll_tick)
+        };
+        let loop_frames = |w: fnoob_core::model::Warp| {
+            looped
+                .filter(|l| *l > 0)
+                .map(|l| l as f64 * w.frames_per_tick(rate))
+        };
+        let frame_at = |x: f32| {
+            let into = (tick_at(x) - region_tick as f64).max(0.0);
+            match warp {
+                Some(w) => {
+                    let frames = into * w.frames_per_tick(rate);
+                    offset_frames as f64 + loop_frames(w).map_or(frames, |l| frames.rem_euclid(l))
                 }
-                offset_frames + (ticks as f64 * w.frames_per_tick(rate)) as u64
-            }
-            None => {
-                let sample = timeline.tick_to_sample(g.tick(x));
-                offset_frames + sample.saturating_sub(region_start)
+                None => {
+                    let sample = timeline.tick_to_sample_f64(tick_at(x).max(0.0));
+                    let mut frames = (sample - region_start as f64).max(0.0);
+                    if let Some(length) = looped.filter(|l| *l > 0) {
+                        let span = timeline.tick_to_sample(region_tick + length) as f64
+                            - region_start as f64;
+                        if span > 0.0 {
+                            frames = frames.rem_euclid(span);
+                        }
+                    }
+                    offset_frames as f64 + frames
+                }
             }
         };
-        let stroke = Stroke::new(1.0, Color32::from_black_alpha(170));
-        let mut x = visible.left();
-        while x < visible.right() {
-            let peak = (data.peak(frame_at(x), frame_at(x + 2.0)) * gain).min(1.0);
-            let half = body.height() * 0.5 * peak;
-            if half >= 0.5 {
-                painter.vline(x, body.center().y - half..=body.center().y + half, stroke);
-            }
-            x += 2.0;
-        }
+        crate::waveform::paint(
+            &painter,
+            body,
+            visible,
+            data,
+            gain,
+            crate::waveform::Style::on_clip(),
+            frame_at,
+        );
     }
 
     pub fn zoom(&mut self, factor: f32) {
