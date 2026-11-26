@@ -118,6 +118,7 @@ pub struct App {
     devices: Vec<OutputDeviceInfo>,
     pub(crate) midi_inputs: Vec<MidiInputInfo>,
     pub(crate) midi: Option<MidiConnection>,
+    pub(crate) midi_map: crate::midi_map::MidiMapState,
     pub(crate) live_sent: Option<Option<Id>>,
     pub(crate) take: Option<Take>,
     pub(crate) audio: Option<(AudioOutput, EngineHandle)>,
@@ -226,6 +227,7 @@ impl App {
             audio_take: None,
             midi_inputs: Vec::new(),
             midi: None,
+            midi_map: crate::midi_map::MidiMapState::default(),
             live_sent: None,
             take: None,
             audio: None,
@@ -1220,6 +1222,7 @@ impl App {
             }
             Command::ToggleAutomation => self.automation_view = !self.automation_view,
             Command::ToggleMusicalTyping => self.toggle_musical_typing(),
+            Command::MidiMapMode => self.toggle_midi_map(),
             Command::ToggleClipGrid => self.session.open = !self.session.open,
             Command::CaptureMidi => self.capture_midi(),
             Command::Duplicate if self.session.open && self.duplicate_selected_clip() => {}
@@ -1595,6 +1598,12 @@ impl App {
                     Command::ShowDeviceView,
                 );
                 self.menu_item(ui, "Toggle Clip / Device View", Command::SwitchDetail);
+                self.menu_toggle(
+                    ui,
+                    "MIDI Map Mode",
+                    self.midi_map.open,
+                    Command::MidiMapMode,
+                );
                 self.menu_toggle(
                     ui,
                     "Detail Area",
@@ -2052,6 +2061,7 @@ impl App {
             ));
         }
         self.poll_played();
+        self.poll_controls();
         self.poll_take();
         self.poll_session_take();
         self.poll_audio_take();
@@ -2144,6 +2154,7 @@ impl eframe::App for App {
         self.recovery_window(&ctx);
         self.marker_rename_window(&ctx);
         self.bounce_windows(&ctx);
+        self.midi_map_window(&ctx);
         self.plugin_manager(&ctx);
         self.new_tracks_window(&ctx);
         self.confirm_window(&ctx);

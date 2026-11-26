@@ -819,6 +819,7 @@ impl App {
                     if slot.takes_sidechain() {
                         self.sidechain_picker(ui, owner, slot);
                     }
+                    self.device_map_row(ui, slot.clone());
                 }
                 None => self.plugin_body(ui, slot),
             }

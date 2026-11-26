@@ -281,6 +281,13 @@ impl App {
                 "Draw mode: click to add notes and clips.",
                 Command::ToggleDrawMode,
             );
+            self.switch(
+                ui,
+                self.midi_map.open,
+                "MIDI",
+                "MIDI Map Mode: link knobs and buttons on a MIDI controller to controls (Ctrl+M).",
+                Command::MidiMapMode,
+            );
             let typing = self.musical.on;
             let keys = self.musical.label();
             self.switch(

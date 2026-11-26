@@ -79,7 +79,7 @@ Done in Phase 28: menus reordered as File, Edit, Create, Playback, View, Navigat
 
 Done in Phase 29: automation curves, send and built-in device parameter automation, groups inside groups, track output to another audio track, and sidechain input for Compressor and Gate.
 
-Done in Phase 30: MIDI file export (Ctrl+Shift+E) and import, stem export with one WAV per track, and a default set that new projects start from.
+Done in Phase 30: MIDI file export (Ctrl+Shift+E) and import, stem export with one WAV per track, and a default set that new projects start from, and MIDI Map Mode (Ctrl+M) to link controller knobs, faders and buttons to mixer and built-in device controls.
 
 Not started, in rough priority order:
 

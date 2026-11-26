@@ -8,6 +8,7 @@ pub mod io;
 pub mod keymap;
 pub mod midi_file;
 pub mod midi_fx;
+pub mod midi_map;
 pub mod midi_tools;
 pub mod model;
 pub mod range;

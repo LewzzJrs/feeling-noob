@@ -275,13 +275,17 @@ impl App {
                 MixTarget::Return(index) => return_letter(index).to_string(),
                 MixTarget::Master => "M".to_owned(),
             };
-            if target != MixTarget::Master
-                && hint(
+            let activator = (target != MixTarget::Master).then(|| {
+                hint(
                     toggle(ui, s.active, &label, ACTIVE, 26.0),
                     "Track activator: turn the track on or off (mute).",
                 )
-                .clicked()
+            });
+            if let (Some(response), Some(map)) = (&activator, crate::midi_map::mute_target(target))
             {
+                self.map_overlay(ui, response.rect, map);
+            }
+            if activator.is_some_and(|r| r.clicked()) {
                 self.edit(|p| match target {
                     MixTarget::Track(id) => {
                         if let Some(t) = p.track_mut(id) {
@@ -296,23 +300,33 @@ impl App {
                     MixTarget::Master => {}
                 });
             }
-            if let (Some(solo), MixTarget::Track(id)) = (s.solo, target)
-                && hint(
+            if let (Some(solo), MixTarget::Track(id)) = (s.solo, target) {
+                let response = hint(
                     toggle(ui, solo, "S", SOLO, 18.0),
                     "Solo: hear only soloed tracks.",
-                )
-                .clicked()
-            {
-                self.edit_track(id, |t| t.solo = !t.solo);
+                );
+                self.map_overlay(
+                    ui,
+                    response.rect,
+                    fnoob_core::midi_map::MapTarget::TrackSolo(id),
+                );
+                if response.clicked() {
+                    self.edit_track(id, |t| t.solo = !t.solo);
+                }
             }
-            if let (Some(arm), MixTarget::Track(id)) = (s.arm, target)
-                && hint(
+            if let (Some(arm), MixTarget::Track(id)) = (s.arm, target) {
+                let response = hint(
                     toggle(ui, arm, "●", ARM, 18.0),
                     "Arm: record on this track. Recording also needs Record (F9).",
-                )
-                .clicked()
-            {
-                self.edit_track(id, |t| t.record_enabled = !t.record_enabled);
+                );
+                self.map_overlay(
+                    ui,
+                    response.rect,
+                    fnoob_core::midi_map::MapTarget::TrackArm(id),
+                );
+                if response.clicked() {
+                    self.edit_track(id, |t| t.record_enabled = !t.record_enabled);
+                }
             }
         });
     }
@@ -335,6 +349,7 @@ impl App {
                 response,
                 "Volume in dB. Drag up or down; double-click to type a value.",
             );
+            self.map_overlay(ui, response.rect, crate::midi_map::volume_target(target));
             let write = self.automation_write(target);
             self.live_edit(&response, |p| {
                 let value = from_fader(volume);
@@ -356,6 +371,9 @@ impl App {
                         .custom_formatter(|v, _| pan_text(v)),
                 );
                 let response = hint(response, "Pan: drag left or right. C is the center.");
+                if let Some(map) = crate::midi_map::pan_target(target) {
+                    self.map_overlay(ui, response.rect, map);
+                }
                 let write = self.automation_write(target);
                 self.live_edit(&response, |p| {
                     let value = value / 50.0;
@@ -395,6 +413,11 @@ impl App {
                 );
                 let text = format!("Send to return track {}, in dB.", return_letter(index));
                 let response = hint(response, &text);
+                self.map_overlay(
+                    ui,
+                    response.rect,
+                    fnoob_core::midi_map::MapTarget::TrackSend(id, index as u8),
+                );
                 self.live_edit(&response, |p| set_send(p, id, index, from_fader(level)));
             }
         });
@@ -423,6 +446,11 @@ impl App {
                             db_text(f64::from(level))
                         );
                         let response = hint(response, &text);
+                        self.map_overlay(
+                            ui,
+                            response.rect,
+                            fnoob_core::midi_map::MapTarget::TrackSend(id, index as u8),
+                        );
                         self.live_edit(&response, |p| set_send(p, id, index, from_fader(level)));
                     }
                 });
@@ -441,6 +469,7 @@ impl App {
                 db_text(f64::from(volume))
             );
             let response = hint(response, &text);
+            self.map_overlay(ui, response.rect, crate::midi_map::volume_target(target));
             if response.double_clicked() {
                 self.edit(|p| set_volume(p, target, 0.0));
             } else {
@@ -471,6 +500,9 @@ impl App {
                     let response = knob(ui, &mut value, -50.0, 50.0, "Pan");
                     let text = format!("Pan {}. Drag up or down.", pan_text(f64::from(value)));
                     let response = hint(response, &text);
+                    if let Some(map) = crate::midi_map::pan_target(target) {
+                        self.map_overlay(ui, response.rect, map);
+                    }
                     let write = self.automation_write(target);
                     self.live_edit(&response, |p| {
                         let value = value / 50.0;

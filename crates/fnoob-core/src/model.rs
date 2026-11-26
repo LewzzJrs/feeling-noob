@@ -998,6 +998,8 @@ pub struct Project {
     pub launch_quantize: crate::session::LaunchQuantize,
     #[serde(default)]
     pub midi_overdub: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub midi_map: Vec<crate::midi_map::MidiMapping>,
     pub tracks: Vec<Track>,
 }
 
@@ -1086,6 +1088,7 @@ impl Project {
             scenes: crate::session::default_scenes(),
             launch_quantize: crate::session::LaunchQuantize::default(),
             midi_overdub: false,
+            midi_map: Vec::new(),
             tracks: Vec::new(),
         }
     }
