@@ -69,6 +69,25 @@ pub fn transpose(notes: &mut [Note], picked: &[usize], semitones: i32) {
     }
 }
 
+pub fn fit_to_scale(notes: &mut [Note], picked: &[usize], scale: crate::scale::Scale) {
+    for i in targets(notes, picked) {
+        notes[i].pitch = scale.nearest(notes[i].pitch);
+    }
+}
+
+pub fn transpose_in_scale(
+    notes: &mut [Note],
+    picked: &[usize],
+    scale: crate::scale::Scale,
+    steps: i32,
+) {
+    for i in targets(notes, picked) {
+        if let Some(pitch) = scale.step(notes[i].pitch, steps) {
+            notes[i].pitch = pitch;
+        }
+    }
+}
+
 pub fn humanize(notes: &mut [Note], picked: &[usize], timing: u64, velocity: u8, seed: u64) {
     for i in targets(notes, picked) {
         let note = &mut notes[i];

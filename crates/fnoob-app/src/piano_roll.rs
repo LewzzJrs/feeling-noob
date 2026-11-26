@@ -504,6 +504,29 @@ impl App {
                 }
             }
         });
+        let scale = self.project.scale;
+        ui.horizontal(|ui| {
+            ui.label(format!("In {}", scale.label()));
+            for (label, steps) in [("-1 step", -1), ("+1 step", 1), ("+octave", 7)] {
+                if ui
+                    .button(label)
+                    .on_hover_text("Move notes by steps of the song key")
+                    .clicked()
+                {
+                    self.apply_tool(region, true, |n, s| {
+                        tools::transpose_in_scale(n, s, scale, steps)
+                    });
+                    self.reveal_selected_notes(region);
+                }
+            }
+            if ui
+                .button("Fit to Key")
+                .on_hover_text("Move each note to the nearest note of the song key")
+                .clicked()
+            {
+                self.apply_tool(region, true, |n, s| tools::fit_to_scale(n, s, scale));
+            }
+        });
         ui.separator();
         ui.horizontal(|ui| {
             if ui

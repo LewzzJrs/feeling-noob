@@ -92,6 +92,33 @@ impl Scale {
         self.kind.intervals().contains(&self.degree(pitch))
     }
 
+    pub fn nearest(&self, pitch: u8) -> u8 {
+        (0..12i16)
+            .flat_map(|d| [-d, d])
+            .map(|d| i16::from(pitch) + d)
+            .filter(|p| (0..=127).contains(p))
+            .map(|p| p as u8)
+            .find(|p| self.contains(*p))
+            .unwrap_or(pitch)
+    }
+
+    pub fn step(&self, pitch: u8, steps: i32) -> Option<u8> {
+        let mut current = i32::from(self.nearest(pitch));
+        let direction = steps.signum();
+        for _ in 0..steps.unsigned_abs() {
+            loop {
+                current += direction;
+                if !(0..=127).contains(&current) {
+                    return None;
+                }
+                if self.contains(current as u8) {
+                    break;
+                }
+            }
+        }
+        Some(current as u8)
+    }
+
     pub fn is_root(&self, pitch: u8) -> bool {
         self.degree(pitch) == 0
     }
@@ -133,5 +160,21 @@ mod tests {
             }
             .is_valid()
         );
+    }
+
+    #[test]
+    fn nearest_and_steps_stay_in_key() {
+        let c_major = Scale {
+            root: 0,
+            kind: ScaleKind::Major,
+            enabled: true,
+        };
+        assert_eq!(c_major.nearest(61), 60);
+        assert_eq!(c_major.nearest(64), 64);
+        assert_eq!(c_major.step(60, 1), Some(62));
+        assert_eq!(c_major.step(64, 1), Some(65));
+        assert_eq!(c_major.step(60, -1), Some(59));
+        assert_eq!(c_major.step(60, 7), Some(72));
+        assert_eq!(c_major.step(127, 3), None);
     }
 }
