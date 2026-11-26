@@ -223,6 +223,7 @@ fn new_clip(
             warp: None,
             fade_in_curve: 0.0,
             fade_out_curve: 0.0,
+            warp_markers: Vec::new(),
             id: project.alloc_id(),
             name,
             start_tick: 0,

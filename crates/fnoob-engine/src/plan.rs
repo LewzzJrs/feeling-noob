@@ -82,24 +82,23 @@ fn crossfade(clips: &mut [Clip]) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClipWarp {
     pub repitch: bool,
     pub start_tick: f64,
-    pub frames_per_tick: f64,
-    pub loop_frames: f64,
+    pub origin: f64,
+    pub loop_ticks: f64,
+    pub map: fnoob_core::model::WarpMap,
     pub timeline: Timeline,
 }
 
 impl ClipWarp {
     pub fn source_at(&self, sample: u64) -> f64 {
-        let ticks = self.timeline.sample_to_tick_f64(sample as f64) - self.start_tick;
-        let frames = ticks * self.frames_per_tick;
-        if self.loop_frames > 0.0 {
-            frames.rem_euclid(self.loop_frames)
-        } else {
-            frames
+        let mut ticks = self.timeline.sample_to_tick_f64(sample as f64) - self.start_tick;
+        if self.loop_ticks > 0.0 {
+            ticks = ticks.rem_euclid(self.loop_ticks);
         }
+        self.map.frame(self.origin + ticks)
     }
 }
 
@@ -487,12 +486,17 @@ fn audio_track_plans(
                     let start = timeline.tick_to_sample(region.start_tick);
                     let end = timeline.tick_to_sample(region.end_tick());
                     let warp = region.warp.map(|w| {
-                        let per_tick = w.frames_per_tick(timeline.sample_rate);
+                        let map = fnoob_core::model::WarpMap::new(
+                            w,
+                            &region.warp_markers,
+                            timeline.sample_rate,
+                        );
                         ClipWarp {
                             repitch: w.mode == fnoob_core::model::WarpMode::Repitch,
                             start_tick: region.start_tick as f64,
-                            frames_per_tick: per_tick,
-                            loop_frames: region.loop_ticks.map_or(0.0, |t| t as f64 * per_tick),
+                            origin: map.tick(offset_frames as f64),
+                            loop_ticks: region.loop_ticks.map_or(0.0, |t| t as f64),
+                            map,
                             timeline,
                         }
                     });

@@ -57,6 +57,7 @@ pub fn flatten_track(project: &mut Project, track: Id) -> Option<Id> {
         warp: None,
         fade_in_curve: 0.0,
         fade_out_curve: 0.0,
+        warp_markers: Vec::new(),
         id,
         name,
         start_tick: 0,
@@ -398,6 +399,7 @@ pub fn add_midi_region(
         warp: None,
         fade_in_curve: 0.0,
         fade_out_curve: 0.0,
+        warp_markers: Vec::new(),
         id,
         name: track.name.clone(),
         start_tick,
@@ -546,8 +548,12 @@ pub fn ticks_to_frames(project: &Project, start_tick: u64, ticks: u64) -> u64 {
 }
 
 pub fn region_frames(project: &Project, region: &Region, start_tick: u64, ticks: u64) -> u64 {
-    match region.warp {
-        Some(warp) => (ticks as f64 * warp.frames_per_tick(project.sample_rate)).round() as u64,
+    match warp_map(project, region) {
+        Some(map) => {
+            let offset = region.audio_offset() as f64;
+            let origin = map.tick(offset);
+            (map.frame(origin + ticks as f64) - offset).max(0.0).round() as u64
+        }
         None => ticks_to_frames(project, start_tick, ticks),
     }
 }
@@ -561,6 +567,64 @@ pub fn set_fade_curve(project: &mut Project, region: Id, fade_in: bool, curve: f
         }
         Some(r) if !fade_in && r.fade_out_curve != curve => {
             r.fade_out_curve = curve;
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn warp_map(project: &Project, region: &Region) -> Option<crate::model::WarpMap> {
+    Some(crate::model::WarpMap::new(
+        region.warp?,
+        &region.warp_markers,
+        project.sample_rate,
+    ))
+}
+
+pub fn add_warp_marker(project: &mut Project, region: Id, frame: u64) -> Option<usize> {
+    let (_, found) = project.find_region(region)?;
+    let map = warp_map(project, found)?;
+    if found
+        .warp_markers
+        .iter()
+        .any(|m| m.frame.abs_diff(frame) < 64)
+    {
+        return None;
+    }
+    let tick = map.tick(frame as f64);
+    let r = region_mut(project, region)?;
+    r.warp_markers
+        .push(crate::model::WarpMarker { frame, tick });
+    r.warp_markers.sort_by_key(|m| m.frame);
+    r.warp_markers.iter().position(|m| m.frame == frame)
+}
+
+pub fn move_warp_marker(project: &mut Project, region: Id, index: usize, tick: f64) -> bool {
+    let Some(r) = region_mut(project, region) else {
+        return false;
+    };
+    let low = index
+        .checked_sub(1)
+        .and_then(|i| r.warp_markers.get(i))
+        .map_or(0.0, |m| m.tick)
+        + 1.0;
+    let high = r
+        .warp_markers
+        .get(index + 1)
+        .map_or(f64::MAX, |m| m.tick - 1.0);
+    let Some(marker) = r.warp_markers.get_mut(index) else {
+        return false;
+    };
+    let tick = tick.clamp(low, high.max(low));
+    let changed = marker.tick != tick;
+    marker.tick = tick;
+    changed
+}
+
+pub fn delete_warp_marker(project: &mut Project, region: Id, index: usize) -> bool {
+    match region_mut(project, region) {
+        Some(r) if index < r.warp_markers.len() => {
+            r.warp_markers.remove(index);
             true
         }
         _ => false,
@@ -681,6 +745,7 @@ pub fn split_regions_at(project: &mut Project, ids: &[Id], tick: u64) -> Vec<Id>
                 warp: None,
                 fade_in_curve: 0.0,
                 fade_out_curve: 0.0,
+                warp_markers: Vec::new(),
                 id,
                 name: region.name.clone(),
                 start_tick: tick,
@@ -850,6 +915,7 @@ pub fn add_audio_region(
         warp: None,
         fade_in_curve: 0.0,
         fade_out_curve: 0.0,
+        warp_markers: Vec::new(),
         id,
         name,
         start_tick,
@@ -1109,11 +1175,14 @@ pub fn trim_region_start(project: &mut Project, id: Id, new_start: u64) -> bool 
         return false;
     };
     let (start, end) = (region.start_tick, region.end_tick());
-    let warp = region.warp;
+    let map = warp_map(project, region);
+    let origin = map
+        .as_ref()
+        .map_or(0.0, |m| m.tick(region.audio_offset() as f64));
     let new_start = match region.content {
         RegionContent::Audio { offset_frames, .. } => {
-            let back = match warp {
-                Some(w) => (offset_frames as f64 / w.frames_per_tick(project.sample_rate)) as u64,
+            let back = match &map {
+                Some(_) => origin as u64,
                 None => frames_to_ticks(project, offset_frames),
             };
             new_start.max(start.saturating_sub(back))
@@ -1123,8 +1192,11 @@ pub fn trim_region_start(project: &mut Project, id: Id, new_start: u64) -> bool 
     if new_start >= end || new_start == start {
         return false;
     }
-    let shift = |from: u64, ticks: u64| match warp {
-        Some(w) => (ticks as f64 * w.frames_per_tick(project.sample_rate)).round() as i64,
+    let shift = |from: u64, ticks: u64| match &map {
+        Some(m) => {
+            let at = origin + from as f64 - start as f64;
+            (m.frame(at + ticks as f64) - m.frame(at)).round() as i64
+        }
         None => ticks_to_frames(project, from, ticks) as i64,
     };
     let frames_shift = if new_start > start {
@@ -2102,5 +2174,27 @@ mod tests {
         assert!(quantize_regions(&mut p, &[region], 240));
         let note = p.find_region(region).unwrap().1.notes()[0];
         assert_eq!((note.start_tick, note.length_tick), (240, 240));
+    }
+
+    #[test]
+    fn warp_markers_bend_the_map() {
+        let mut p = Project::new("t", 48_000);
+        p.tempo_bpm = 120.0;
+        let track = add_track(&mut p, TrackKind::Audio);
+        let file = add_audio_file(&mut p, "a.wav".into(), 1, 96_000);
+        let region = add_audio_region(&mut p, track, 0, file, 0).unwrap();
+        let warp = warp_at_tempo(&p, region).unwrap();
+        set_warp(&mut p, region, Some(warp));
+        let map = |p: &Project| warp_map(p, p.find_region(region).unwrap().1).unwrap();
+        assert!((map(&p).frame(960.0) - 24_000.0).abs() < 1e-6);
+        let index = add_warp_marker(&mut p, region, 24_000).unwrap();
+        assert!((map(&p).tick(24_000.0) - 960.0).abs() < 1e-6);
+        assert!(move_warp_marker(&mut p, region, index, 1920.0));
+        assert!((map(&p).frame(1920.0) - 24_000.0).abs() < 1e-6);
+        assert!((map(&p).frame(960.0) - 12_000.0).abs() < 1e-6);
+        assert!((map(&p).frame(2880.0) - 48_000.0).abs() < 1e-6);
+        assert!(add_warp_marker(&mut p, region, 24_010).is_none());
+        assert!(delete_warp_marker(&mut p, region, 0));
+        assert!((map(&p).frame(960.0) - 24_000.0).abs() < 1e-6);
     }
 }

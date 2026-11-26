@@ -151,6 +151,25 @@ impl App {
                     self.live_edit(&response, |p| {
                         edit::set_warp(p, id, Some(fnoob_core::model::Warp { bpm, ..warp }));
                     });
+                    if ui
+                        .small_button("Detect")
+                        .on_hover_text("Guess the tempo the audio was played at")
+                        .clicked()
+                    {
+                        let found = region
+                            .audio_file()
+                            .and_then(|file| self.pool.get(&file))
+                            .and_then(|data| data.detect_tempo(self.project.sample_rate));
+                        match found {
+                            Some(bpm) => self.edit(|p| {
+                                edit::set_warp(p, id, Some(fnoob_core::model::Warp { bpm, ..warp }));
+                            }),
+                            None => {
+                                self.message =
+                                    Some("No steady beat was found in this clip.".into())
+                            }
+                        }
+                    }
                     for (label, factor, info) in [
                         (":2", 0.5, "Half the original tempo: the clip plays twice as long"),
                         ("*2", 2.0, "Double the original tempo: the clip plays half as long"),

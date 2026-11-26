@@ -2678,23 +2678,21 @@ impl App {
         let timeline = self.timeline();
         let region_start = timeline.tick_to_sample(region.start_tick);
         let gain = 10f32.powf(gain_db / 20.0);
-        let rate = self.project.sample_rate;
-        let warp = region.warp;
         let (region_tick, looped) = (region.start_tick, region.loop_ticks);
         let tick_at = |x: f32| {
             (x - g.lanes.left()) as f64 / f64::from(g.pixels_per_tick) + f64::from(g.scroll_tick)
         };
-        let loop_frames = |w: fnoob_core::model::Warp| {
-            looped
-                .filter(|l| *l > 0)
-                .map(|l| l as f64 * w.frames_per_tick(rate))
-        };
+        let map = edit::warp_map(&self.project, region);
+        let origin = map.as_ref().map_or(0.0, |m| m.tick(offset_frames as f64));
         let frame_at = |x: f32| {
             let into = (tick_at(x) - region_tick as f64).max(0.0);
-            match warp {
-                Some(w) => {
-                    let frames = into * w.frames_per_tick(rate);
-                    offset_frames as f64 + loop_frames(w).map_or(frames, |l| frames.rem_euclid(l))
+            match &map {
+                Some(map) => {
+                    let into = match looped.filter(|l| *l > 0) {
+                        Some(length) => into.rem_euclid(length as f64),
+                        None => into,
+                    };
+                    map.frame(origin + into)
                 }
                 None => {
                     let sample = timeline.tick_to_sample_f64(tick_at(x).max(0.0));

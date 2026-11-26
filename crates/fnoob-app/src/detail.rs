@@ -148,19 +148,139 @@ impl App {
                     file_id,
                     offset_frames,
                     ..
-                } => self.audio_clip_view(
-                    ui,
-                    file_id,
-                    offset_frames,
-                    fnoob_core::edit::region_frames(
-                        &self.project,
-                        &region,
-                        region.start_tick,
-                        region.length_tick,
-                    ),
-                ),
+                } => {
+                    if region.warp.is_some() {
+                        self.warped_clip_view(ui, &region, file_id);
+                    } else {
+                        self.audio_clip_view(
+                            ui,
+                            file_id,
+                            offset_frames,
+                            fnoob_core::edit::region_frames(
+                                &self.project,
+                                &region,
+                                region.start_tick,
+                                region.length_tick,
+                            ),
+                        )
+                    }
+                }
             });
         });
+    }
+
+    fn warped_clip_view(&mut self, ui: &mut Ui, region: &fnoob_core::model::Region, file: Id) {
+        let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+        let (Some(data), Some(map)) = (
+            self.pool.get(&file).cloned(),
+            fnoob_core::edit::warp_map(&self.project, region),
+        ) else {
+            return;
+        };
+        let ruler = egui::Rect::from_min_size(rect.min, vec2(rect.width(), 16.0));
+        let body = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 6.0, ruler.bottom() + 4.0),
+            egui::pos2(rect.right() - 6.0, rect.bottom() - 6.0),
+        );
+        let origin = map.tick(region.audio_offset() as f64);
+        let length = region.length_tick.max(1) as f64;
+        let width = f64::from(body.width().max(1.0));
+        let left = body.left();
+        let x_of = |tick: f64| left + ((tick - origin) / length * width) as f32;
+        let tick_of = |x: f32| origin + f64::from(x - left) / width * length;
+        let beat = fnoob_core::time::ticks_per_beat(self.project.time_signature).max(1) as f64;
+        let bar = beat * f64::from(self.project.time_signature.numerator.max(1));
+        let mut tick = (origin / beat).floor() * beat;
+        while tick <= origin + length {
+            let x = x_of(tick);
+            if x >= body.left() {
+                let strong = ((tick - origin).rem_euclid(bar)).abs() < 0.5;
+                painter.vline(
+                    x,
+                    body.y_range(),
+                    Stroke::new(1.0, Color32::from_white_alpha(if strong { 40 } else { 14 })),
+                );
+                if strong {
+                    painter.text(
+                        egui::pos2(x + 3.0, ruler.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{}", ((tick - origin) / bar).round() as i64 + 1),
+                        egui::FontId::proportional(10.0),
+                        ui.visuals().weak_text_color(),
+                    );
+                }
+            }
+            tick += beat;
+        }
+        crate::waveform::paint(
+            &painter,
+            body,
+            rect,
+            &data,
+            1.0,
+            crate::waveform::Style::on_dark(Color32::from_rgb(120, 190, 230)),
+            |x| map.frame(tick_of(x)),
+        );
+        let id = region.id;
+        let marker_color = Color32::from_rgb(240, 200, 60);
+        for (index, marker) in region.warp_markers.iter().enumerate() {
+            let x = x_of(marker.tick);
+            if x < body.left() - 1.0 || x > body.right() + 1.0 {
+                continue;
+            }
+            painter.vline(x, body.y_range(), Stroke::new(1.5, marker_color));
+            let handle =
+                egui::Rect::from_center_size(egui::pos2(x, ruler.center().y), vec2(10.0, 14.0));
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    handle.left_top(),
+                    handle.right_top(),
+                    egui::pos2(x, handle.bottom()),
+                ],
+                marker_color,
+                Stroke::NONE,
+            ));
+            let response = hint(
+                ui.interact(
+                    handle.expand(3.0),
+                    ui.scope_id().with(("warp_marker", id, index)),
+                    Sense::click_and_drag(),
+                )
+                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal),
+                "Warp marker: drag to move this point of the audio in time. Right-click to delete it.",
+            );
+            if response.drag_started() {
+                self.history.record(self.project.clone());
+            }
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let tick = tick_of(pos.x);
+                if fnoob_core::edit::move_warp_marker(&mut self.project, id, index, tick) {
+                    self.sync_plan();
+                }
+            }
+            if response.secondary_clicked() {
+                self.edit(|p| {
+                    fnoob_core::edit::delete_warp_marker(p, id, index);
+                });
+            }
+        }
+        let background = hint(
+            background,
+            "Warped clip: the grid shows beats. Double-click the audio to add a warp marker, then drag its yellow handle.",
+        );
+        if background.double_clicked()
+            && let Some(pos) = background.interact_pointer_pos()
+            && body.contains(pos)
+        {
+            let frame = map.frame(tick_of(pos.x)).max(0.0).round() as u64;
+            self.edit(|p| {
+                fnoob_core::edit::add_warp_marker(p, id, frame);
+            });
+        }
     }
 
     fn audio_clip_view(&self, ui: &mut Ui, file: Id, offset: u64, frames: u64) {

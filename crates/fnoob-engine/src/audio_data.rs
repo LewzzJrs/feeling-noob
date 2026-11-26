@@ -98,6 +98,64 @@ impl AudioData {
         }
     }
 
+    pub fn onset_strength(&self, hop: usize) -> Vec<f32> {
+        let width = usize::from(self.channels);
+        let energies: Vec<f32> = self
+            .samples
+            .chunks(hop * width)
+            .map(|block| block.iter().map(|s| s * s).sum::<f32>().sqrt())
+            .collect();
+        let mut flux = vec![0.0; energies.len()];
+        for i in 1..energies.len() {
+            flux[i] = (energies[i] - energies[i - 1]).max(0.0);
+        }
+        flux
+    }
+
+    pub fn detect_tempo(&self, sample_rate: u32) -> Option<f64> {
+        const HOP: usize = 512;
+        let flux = self.onset_strength(HOP);
+        let hops_per_second = f64::from(sample_rate) / HOP as f64;
+        let lag_for = |bpm: f64| 60.0 * hops_per_second / bpm;
+        let (shortest, longest) = (
+            lag_for(180.0).floor() as usize,
+            lag_for(60.0).ceil() as usize,
+        );
+        if flux.len() < longest * 4 || shortest == 0 {
+            return None;
+        }
+        let score = |lag: usize| -> f32 {
+            flux.iter()
+                .zip(&flux[lag..])
+                .map(|(a, b)| a * b)
+                .sum::<f32>()
+                / (flux.len() - lag) as f32
+        };
+        let (best, value) = (shortest..=longest)
+            .map(|lag| (lag, score(lag)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))?;
+        if value <= 0.0 {
+            return None;
+        }
+        let refine = |lag: usize| -> f64 {
+            let (a, b, c) = (score(lag - 1), score(lag), score(lag + 1));
+            let denominator = a - 2.0 * b + c;
+            if denominator.abs() < f32::EPSILON {
+                lag as f64
+            } else {
+                lag as f64 + f64::from(0.5 * (a - c) / denominator)
+            }
+        };
+        let mut bpm = 60.0 * hops_per_second / refine(best.max(1));
+        while bpm < 80.0 {
+            bpm *= 2.0;
+        }
+        while bpm > 160.0 {
+            bpm /= 2.0;
+        }
+        Some((bpm * 100.0).round() / 100.0)
+    }
+
     pub fn summary(&self, lane: usize, from: f64, to: f64) -> Summary {
         let width = usize::from(self.channels);
         let channel = lane.min(width - 1).min(1);
@@ -227,6 +285,32 @@ mod tests {
             w.write_sample(*v).unwrap();
         }
         w.finalize().unwrap();
+    }
+
+    #[test]
+    fn tempo_of_a_click_track_is_found() {
+        let rate = 48_000u32;
+        for bpm in [96.0f64, 120.0, 140.0] {
+            let period = (60.0 / bpm * f64::from(rate)) as usize;
+            let samples: Vec<f32> = (0..rate as usize * 12)
+                .map(|i| {
+                    let phase = i % period;
+                    if phase < 400 {
+                        (1.0 - phase as f32 / 400.0) * 0.8
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let data = AudioData::from_samples(1, samples);
+            let found = data.detect_tempo(rate).unwrap();
+            assert!((found - bpm).abs() < 1.5, "{bpm} -> {found}");
+        }
+        assert!(
+            AudioData::from_samples(1, vec![0.0; 1000])
+                .detect_tempo(rate)
+                .is_none()
+        );
     }
 
     #[test]

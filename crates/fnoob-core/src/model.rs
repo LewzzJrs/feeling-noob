@@ -747,6 +747,62 @@ pub struct Region {
     pub fade_in_curve: f32,
     #[serde(default, skip_serializing_if = "is_linear")]
     pub fade_out_curve: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warp_markers: Vec<WarpMarker>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WarpMarker {
+    pub frame: u64,
+    pub tick: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarpMap {
+    points: Vec<(f64, f64)>,
+    frames_per_tick: f64,
+}
+
+impl WarpMap {
+    pub fn new(warp: Warp, markers: &[WarpMarker], sample_rate: u32) -> Self {
+        let mut points = vec![(0.0, 0.0)];
+        let mut sorted = markers.to_vec();
+        sorted.sort_by_key(|m| m.frame);
+        for marker in sorted {
+            let last = points[points.len() - 1];
+            if marker.frame as f64 > last.1 && marker.tick > last.0 {
+                points.push((marker.tick, marker.frame as f64));
+            }
+        }
+        Self {
+            points,
+            frames_per_tick: warp.frames_per_tick(sample_rate),
+        }
+    }
+
+    pub fn frame(&self, tick: f64) -> f64 {
+        let next = self.points.partition_point(|p| p.0 <= tick);
+        match (
+            next.checked_sub(1).map(|i| self.points[i]),
+            self.points.get(next),
+        ) {
+            (Some(a), Some(b)) => a.1 + (tick - a.0) / (b.0 - a.0) * (b.1 - a.1),
+            (Some(a), None) => a.1 + (tick - a.0) * self.frames_per_tick,
+            (None, _) => tick * self.frames_per_tick,
+        }
+    }
+
+    pub fn tick(&self, frame: f64) -> f64 {
+        let next = self.points.partition_point(|p| p.1 <= frame);
+        match (
+            next.checked_sub(1).map(|i| self.points[i]),
+            self.points.get(next),
+        ) {
+            (Some(a), Some(b)) => a.0 + (frame - a.1) / (b.1 - a.1) * (b.0 - a.0),
+            (Some(a), None) => a.0 + (frame - a.1) / self.frames_per_tick,
+            (None, _) => frame / self.frames_per_tick,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -980,6 +1036,13 @@ impl Region {
         match &mut self.content {
             RegionContent::Midi { notes } => Some(notes),
             RegionContent::Audio { .. } => None,
+        }
+    }
+
+    pub fn audio_offset(&self) -> u64 {
+        match self.content {
+            RegionContent::Audio { offset_frames, .. } => offset_frames,
+            RegionContent::Midi { .. } => 0,
         }
     }
 

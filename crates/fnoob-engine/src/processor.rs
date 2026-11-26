@@ -1506,9 +1506,8 @@ fn warped_frame(
     warp: &crate::plan::ClipWarp,
     position: u64,
 ) -> (f32, f32) {
-    let offset = clip.offset as f64;
     if warp.repitch {
-        return frame_at(&clip.data, offset + warp.source_at(position));
+        return frame_at(&clip.data, warp.source_at(position));
     }
     let into = position - clip.start;
     let grain = into / HOP;
@@ -1522,7 +1521,7 @@ fn warped_frame(
             let phase = std::f32::consts::PI * inside as f32 / GRAIN as f32;
             phase.sin() * phase.sin()
         };
-        let source = offset + warp.source_at(clip.start + begin) + inside as f64;
+        let source = warp.source_at(clip.start + begin) + inside as f64;
         let (l, r) = frame_at(&clip.data, source);
         left += l * weight;
         right += r * weight;
