@@ -69,6 +69,98 @@ pub fn transpose(notes: &mut [Note], picked: &[usize], semitones: i32) {
     }
 }
 
+pub fn euclid_pattern(steps: u8, pulses: u8, rotate: u8) -> Vec<bool> {
+    let steps = usize::from(steps.clamp(1, 64));
+    let pulses = usize::from(pulses).min(steps);
+    let pattern: Vec<bool> = (0..steps).map(|i| (i * pulses) % steps < pulses).collect();
+    let shift = usize::from(rotate) % steps;
+    (0..steps)
+        .map(|i| pattern[(i + steps - shift) % steps])
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Euclid {
+    pub steps: u8,
+    pub pulses: u8,
+    pub rotate: u8,
+    pub step_ticks: u64,
+    pub pitch: u8,
+    pub velocity: u8,
+}
+
+pub fn euclid(notes: &mut Vec<Note>, clip_length: u64, settings: Euclid) {
+    let pattern = euclid_pattern(settings.steps, settings.pulses, settings.rotate);
+    let step = settings.step_ticks.max(1);
+    let mut tick = 0;
+    let mut index = 0;
+    while tick < clip_length {
+        if pattern[index % pattern.len()]
+            && !notes
+                .iter()
+                .any(|n| n.pitch == settings.pitch && n.start_tick == tick)
+        {
+            notes.push(Note {
+                pitch: settings.pitch,
+                velocity: settings.velocity.clamp(1, 127),
+                start_tick: tick,
+                length_tick: (step / 2).max(1).min(clip_length - tick),
+                chance: crate::model::FULL_CHANCE,
+            });
+        }
+        tick += step;
+        index += 1;
+    }
+    notes.sort_by_key(|n| (n.start_tick, n.pitch));
+}
+
+pub fn chop(notes: &mut Vec<Note>, picked: &[usize], parts: u8) {
+    let parts = u64::from(parts.max(2));
+    let chosen = targets(notes, picked);
+    let mut added = Vec::new();
+    for &i in &chosen {
+        let note = notes[i];
+        let piece = note.length_tick / parts;
+        if piece == 0 {
+            continue;
+        }
+        notes[i].length_tick = piece;
+        for k in 1..parts {
+            let last = k == parts - 1;
+            added.push(Note {
+                start_tick: note.start_tick + piece * k,
+                length_tick: if last {
+                    note.length_tick - piece * k
+                } else {
+                    piece
+                },
+                ..note
+            });
+        }
+    }
+    notes.extend(added);
+    notes.sort_by_key(|n| (n.start_tick, n.pitch));
+}
+
+pub fn flam(notes: &mut Vec<Note>, picked: &[usize], gap: u64) {
+    let gap = gap.max(1);
+    let mut added = Vec::new();
+    for i in targets(notes, picked) {
+        let note = notes[i];
+        if note.start_tick < gap {
+            continue;
+        }
+        added.push(Note {
+            start_tick: note.start_tick - gap,
+            length_tick: gap,
+            velocity: (note.velocity / 2).max(1),
+            ..note
+        });
+    }
+    notes.extend(added);
+    notes.sort_by_key(|n| (n.start_tick, n.pitch));
+}
+
 pub fn fit_to_scale(notes: &mut [Note], picked: &[usize], scale: crate::scale::Scale) {
     for i in targets(notes, picked) {
         notes[i].pitch = scale.nearest(notes[i].pitch);
@@ -312,5 +404,44 @@ mod tests {
         assert!(notes.iter().all(|n| (70..=127).contains(&n.velocity)));
         transpose(&mut notes, &[0], 12);
         assert!(notes.iter().any(|n| n.pitch >= 72));
+    }
+
+    #[test]
+    fn euclid_spreads_pulses_evenly() {
+        let pattern = euclid_pattern(8, 3, 0);
+        assert_eq!(pattern.iter().filter(|p| **p).count(), 3);
+        assert_eq!(
+            pattern,
+            [true, false, false, true, false, false, true, false]
+        );
+        assert_eq!(euclid_pattern(4, 1, 1), [false, true, false, false]);
+        let mut notes = Vec::new();
+        let settings = Euclid {
+            steps: 4,
+            pulses: 2,
+            rotate: 0,
+            step_ticks: 240,
+            pitch: 36,
+            velocity: 100,
+        };
+        euclid(&mut notes, 1920, settings);
+        assert_eq!(notes.len(), 4);
+        euclid(&mut notes, 1920, settings);
+        assert_eq!(notes.len(), 4);
+    }
+
+    #[test]
+    fn chop_and_flam() {
+        let mut notes = vec![note(60, 480, 400)];
+        chop(&mut notes, &[], 3);
+        let starts: Vec<(u64, u64)> = notes
+            .iter()
+            .map(|n| (n.start_tick, n.length_tick))
+            .collect();
+        assert_eq!(starts, [(480, 133), (613, 133), (746, 134)]);
+        let mut notes = vec![note(38, 480, 120), note(38, 10, 120)];
+        flam(&mut notes, &[], 30);
+        assert_eq!(notes.len(), 3);
+        assert_eq!((notes[1].start_tick, notes[1].velocity), (450, 50));
     }
 }

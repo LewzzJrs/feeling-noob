@@ -51,6 +51,8 @@ pub struct Editor {
     pub chance: u8,
     pub spread: u8,
     pub ramp: (u8, u8),
+    pub euclid: (u8, u8, u8),
+    pub chop: u8,
     pub lane: NoteLane,
     marquee: Option<(Pos2, Pos2)>,
     rows: usize,
@@ -92,6 +94,8 @@ impl Default for Editor {
             chance: 50,
             spread: 20,
             ramp: (40, 110),
+            euclid: (16, 5, 0),
+            chop: 2,
             lane: NoteLane::Velocity,
             marquee: None,
             rows: 128,
@@ -620,6 +624,75 @@ impl App {
             {
                 self.apply_tool(region, false, |n, s| tools::add_key_chord(n, s, scale));
             }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            let parts = self.editor.chop;
+            if ui
+                .button("Chop")
+                .on_hover_text("Cut each note into equal parts")
+                .clicked()
+            {
+                self.apply_tool(region, false, |n, s| tools::chop(n, s, parts));
+            }
+            ui.add(
+                egui::DragValue::new(&mut self.editor.chop)
+                    .range(2..=16)
+                    .suffix(" parts"),
+            );
+            let gap = (self.grid_ticks() / 4).max(10);
+            if ui
+                .button("Flam")
+                .on_hover_text("Add a quiet grace note just before each note")
+                .clicked()
+            {
+                self.apply_tool(region, false, |n, s| tools::flam(n, s, gap));
+            }
+        });
+        ui.horizontal(|ui| {
+            let (steps, pulses, rotate) = self.editor.euclid;
+            let pitch = self
+                .editor
+                .selected
+                .first()
+                .and_then(|i| {
+                    self.project
+                        .find_region(region)
+                        .and_then(|(_, r)| r.notes().get(*i).map(|n| n.pitch))
+                })
+                .unwrap_or(36);
+            if ui
+                .button("Euclidean")
+                .on_hover_text(
+                    "Spread pulses as evenly as possible over the steps, on the pitch of the selected note (C1 when none)",
+                )
+                .clicked()
+            {
+                let settings = tools::Euclid {
+                    steps,
+                    pulses,
+                    rotate,
+                    step_ticks: self.grid_ticks(),
+                    pitch,
+                    velocity: self.note_template().1,
+                };
+                self.apply_tool(region, false, |n, _| tools::euclid(n, clip_length, settings));
+            }
+            ui.add(
+                egui::DragValue::new(&mut self.editor.euclid.0)
+                    .range(1..=64)
+                    .suffix(" steps"),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.editor.euclid.1)
+                    .range(0..=64)
+                    .suffix(" hits"),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.editor.euclid.2)
+                    .range(0..=63)
+                    .prefix("rotate "),
+            );
         });
         ui.separator();
         ui.horizontal(|ui| {
