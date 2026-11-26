@@ -1307,13 +1307,25 @@ fn apply_device_automation(
     position: u64,
 ) {
     for device in automation {
-        if let Some(Some(EngineSlot::Builtin(effect))) = plugins.get_mut(device.slot) {
-            let mut params = device.base;
-            for (param, lane) in &device.lanes {
-                let current = params.normal(*param).unwrap_or(0.0);
-                params.set_normal(*param, crate::plan::envelope_at(lane, position, current));
+        match (plugins.get_mut(device.slot), device.base) {
+            (Some(Some(EngineSlot::Builtin(effect))), Some(base)) => {
+                let mut params = base;
+                for (param, lane) in &device.lanes {
+                    let Ok(param) = u8::try_from(*param) else {
+                        continue;
+                    };
+                    let current = params.normal(param).unwrap_or(0.0);
+                    params.set_normal(param, crate::plan::envelope_at(lane, position, current));
+                }
+                effect.set_params(params);
             }
-            effect.set_params(params);
+            (Some(Some(EngineSlot::Vst3(plugin))), None) => {
+                for (param, lane) in &device.lanes {
+                    let value = crate::plan::envelope_at(lane, position, 0.0);
+                    plugin.set_param(*param, f64::from(value));
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -2831,5 +2843,44 @@ mod tests {
         let mut plan = audio_plan(&project, &pool);
         let slow = render_clips(&mut plan.audio_tracks[0], 0, 10_000)[5000 * 2];
         assert!(slow < 0.3, "{slow}");
+    }
+
+    #[test]
+    fn plugin_parameter_lanes_reach_the_plan() {
+        let (mut project, track, _) = mixer_project();
+        let slot_id = project.alloc_id();
+        project
+            .track_mut(track)
+            .unwrap()
+            .strip
+            .inserts
+            .push(fnoob_core::model::PluginSlot {
+                id: slot_id,
+                class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
+                name: "Verb".into(),
+                path_hint: String::new(),
+                bypass: false,
+                component_state: String::new(),
+                controller_state: None,
+                builtin: None,
+                sidechain: None,
+            });
+        project
+            .track_mut(track)
+            .unwrap()
+            .automation
+            .lane_mut(fnoob_core::model::AutomationParam::Device(slot_id, 7001))
+            .push(fnoob_core::model::AutomationPoint {
+                tick: 0,
+                value: 0.25,
+                curve: 0.0,
+            });
+        let pool = mixer_pool(&project);
+        let mut map = crate::plan::PluginMap::new();
+        map.insert(slot_id, 2);
+        let plan = RenderPlan::build(&project, SR, &pool, &map);
+        let device = &plan.audio_tracks[0].device_automation[0];
+        assert_eq!((device.slot, device.base), (2, None));
+        assert_eq!(device.lanes[0].0, 7001);
     }
 }

@@ -316,7 +316,54 @@ pub fn instantiate(
     Ok((plugin, processor))
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParameterInfo {
+    pub id: u32,
+    pub name: String,
+    pub default: f64,
+}
+
 impl Plugin {
+    pub fn parameters(&self) -> Vec<ParameterInfo> {
+        use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsHidden};
+        let Some(controller) = &self.shared.controller else {
+            return Vec::new();
+        };
+        let count = unsafe { controller.getParameterCount() }.max(0);
+        (0..count)
+            .filter_map(|index| {
+                let mut info: vst3::Steinberg::Vst::ParameterInfo = unsafe { std::mem::zeroed() };
+                if unsafe { controller.getParameterInfo(index, &mut info) } != kResultOk {
+                    return None;
+                }
+                if info.flags & kCanAutomate == 0 || info.flags & kIsHidden != 0 {
+                    return None;
+                }
+                let end = info
+                    .title
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(info.title.len());
+                Some(ParameterInfo {
+                    id: info.id,
+                    name: String::from_utf16_lossy(&info.title[..end]),
+                    default: info.defaultNormalizedValue,
+                })
+            })
+            .collect()
+    }
+
+    pub fn normalized(&self, id: u32) -> Option<f64> {
+        let controller = self.shared.controller.as_ref()?;
+        Some(unsafe { controller.getParamNormalized(id) })
+    }
+
+    pub fn show_value(&self, id: u32, value: f64) {
+        if let Some(controller) = &self.shared.controller {
+            unsafe { controller.setParamNormalized(id, value.clamp(0.0, 1.0)) };
+        }
+    }
+
     pub fn state(&self) -> Result<(Vec<u8>, Option<Vec<u8>>), PluginError> {
         let stream = ComWrapper::new(MemoryStream::default());
         if unsafe { self.shared.component.getState(stream_pointer(&stream)) } != kResultOk {
@@ -377,6 +424,10 @@ impl PluginProcessor {
             };
         }
         self.events.push(event);
+    }
+
+    pub fn set_param(&mut self, id: u32, value: f64) {
+        self.params.add(id, 0, value.clamp(0.0, 1.0));
     }
 
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32], transport: &Transport) {

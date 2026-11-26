@@ -4,7 +4,7 @@ mod instance;
 mod module;
 
 pub use editor::Editor;
-pub use instance::{Plugin, PluginProcessor, Transport, instantiate};
+pub use instance::{ParameterInfo, Plugin, PluginProcessor, Transport, instantiate};
 pub use module::{ClassInfo, Module, scan};
 
 use std::fmt;

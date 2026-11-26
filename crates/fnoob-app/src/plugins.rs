@@ -102,6 +102,7 @@ pub struct PluginHost {
     scan: Option<ScanJob>,
     modules: HashMap<String, Arc<Module>>,
     loaded: HashMap<Id, LoadedPlugin>,
+    pub params: HashMap<Id, Vec<fnoob_platform::plugin::ParameterInfo>>,
     failed: HashMap<Id, String>,
     free: Vec<usize>,
     pub show_manager: bool,
@@ -122,6 +123,7 @@ impl PluginHost {
             scan: None,
             modules: HashMap::new(),
             loaded: HashMap::new(),
+            params: HashMap::new(),
             failed: HashMap::new(),
             free: (0..MAX_PLUGINS).rev().collect(),
             show_manager: false,
@@ -389,6 +391,7 @@ impl App {
             .copied()
             .collect();
         for id in stale {
+            self.plugins.params.remove(&id);
             if let Some(loaded) = self.plugins.loaded.remove(&id) {
                 self.send(EngineCommand::RemovePlugin(loaded.engine_slot));
                 self.plugins.free.push(loaded.engine_slot);
@@ -439,6 +442,7 @@ impl App {
             match self.load_slot(&slot) {
                 Ok((plugin, processor)) => {
                     plugin.take_edited();
+                    self.plugins.params.insert(slot.id, plugin.parameters());
                     self.send(EngineCommand::InstallPlugin {
                         slot: engine_slot,
                         plugin: processor,

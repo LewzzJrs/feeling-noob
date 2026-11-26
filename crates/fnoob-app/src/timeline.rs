@@ -263,14 +263,29 @@ fn automation_value(lane: Rect, param: AutomationParam, y: f32) -> f32 {
     }
 }
 
-fn base_value(track: &Track, param: AutomationParam) -> f32 {
+pub(crate) type PluginParams =
+    std::collections::HashMap<Id, Vec<fnoob_platform::plugin::ParameterInfo>>;
+
+fn plugin_param(
+    plugins: &PluginParams,
+    slot: Id,
+    id: u32,
+) -> Option<&fnoob_platform::plugin::ParameterInfo> {
+    plugins.get(&slot)?.iter().find(|p| p.id == id)
+}
+
+fn base_value(track: &Track, param: AutomationParam, plugins: &PluginParams) -> f32 {
     match param {
         AutomationParam::Volume => track.strip.volume_db.max(-60.0),
         AutomationParam::Pan => track.strip.pan,
         AutomationParam::Send(i) => track.strip.send_at(usize::from(i)).level_db.max(-60.0),
-        AutomationParam::Device(slot, index) => device_effect(track, slot)
-            .and_then(|effect| effect.normal(index))
-            .unwrap_or(0.0),
+        AutomationParam::Device(slot, index) => match device_effect(track, slot) {
+            Some(effect) => u8::try_from(index)
+                .ok()
+                .and_then(|i| effect.normal(i))
+                .unwrap_or(0.0),
+            None => plugin_param(plugins, slot, index).map_or(0.5, |p| p.default as f32),
+        },
     }
 }
 
@@ -283,47 +298,84 @@ fn device_effect(track: &Track, slot: Id) -> Option<fnoob_core::effects::Builtin
         .and_then(|s| s.builtin)
 }
 
-pub(crate) fn device_params(track: &Track) -> Vec<AutomationParam> {
+pub(crate) fn device_params(track: &Track, plugins: &PluginParams) -> Vec<AutomationParam> {
     track
         .strip
         .inserts
         .iter()
-        .filter_map(|s| s.builtin.map(|effect| (s.id, effect)))
-        .flat_map(|(slot, effect)| {
-            (0..effect.params().len() as u8).map(move |i| AutomationParam::Device(slot, i))
+        .flat_map(|s| match s.builtin {
+            Some(effect) => (0..effect.params().len() as u32)
+                .map(|i| AutomationParam::Device(s.id, i))
+                .collect::<Vec<_>>(),
+            None => plugins
+                .get(&s.id)
+                .map(|params| {
+                    params
+                        .iter()
+                        .map(|p| AutomationParam::Device(s.id, p.id))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
         .collect()
 }
 
-pub(crate) fn automation_label(track: &Track, param: AutomationParam) -> String {
+pub(crate) fn automation_label(
+    track: &Track,
+    param: AutomationParam,
+    plugins: &PluginParams,
+) -> String {
     match param {
-        AutomationParam::Device(slot, index) => device_effect(track, slot)
-            .and_then(|effect| {
-                effect
-                    .params()
-                    .get(usize::from(index))
-                    .map(|info| format!("{}: {}", effect.label(), info.name))
-            })
-            .unwrap_or_else(|| "Removed device".to_string()),
+        AutomationParam::Device(slot, index) => match device_effect(track, slot) {
+            Some(effect) => usize::try_from(index)
+                .ok()
+                .and_then(|i| effect.params().get(i))
+                .map(|info| format!("{}: {}", effect.label(), info.name))
+                .unwrap_or_else(|| "Removed device".to_string()),
+            None => {
+                let device = track
+                    .strip
+                    .inserts
+                    .iter()
+                    .find(|s| s.id == slot)
+                    .map_or("Removed device", |s| s.name.as_str());
+                match plugin_param(plugins, slot, index) {
+                    Some(info) => format!("{device}: {}", info.name),
+                    None => format!("{device}: parameter {index}"),
+                }
+            }
+        },
         other => other.label().to_string(),
     }
 }
 
-fn automation_text(track: &Track, param: AutomationParam, value: f32) -> String {
+fn automation_text(
+    track: &Track,
+    param: AutomationParam,
+    value: f32,
+    plugins: &PluginParams,
+) -> String {
     match param {
         AutomationParam::Volume | AutomationParam::Send(_) => format!("{value:+.1} dB"),
         AutomationParam::Pan => format!("Pan {value:+.2}"),
-        AutomationParam::Device(slot, index) => device_effect(track, slot)
-            .and_then(|effect| effect.params().get(usize::from(index)).copied())
-            .map(|info| {
-                let real = info.from_normal(value);
-                if info.unit.is_empty() {
-                    format!("{} {real:.2}", info.name)
-                } else {
-                    format!("{} {real:.1}{}", info.name, info.unit)
-                }
-            })
-            .unwrap_or_else(|| format!("{value:.3}")),
+        AutomationParam::Device(slot, index) => match device_effect(track, slot) {
+            Some(effect) => usize::try_from(index)
+                .ok()
+                .and_then(|i| effect.params().get(i).copied())
+                .map(|info| {
+                    let real = info.from_normal(value);
+                    if info.unit.is_empty() {
+                        format!("{} {real:.2}", info.name)
+                    } else {
+                        format!("{} {real:.1}{}", info.name, info.unit)
+                    }
+                })
+                .unwrap_or_else(|| format!("{value:.3}")),
+            None => match plugin_param(plugins, slot, index) {
+                Some(info) => format!("{} {:.0}%", info.name, value * 100.0),
+                None => format!("{:.0}%", value * 100.0),
+            },
+        },
     }
 }
 
@@ -1460,7 +1512,7 @@ impl App {
         let points = track.automation.lane(param);
         let painter = ui.painter_at(lane.intersect(g.lanes));
         let color = Color32::from_rgb(250, 210, 90);
-        let default = base_value(track, param);
+        let default = base_value(track, param, &self.plugins.params);
         if points.is_empty() {
             let y = automation_y(lane, param, default);
             painter.hline(
@@ -1484,7 +1536,7 @@ impl App {
         painter.text(
             lane.left_top() + Vec2::new(6.0, 4.0),
             Align2::LEFT_TOP,
-            automation_label(track, param),
+            automation_label(track, param, &self.plugins.params),
             FontId::proportional(11.0),
             color,
         );
@@ -1503,7 +1555,7 @@ impl App {
                 )
                 .on_hover_text(format!(
                     "{}. Right-click for the curve or to delete.",
-                    automation_text(track, param, point.value)
+                    automation_text(track, param, point.value, &self.plugins.params)
                 ));
             if response.drag_started() {
                 actions.push(UiAction::AutomationDragStart {
@@ -2015,16 +2067,16 @@ impl App {
                     let current = self.automation_param(id);
                     if let Some(track) = self.project.track(id) {
                         let mut params = AutomationParam::with_sends(self.project.returns.len());
-                        params.extend(device_params(track));
+                        params.extend(device_params(track, &self.plugins.params));
                         egui::ComboBox::from_id_salt(("automation", id))
                             .width(80.0)
-                            .selected_text(automation_label(track, current))
+                            .selected_text(automation_label(track, current, &self.plugins.params))
                             .show_ui(ui, |ui| {
                                 for param in params {
                                     if ui
                                         .selectable_label(
                                             param == current,
-                                            automation_label(track, param),
+                                            automation_label(track, param, &self.plugins.params),
                                         )
                                         .clicked()
                                     {

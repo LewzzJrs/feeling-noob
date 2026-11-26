@@ -115,8 +115,8 @@ pub type Envelope = Vec<(u64, f32, f32)>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceAutomation {
     pub slot: usize,
-    pub base: fnoob_core::effects::BuiltinEffect,
-    pub lanes: Vec<(u8, Envelope)>,
+    pub base: Option<fnoob_core::effects::BuiltinEffect>,
+    pub lanes: Vec<(u32, Envelope)>,
 }
 
 fn device_automation(
@@ -132,9 +132,9 @@ fn device_automation(
         .inserts
         .iter()
         .filter_map(|slot| {
-            let base = slot.builtin?;
+            let base = slot.builtin;
             let index = *plugins.get(&slot.id)?;
-            let lanes: Vec<(u8, Envelope)> = track
+            let lanes: Vec<(u32, Envelope)> = track
                 .automation
                 .devices
                 .iter()

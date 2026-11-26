@@ -816,7 +816,7 @@ pub enum AutomationParam {
     Volume,
     Pan,
     Send(u8),
-    Device(Id, u8),
+    Device(Id, u32),
 }
 
 impl AutomationParam {
@@ -868,7 +868,7 @@ pub struct Automation {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceLane {
     pub slot: Id,
-    pub param: u8,
+    pub param: u32,
     pub points: Vec<AutomationPoint>,
 }
 
