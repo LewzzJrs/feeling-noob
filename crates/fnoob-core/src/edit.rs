@@ -360,6 +360,14 @@ pub fn delete_track(project: &mut Project, track_id: Id) -> bool {
         if track.group == Some(track_id) {
             track.group = parent;
         }
+        if track.output == crate::model::Output::Track(track_id) {
+            track.output = crate::model::Output::Main;
+        }
+        for slot in &mut track.strip.inserts {
+            if slot.sidechain == Some(track_id) {
+                slot.sidechain = None;
+            }
+        }
     }
     let before = project.tracks.len();
     project.tracks.retain(|t| t.id != track_id);

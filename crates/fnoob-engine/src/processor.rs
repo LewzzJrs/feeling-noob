@@ -2,7 +2,7 @@ use crate::audio_data::AudioData;
 use crate::effects::BuiltinProcessor;
 use crate::metronome::Metronome;
 use crate::plan::{
-    AudioTrackPlan, Inserts, MASTER_METER, MAX_BLOCK, MAX_GROUPS, MAX_PLUGINS, METER_SLOTS, NO_OFF,
+    AudioTrackPlan, Inserts, MASTER_METER, MAX_BLOCK, MAX_PLUGINS, METER_SLOTS, NO_OFF, Node,
     RenderPlan, StripPlan, TRACK_METERS, TrackPlan,
 };
 use crate::session::{Session, SessionStatus};
@@ -1077,69 +1077,97 @@ impl Processor {
         }
         self.clock += frames as u64;
         let transport = self.transport(started_playing, start);
-        for track in &mut self.plan.tracks {
-            if !track.audible {
-                continue;
-            }
-            if let Some(plugin) = plugin_of_mut(&mut self.plugins, track.instrument) {
-                run_plugin(
-                    plugin,
-                    &mut track.left[..frames],
-                    &mut track.right[..frames],
-                    &transport,
-                );
-            }
-            apply_device_automation(&mut self.plugins, &track.device_automation, start);
-            run_inserts(
-                &mut self.plugins,
-                &track.strip.inserts,
-                &mut track.left[..frames],
-                &mut track.right[..frames],
-                &transport,
-            );
+        self.main_left[..frames].fill(0.0);
+        self.main_right[..frames].fill(0.0);
+        for (left, right) in self
+            .return_left
+            .iter_mut()
+            .zip(self.return_right.iter_mut())
+        {
+            left[..frames].fill(0.0);
+            right[..frames].fill(0.0);
         }
-        for track in &mut self.plan.audio_tracks {
-            if track.audible {
-                apply_device_automation(&mut self.plugins, &track.device_automation, start);
-                run_inserts(
-                    &mut self.plugins,
-                    &track.strip.inserts,
-                    &mut track.left[..frames],
-                    &mut track.right[..frames],
-                    &transport,
-                );
-            }
+        for group in &mut self.plan.groups {
+            group.left[..frames].fill(0.0);
+            group.right[..frames].fill(0.0);
         }
-        for f in 0..frames {
-            let mut mix = Mix::default();
-            let position = self.positions[f];
-            for track in &self.plan.tracks {
-                if track.audible {
-                    let strip = track.strip.at(&track.envelopes, position);
-                    mix.add(&strip, track.left[f], track.right[f], &mut self.peaks);
+        for step in 0..self.plan.order.len() {
+            match self.plan.order[step] {
+                Node::Track(index) => {
+                    if !self.plan.tracks[index].audible {
+                        continue;
+                    }
+                    feed_keys(
+                        &mut self.plugins,
+                        &self.plan.tracks[index].keys,
+                        &self.plan.tracks,
+                        &self.plan.audio_tracks,
+                        frames,
+                    );
+                    let track = &mut self.plan.tracks[index];
+                    if let Some(plugin) = plugin_of_mut(&mut self.plugins, track.instrument) {
+                        run_plugin(
+                            plugin,
+                            &mut track.left[..frames],
+                            &mut track.right[..frames],
+                            &transport,
+                        );
+                    }
+                    apply_device_automation(&mut self.plugins, &track.device_automation, start);
+                    run_inserts(
+                        &mut self.plugins,
+                        &track.strip.inserts,
+                        &mut track.left[..frames],
+                        &mut track.right[..frames],
+                        &transport,
+                    );
+                    for f in 0..frames {
+                        let track = &self.plan.tracks[index];
+                        let strip = track.strip.at(&track.envelopes, self.positions[f]);
+                        let (left, right) = (track.left[f], track.right[f]);
+                        self.mix_frame(&strip, left, right, f);
+                    }
                 }
-            }
-            for track in &self.plan.audio_tracks {
-                if track.audible {
-                    let strip = track.strip.at(&track.envelopes, position);
-                    mix.add(&strip, track.left[f], track.right[f], &mut self.peaks);
+                Node::Audio(index) => {
+                    if !self.plan.audio_tracks[index].audible {
+                        continue;
+                    }
+                    feed_keys(
+                        &mut self.plugins,
+                        &self.plan.audio_tracks[index].keys,
+                        &self.plan.tracks,
+                        &self.plan.audio_tracks,
+                        frames,
+                    );
+                    let track = &mut self.plan.audio_tracks[index];
+                    apply_device_automation(&mut self.plugins, &track.device_automation, start);
+                    run_inserts(
+                        &mut self.plugins,
+                        &track.strip.inserts,
+                        &mut track.left[..frames],
+                        &mut track.right[..frames],
+                        &transport,
+                    );
+                    for f in 0..frames {
+                        let track = &self.plan.audio_tracks[index];
+                        let strip = track.strip.at(&track.envelopes, self.positions[f]);
+                        let (left, right) = (track.left[f], track.right[f]);
+                        self.mix_frame(&strip, left, right, f);
+                    }
                 }
-            }
-            self.main_left[f] = mix.main.0;
-            self.main_right[f] = mix.main.1;
-            for (index, (left, right)) in mix.returns.iter().enumerate() {
-                self.return_left[index][f] = *left;
-                self.return_right[index][f] = *right;
-            }
-            for (group, (left, right)) in self.plan.groups.iter_mut().zip(mix.groups.iter()) {
-                group.left[f] = *left;
-                group.right[f] = *right;
             }
         }
         for index in 0..self.plan.groups.len() {
             if !self.plan.groups[index].audible {
                 continue;
             }
+            feed_keys(
+                &mut self.plugins,
+                &self.plan.groups[index].keys,
+                &self.plan.tracks,
+                &self.plan.audio_tracks,
+                frames,
+            );
             {
                 let group = &mut self.plan.groups[index];
                 apply_device_automation(&mut self.plugins, &group.device_automation, start);
@@ -1152,23 +1180,12 @@ impl Processor {
                 );
             }
             for f in 0..frames {
-                let position = self.positions[f];
                 let group = &self.plan.groups[index];
-                let strip = group.strip.at(&group.envelopes, position);
-                let mut mix = Mix::default();
-                mix.add(&strip, group.left[f], group.right[f], &mut self.peaks);
-                self.main_left[f] += mix.main.0;
-                self.main_right[f] += mix.main.1;
-                for (r, (left, right)) in mix.returns.iter().enumerate() {
-                    self.return_left[r][f] += *left;
-                    self.return_right[r][f] += *right;
-                }
-                if let Some(parent) = strip.group.filter(|p| *p != index)
-                    && let Some(target) = self.plan.groups.get_mut(parent)
-                {
-                    target.left[f] += mix.groups[parent].0;
-                    target.right[f] += mix.groups[parent].1;
-                }
+                let mut strip = group.strip.at(&group.envelopes, self.positions[f]);
+                strip.route = None;
+                strip.group = strip.group.filter(|p| *p != index);
+                let (left, right) = (group.left[f], group.right[f]);
+                self.mix_frame(&strip, left, right, f);
             }
         }
         let count = self.plan.returns.len().min(MAX_RETURNS);
@@ -1314,24 +1331,24 @@ fn run_inserts(
     }
 }
 
-#[derive(Default)]
-struct Mix {
-    main: (f32, f32),
-    returns: [(f32, f32); MAX_RETURNS],
-    groups: [(f32, f32); MAX_GROUPS],
-}
-
-impl Mix {
-    fn add(&mut self, strip: &StripPlan, left: f32, right: f32, peaks: &mut [f32]) {
+impl Processor {
+    fn mix_frame(&mut self, strip: &StripPlan, left: f32, right: f32, f: usize) {
         let post = (left * strip.left, right * strip.right);
-        if let Some(group) = strip.group.and_then(|g| self.groups.get_mut(g)) {
-            group.0 += post.0;
-            group.1 += post.1;
+        if let Some(target) = strip.route {
+            if let Some(track) = self.plan.audio_tracks.get_mut(target)
+                && track.audible
+            {
+                track.left[f] += post.0;
+                track.right[f] += post.1;
+            }
+        } else if let Some(group) = strip.group.and_then(|g| self.plan.groups.get_mut(g)) {
+            group.left[f] += post.0;
+            group.right[f] += post.1;
         } else if strip.to_main {
-            self.main.0 += post.0;
-            self.main.1 += post.1;
+            self.main_left[f] += post.0;
+            self.main_right[f] += post.1;
         }
-        for (index, target) in self.returns.iter_mut().enumerate() {
+        for index in 0..MAX_RETURNS {
             let send = strip.sends[index];
             if send > 0.0 {
                 let source = if strip.pre_fader[index] {
@@ -1339,11 +1356,35 @@ impl Mix {
                 } else {
                     post
                 };
-                target.0 += source.0 * send;
-                target.1 += source.1 * send;
+                self.return_left[index][f] += source.0 * send;
+                self.return_right[index][f] += source.1 * send;
             }
         }
-        peak(peaks, strip.meter, post.0, post.1);
+        peak(&mut self.peaks, strip.meter, post.0, post.1);
+    }
+}
+
+fn feed_keys(
+    plugins: &mut [Option<EngineSlot>],
+    keys: &[(usize, Node)],
+    tracks: &[TrackPlan],
+    audio: &[AudioTrackPlan],
+    frames: usize,
+) {
+    for (slot, source) in keys {
+        let buffers = match *source {
+            Node::Track(i) => tracks
+                .get(i)
+                .filter(|t| t.audible)
+                .map(|t| (&t.left[..frames], &t.right[..frames])),
+            Node::Audio(i) => audio
+                .get(i)
+                .filter(|t| t.audible)
+                .map(|t| (&t.left[..frames], &t.right[..frames])),
+        };
+        if let Some(Some(EngineSlot::Builtin(effect))) = plugins.get_mut(*slot) {
+            effect.set_key(buffers, frames);
+        }
     }
 }
 
@@ -2560,6 +2601,66 @@ mod tests {
             });
         assert!(render(&project) < 0.001);
         project.track_mut(track).unwrap().automation_off = true;
+        assert!(render(&project) > 0.1);
+    }
+
+    #[test]
+    fn tracks_route_into_audio_tracks() {
+        let (mut project, track, _) = mixer_project();
+        let bus = fnoob_core::edit::add_track(&mut project, TrackKind::Audio);
+        project.track_mut(track).unwrap().output = fnoob_core::model::Output::Track(bus);
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        let (frame, _) = first_frame(&project);
+        assert_close(&frame, &[0.5 * c * c, 0.5 * c * c]);
+        project.track_mut(bus).unwrap().strip.pan = -1.0;
+        let (frame, _) = first_frame(&project);
+        assert_close(&frame, &[0.5 * c, 0.0]);
+        project.track_mut(bus).unwrap().mute = true;
+        assert_eq!(first_frame(&project).0, [0.0, 0.0]);
+        project.track_mut(bus).unwrap().mute = false;
+        project.track_mut(bus).unwrap().output = fnoob_core::model::Output::Track(track);
+        assert!(first_frame(&project).0.iter().all(|s| s.is_finite()));
+        fnoob_core::edit::delete_track(&mut project, bus);
+        assert_eq!(
+            project.track(track).unwrap().output,
+            fnoob_core::model::Output::Main
+        );
+    }
+
+    #[test]
+    fn sidechain_key_drives_the_gate() {
+        let (mut project, track, _) = mixer_project();
+        let key = fnoob_core::edit::add_track(&mut project, TrackKind::Audio);
+        let slot_id = project.alloc_id();
+        let effect = fnoob_core::effects::BuiltinEffect::all()[9];
+        assert!(matches!(
+            effect,
+            fnoob_core::effects::BuiltinEffect::Gate(_)
+        ));
+        let mut slot = fnoob_core::model::PluginSlot::builtin(slot_id, effect);
+        slot.sidechain = Some(key);
+        project.track_mut(track).unwrap().strip.inserts.push(slot);
+        let render = |project: &Project| {
+            let pool = mixer_pool(project);
+            let mut map = crate::plan::PluginMap::new();
+            map.insert(slot_id, 3);
+            let plan = Box::new(RenderPlan::build(project, SR, &pool, &map));
+            let (mut p, mut h) = create(SR, 2, plan);
+            h.send(Command::InstallBuiltin {
+                slot: 3,
+                effect: Box::new(BuiltinProcessor::new(effect, SR)),
+            })
+            .unwrap();
+            h.send(Command::Play).unwrap();
+            let mut out = vec![0.0; 2 * 1024];
+            p.process(&mut out);
+            h.send(Command::RemovePlugin(3)).unwrap();
+            p.process(&mut vec![0.0; 2 * 64]);
+            h.collect_garbage();
+            out[out.len() - 1].abs()
+        };
+        assert!(render(&project) < 0.01);
+        project.track_mut(track).unwrap().strip.inserts[0].sidechain = None;
         assert!(render(&project) > 0.1);
     }
 }

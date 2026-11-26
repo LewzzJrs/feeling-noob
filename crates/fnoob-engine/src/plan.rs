@@ -32,6 +32,7 @@ pub struct TrackPlan {
     pub strip: StripPlan,
     pub envelopes: Envelopes,
     pub device_automation: Vec<DeviceAutomation>,
+    pub keys: Vec<(usize, Node)>,
     pub notes: Vec<PlannedNote>,
     pub synth: Synth,
     pub session: Session,
@@ -170,6 +171,7 @@ pub struct AudioTrackPlan {
     pub strip: StripPlan,
     pub envelopes: Envelopes,
     pub device_automation: Vec<DeviceAutomation>,
+    pub keys: Vec<(usize, Node)>,
     pub clips: Vec<Clip>,
     pub session: Session,
     pub cursor: usize,
@@ -201,7 +203,107 @@ pub struct RenderPlan {
     pub records_audio: bool,
     pub returns: Vec<ReturnPlan>,
     pub groups: Vec<GroupPlan>,
+    pub order: Vec<Node>,
     pub master: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Node {
+    Track(usize),
+    Audio(usize),
+}
+
+fn sidechains(track: &fnoob_core::model::Track, plugins: &PluginMap) -> Vec<(usize, Id)> {
+    track
+        .strip
+        .inserts
+        .iter()
+        .filter(|slot| slot.takes_sidechain())
+        .filter_map(|slot| Some((*plugins.get(&slot.id)?, slot.sidechain?)))
+        .filter(|(_, source)| *source != track.id)
+        .collect()
+}
+
+fn processing_order(nodes: &[(Id, Node)], edges: &[(Node, Node)]) -> Vec<Node> {
+    let mut order: Vec<Node> = Vec::with_capacity(nodes.len());
+    while order.len() < nodes.len() {
+        let waiting = || nodes.iter().map(|(_, n)| *n).filter(|n| !order.contains(n));
+        let ready = waiting().find(|node| {
+            edges
+                .iter()
+                .filter(|(from, to)| to == node && from != to)
+                .all(|(from, _)| order.contains(from))
+        });
+        match ready.or_else(|| waiting().next()) {
+            Some(node) => order.push(node),
+            None => break,
+        }
+    }
+    order
+}
+
+fn resolve_routing(plan: &mut RenderPlan, project: &Project, plugins: &PluginMap) {
+    let nodes: Vec<(Id, Node)> = plan
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id, Node::Track(i)))
+        .chain(
+            plan.audio_tracks
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (t.id, Node::Audio(i))),
+        )
+        .collect();
+    let node_of = |id: Id| nodes.iter().find(|(n, _)| *n == id).map(|(_, node)| *node);
+    let mut edges = Vec::new();
+    let mut routes = Vec::new();
+    let mut keys = Vec::new();
+    for (id, node) in &nodes {
+        let Some(track) = project.track(*id) else {
+            continue;
+        };
+        if let Output::Track(target) = track.output
+            && target != *id
+            && let Some(Node::Audio(j)) = node_of(target)
+        {
+            edges.push((*node, Node::Audio(j)));
+            routes.push((*node, j));
+        }
+        for (slot, source) in sidechains(track, plugins) {
+            if let Some(source) = node_of(source) {
+                edges.push((source, *node));
+                keys.push((*node, slot, source));
+            }
+        }
+    }
+    let order = processing_order(&nodes, &edges);
+    let pos = |n: Node| order.iter().position(|o| *o == n);
+    for (source, target) in routes {
+        if pos(source) < pos(Node::Audio(target)) {
+            match source {
+                Node::Track(i) => plan.tracks[i].strip.route = Some(target),
+                Node::Audio(i) => plan.audio_tracks[i].strip.route = Some(target),
+            }
+        }
+    }
+    for (user, slot, source) in keys {
+        if pos(source) < pos(user) {
+            match user {
+                Node::Track(i) => plan.tracks[i].keys.push((slot, source)),
+                Node::Audio(i) => plan.audio_tracks[i].keys.push((slot, source)),
+            }
+        }
+    }
+    for group in &mut plan.groups {
+        if let Some(track) = project.track(group.id) {
+            group.keys = sidechains(track, plugins)
+                .into_iter()
+                .filter_map(|(slot, source)| Some((slot, node_of(source)?)))
+                .collect();
+        }
+    }
+    plan.order = order;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -229,6 +331,7 @@ pub struct StripPlan {
     pub pre_fader: [bool; MAX_RETURNS],
     pub to_main: bool,
     pub group: Option<usize>,
+    pub route: Option<usize>,
     pub meter: usize,
     pub inserts: Inserts,
 }
@@ -242,6 +345,7 @@ pub struct GroupPlan {
     pub strip: StripPlan,
     pub envelopes: Envelopes,
     pub device_automation: Vec<DeviceAutomation>,
+    pub keys: Vec<(usize, Node)>,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
 }
@@ -267,6 +371,7 @@ impl StripPlan {
             pre_fader: std::array::from_fn(|i| strip.send_at(i).pre_fader),
             to_main,
             group: None,
+            route: None,
             meter: if meter < TRACK_METERS {
                 meter
             } else {
@@ -355,6 +460,7 @@ fn audio_track_plans(
                 strip: member_strip(project, track, index, plugins),
                 envelopes: Envelopes::for_track(track, timeline),
                 device_automation: device_automation(track, timeline, plugins),
+                keys: Vec::new(),
                 clips,
                 session: Session::build(track, timeline, pool, project.time_signature),
                 cursor: 0,
@@ -401,6 +507,7 @@ fn frozen_plan(
         strip,
         envelopes: Envelopes::for_track(track, timeline),
         device_automation: device_automation(track, timeline, plugins),
+        keys: Vec::new(),
         clips,
         session: Session::default(),
         cursor: 0,
@@ -433,7 +540,7 @@ fn member_strip(
     index: usize,
     plugins: &PluginMap,
 ) -> StripPlan {
-    let mut strip = StripPlan::new(&track.strip, index, plugins, track.output == Output::Main);
+    let mut strip = StripPlan::new(&track.strip, index, plugins, track.output != Output::None);
     strip.group = track
         .group
         .and_then(|g| group_ids(project).iter().position(|id| *id == g));
@@ -464,6 +571,7 @@ fn group_plans_unsorted(
             strip: member_strip(project, track, index, plugins),
             envelopes: Envelopes::for_track(track, timeline),
             device_automation: device_automation(track, timeline, plugins),
+            keys: Vec::new(),
             left: vec![0.0; MAX_BLOCK],
             right: vec![0.0; MAX_BLOCK],
         })
@@ -564,6 +672,7 @@ fn track_plans(
                 strip: member_strip(project, track, index, plugins),
                 envelopes: Envelopes::for_track(track, timeline),
                 device_automation: device_automation(track, timeline, plugins),
+                keys: Vec::new(),
                 notes,
                 session: Session::build(track, timeline, pool, project.time_signature),
                 synth: Synth::for_instrument(track.instrument.as_ref(), timeline.sample_rate, pool),
@@ -598,7 +707,7 @@ impl RenderPlan {
         let ts = project.time_signature;
         let beats_per_bar = u64::from(ts.numerator.max(1));
         let loop_range = project.loop_range;
-        Self {
+        let mut plan = Self {
             samples_per_tick,
             samples_per_beat: ticks_per_beat(ts) as f64 * samples_per_tick,
             timeline,
@@ -640,6 +749,7 @@ impl RenderPlan {
             tracks: track_plans(project, timeline, pool, plugins),
             audio_tracks: audio_track_plans(project, timeline, pool, plugins),
             groups: group_plans(project, timeline, plugins),
+            order: Vec::new(),
             returns: project
                 .returns
                 .iter()
@@ -664,7 +774,9 @@ impl RenderPlan {
                 .tracks
                 .iter()
                 .any(|t| t.kind == TrackKind::Audio && t.record_enabled),
-        }
+        };
+        resolve_routing(&mut plan, project, plugins);
+        plan
     }
 
     pub fn idle(sample_rate: u32) -> Self {

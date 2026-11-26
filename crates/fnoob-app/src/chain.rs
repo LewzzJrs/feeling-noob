@@ -4,7 +4,7 @@ use crate::devices::{effect_controls, slot_mut};
 use crate::plugins::{InstrumentChoice, Owner};
 use eframe::egui::{self, RichText, Ui};
 use fnoob_core::effects::BuiltinEffect;
-use fnoob_core::model::{Instrument, MAX_INSERTS, PluginSlot, Project, TrackKind};
+use fnoob_core::model::{Id, Instrument, MAX_INSERTS, PluginSlot, Project, TrackKind};
 
 const CARD_W: f32 = 250.0;
 pub const INSTRUMENT: usize = usize::MAX;
@@ -816,6 +816,9 @@ impl App {
                             }
                         });
                     }
+                    if slot.takes_sidechain() {
+                        self.sidechain_picker(ui, owner, slot);
+                    }
                 }
                 None => self.plugin_body(ui, slot),
             }
@@ -834,6 +837,45 @@ impl App {
             if let Some(command) = command {
                 self.run(command);
             }
+        }
+    }
+
+    fn sidechain_picker(&mut self, ui: &mut Ui, owner: Owner, slot: &PluginSlot) {
+        let own = match owner {
+            Owner::Track(id) => id,
+            Owner::Return(_) => Id::MAX,
+        };
+        let name = |source: Option<Id>| {
+            source
+                .and_then(|id| self.project.track(id))
+                .map_or_else(|| "Off".to_owned(), |t| t.name.clone())
+        };
+        let mut chosen = slot.sidechain;
+        let options: Vec<Option<Id>> = std::iter::once(None)
+            .chain(self.project.sidechain_sources(own).into_iter().map(Some))
+            .collect();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Sidechain").small());
+            let combo = egui::ComboBox::from_id_salt(("sidechain", slot.id))
+                .width(90.0)
+                .selected_text(name(slot.sidechain))
+                .show_ui(ui, |ui| {
+                    for option in options {
+                        ui.selectable_value(&mut chosen, option, name(option));
+                    }
+                });
+            crate::ui_kit::hint(
+                combo.response,
+                "Sidechain: the level of this track drives the effect instead of its own sound.",
+            );
+        });
+        if chosen != slot.sidechain {
+            let id = slot.id;
+            self.edit(|p| {
+                if let Some(target) = slot_mut(p, id) {
+                    target.sidechain = chosen;
+                }
+            });
         }
     }
 

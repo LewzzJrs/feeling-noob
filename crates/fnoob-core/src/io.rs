@@ -425,6 +425,7 @@ mod tests {
             component_state: "AAEC".into(),
             controller_state: None,
             builtin: None,
+            sidechain: None,
         }
     }
 

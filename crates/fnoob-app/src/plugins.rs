@@ -596,6 +596,7 @@ impl App {
             component_state: String::new(),
             controller_state: None,
             builtin: None,
+            sidechain: None,
         }
     }
 

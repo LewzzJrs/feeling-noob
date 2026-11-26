@@ -565,15 +565,34 @@ impl App {
             }
         }
         let mut chosen = output;
+        let name = |output: Output| match output {
+            Output::Track(target) => self
+                .project
+                .track(target)
+                .map_or_else(|| "Main".to_owned(), |t| t.name.clone()),
+            other => other.label().to_owned(),
+        };
+        let mut options = vec![Output::Main, Output::None];
+        if kind != TrackKind::Group {
+            options.extend(
+                self.project
+                    .output_targets(id)
+                    .into_iter()
+                    .map(Output::Track),
+            );
+        }
         let combo = egui::ComboBox::from_id_salt(("io_output", id))
             .width(70.0)
-            .selected_text(output.label())
+            .selected_text(name(output))
             .show_ui(ui, |ui| {
-                for option in [Output::Main, Output::None] {
-                    ui.selectable_value(&mut chosen, option, option.label());
+                for option in options {
+                    ui.selectable_value(&mut chosen, option, name(option));
                 }
             });
-        hint(combo.response, "Output: where this track is sent.");
+        hint(
+            combo.response,
+            "Output: where this track is sent. Pick an audio track to play this track through it.",
+        );
         if chosen != output {
             self.edit_track(id, |t| t.output = chosen);
         }

@@ -394,6 +394,8 @@ pub struct PluginSlot {
     pub controller_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin: Option<crate::effects::BuiltinEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidechain: Option<Id>,
 }
 
 pub const BUILTIN_CLASS: &str = "builtin";
@@ -409,7 +411,18 @@ impl PluginSlot {
             component_state: String::new(),
             controller_state: None,
             builtin: Some(effect),
+            sidechain: None,
         }
+    }
+
+    pub fn takes_sidechain(&self) -> bool {
+        matches!(
+            self.builtin,
+            Some(
+                crate::effects::BuiltinEffect::Compressor(_)
+                    | crate::effects::BuiltinEffect::Gate(_)
+            )
+        )
     }
 
     pub fn is_valid(&self) -> bool {
@@ -558,6 +571,7 @@ pub enum Output {
     #[default]
     Main,
     None,
+    Track(Id),
 }
 
 impl Output {
@@ -565,6 +579,7 @@ impl Output {
         match self {
             Self::Main => "Main",
             Self::None => "No Output",
+            Self::Track(_) => "Track",
         }
     }
 }
@@ -1143,6 +1158,41 @@ impl Project {
 
     pub fn group_members(&self, group: Id) -> impl Iterator<Item = &Track> {
         self.tracks.iter().filter(move |t| t.group == Some(group))
+    }
+
+    pub fn routes_to(&self, from: Id, to: Id) -> bool {
+        let mut next = Some(from);
+        let mut steps = 0;
+        while let Some(id) = next {
+            if id == to {
+                return true;
+            }
+            steps += 1;
+            if steps > self.tracks.len() {
+                return false;
+            }
+            next = match self.track(id).map(|t| t.output) {
+                Some(Output::Track(target)) => Some(target),
+                _ => None,
+            };
+        }
+        false
+    }
+
+    pub fn output_targets(&self, track: Id) -> Vec<Id> {
+        self.tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio && t.id != track && !self.routes_to(t.id, track))
+            .map(|t| t.id)
+            .collect()
+    }
+
+    pub fn sidechain_sources(&self, track: Id) -> Vec<Id> {
+        self.tracks
+            .iter()
+            .filter(|t| t.kind != TrackKind::Group && t.id != track)
+            .map(|t| t.id)
+            .collect()
     }
 
     pub fn is_folded_away(&self, track: &Track) -> bool {

@@ -26,7 +26,7 @@ Features that are **not** in the MVP. Order within each group is a rough priorit
 | Whole audio files loaded into memory | Disk streaming | SPEC 5.5 |
 | Single-threaded graph | Parallel track processing | SPEC 5.3 |
 | Snapshot undo of the whole project | Change-based undo (less memory) | SPEC 4.6 |
-| Up to 8 return tracks, one send per return, output Main or none | Nested groups, routing to other tracks, returns sending to returns | SPEC F4 |
+| Up to 8 return tracks, one send per return, nested groups, output to Main, none or an audio track, sidechain for Compressor and Gate | Returns sending to returns, sidechain for plugins | SPEC F4 |
 | At most 4 inserts per strip | Unlimited slots | SPEC F4 |
 | VST3 processed in-process | Out-of-process plugin processing (full crash isolation) | SPEC 5.6 |
 | No plugin delay compensation (PDC) | Automatic PDC | SPEC 5.3 |
@@ -77,16 +77,18 @@ Done in Phase 27: tempo step buttons, a count-in menu, MIDI arrangement overdub,
 
 Done in Phase 28: menus reordered as File, Edit, Create, Playback, View, Navigate and Options with on/off ticks, and a fuller track title menu with insert, select content, take lanes and a 24-colour palette.
 
+Done in Phase 29: automation curves, send and built-in device parameter automation, groups inside groups, track output to another audio track, and sidechain input for Compressor and Gate.
+
 Not started, in rough priority order:
 
 - Audio warping and time stretch, clip tempo
 - MIDI tools: chop, ornament, rhythm, shape and euclidean generators
 - Scale mode: fold the piano roll to scale notes, scale-aware MIDI tools
-- Automation of device and plugin parameters, clip envelopes
+- Automation of plugin parameters, clip envelopes
 - Crossfades between overlapping regions, fade curves
 - Quantize strength and swing, groove templates
 - Rubber-band selection, draw mode and chance lane in the piano roll
-- Routing between tracks, sidechain inputs
+- Recording one track's output into another, sidechain for plugins
 - Crossfader and cue output
 - CPU meter per track
 - Event list editor, project versions, MIDI output to hardware

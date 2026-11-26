@@ -205,9 +205,9 @@ impl Gate {
         self.release = coefficient(self.params.release_ms, rate);
     }
 
-    fn run(&mut self, left: &mut f32, right: &mut f32, rate: f32) {
+    fn run(&mut self, left: &mut f32, right: &mut f32, rate: f32, key: Option<f32>) {
         let p = self.params;
-        let level = left.abs().max(right.abs());
+        let level = key.unwrap_or_else(|| left.abs().max(right.abs()));
         if level >= db_to_gain(p.threshold_db) {
             self.held = (p.hold_ms * 0.001 * rate) as u32;
         } else {
@@ -279,8 +279,8 @@ impl Compressor {
         self.release = coefficient(self.params.release_ms, rate);
     }
 
-    fn run(&mut self, left: &mut f32, right: &mut f32) {
-        let level = left.abs().max(right.abs());
+    fn run(&mut self, left: &mut f32, right: &mut f32, key: Option<f32>) {
+        let level = key.unwrap_or_else(|| left.abs().max(right.abs()));
         let coeff = if level > self.envelope {
             self.attack
         } else {
@@ -497,6 +497,8 @@ enum State {
 pub struct BuiltinProcessor {
     state: State,
     rate: f32,
+    key: Vec<f32>,
+    keyed: usize,
 }
 
 impl BuiltinProcessor {
@@ -556,7 +558,12 @@ impl BuiltinProcessor {
                 release: 0.0,
             }),
         };
-        let mut processor = Self { state, rate };
+        let mut processor = Self {
+            state,
+            rate,
+            key: vec![0.0; crate::plan::MAX_BLOCK],
+            keyed: 0,
+        };
         processor.configure();
         processor
     }
@@ -594,6 +601,19 @@ impl BuiltinProcessor {
         self.configure();
     }
 
+    pub fn set_key(&mut self, source: Option<(&[f32], &[f32])>, frames: usize) {
+        let frames = frames.min(self.key.len());
+        match source {
+            Some((left, right)) => {
+                for ((key, l), r) in self.key[..frames].iter_mut().zip(left).zip(right) {
+                    *key = l.abs().max(r.abs());
+                }
+            }
+            None => self.key[..frames].fill(0.0),
+        }
+        self.keyed = frames;
+    }
+
     pub fn gain_reduction_db(&self) -> f32 {
         match &self.state {
             State::Compressor(c) => c.gain_reduction_db,
@@ -603,10 +623,13 @@ impl BuiltinProcessor {
 
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32], tempo: f64) {
         let rate = self.rate;
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        let keyed = self.keyed >= left.len();
+        self.keyed = 0;
+        for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+            let key = if keyed { Some(self.key[i]) } else { None };
             match &mut self.state {
                 State::Eq(eq) => eq.run(l, r),
-                State::Compressor(c) => c.run(l, r),
+                State::Compressor(c) => c.run(l, r, key),
                 State::Delay(d) => d.run(l, r, tempo),
                 State::Reverb(v) => v.run(l, r),
                 State::Limiter(m) => m.run(l, r),
@@ -614,7 +637,7 @@ impl BuiltinProcessor {
                 State::AutoFilter(f) => f.run(l, r, rate),
                 State::Chorus(c) => c.run(l, r, rate),
                 State::Saturator(p) => saturator(p, l, r),
-                State::Gate(g) => g.run(l, r, rate),
+                State::Gate(g) => g.run(l, r, rate, key),
             }
         }
     }
