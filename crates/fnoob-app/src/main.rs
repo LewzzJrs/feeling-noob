@@ -20,6 +20,7 @@ mod mixer;
 mod musical;
 mod piano_roll;
 mod plugins;
+mod quantize;
 mod session;
 mod timeline;
 mod ui_kit;

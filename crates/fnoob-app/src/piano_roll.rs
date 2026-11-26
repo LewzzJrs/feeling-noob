@@ -761,6 +761,13 @@ impl App {
             {
                 self.editor_command(Command::Quantize);
             }
+            if ui
+                .small_button("Settings")
+                .on_hover_text("Quantize settings: amount, swing and note ends (Ctrl+Shift+U)")
+                .clicked()
+            {
+                self.quantize_open = true;
+            }
             if ui.button("Instrument...").clicked() {
                 self.open_instrument(track);
             }

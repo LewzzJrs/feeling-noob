@@ -146,6 +146,7 @@ pub struct App {
     pub(crate) view: View,
     pub(crate) height_backup: Option<Vec<(Id, f32)>>,
     pub(crate) bar_widths: HashMap<&'static str, f32>,
+    pub(crate) quantize_open: bool,
     pub(crate) drag: Option<Drag>,
     pub(crate) renaming: Option<(Id, String)>,
     pub(crate) editor: Editor,
@@ -251,6 +252,7 @@ impl App {
             header_focus: false,
             height_backup: None,
             bar_widths: HashMap::new(),
+            quantize_open: false,
             view: View {
                 pixels_per_tick: 0.04,
                 scroll_tick: 0.0,
@@ -781,6 +783,7 @@ impl App {
                 }
             }
             Command::OptimizeHeight => self.optimize_height(),
+            Command::QuantizeSettings => self.quantize_open = !self.quantize_open,
             Command::FitSong => {
                 let end = crate::arrange::song_end(&self.project);
                 self.zoom_to(0, end);
@@ -1526,6 +1529,7 @@ impl App {
                 self.menu_item(ui, "Nudge Right", Command::NudgeRight);
                 ui.separator();
                 self.menu_item(ui, "Quantize", Command::Quantize);
+                self.menu_item(ui, "Quantize Settings...", Command::QuantizeSettings);
             });
             ui.menu_button("Create", |ui| {
                 self.menu_item(ui, "Insert Audio Track", Command::NewAudioTrack);
@@ -2174,6 +2178,7 @@ impl eframe::App for App {
         self.marker_rename_window(&ctx);
         self.bounce_windows(&ctx);
         self.midi_map_window(&ctx);
+        self.quantize_window(&ctx);
         self.plugin_manager(&ctx);
         self.new_tracks_window(&ctx);
         self.confirm_window(&ctx);

@@ -3,7 +3,7 @@ use crate::model::{
     MAX_GAIN_DB, MIN_GAIN_DB, Marker, Note, Project, Region, RegionContent, TRACK_COLORS, Track,
     TrackKind,
 };
-use crate::time::{Timeline, snap_floor, snap_round};
+use crate::time::{Timeline, snap_floor};
 
 pub fn add_track(project: &mut Project, kind: TrackKind) -> Id {
     let number = project.tracks.len() + 1;
@@ -925,7 +925,12 @@ pub fn set_notes_velocity(project: &mut Project, region_id: Id, indices: &[usize
     }
 }
 
-fn quantize_region(region: &mut Region, indices: Option<&[usize]>, grid: u64) -> bool {
+fn quantize_region(
+    region: &mut Region,
+    indices: Option<&[usize]>,
+    grid: u64,
+    settings: crate::model::QuantizeSettings,
+) -> bool {
     let start = region.start_tick;
     let mut changed = false;
     let Some(notes) = region.notes_mut() else {
@@ -935,21 +940,38 @@ fn quantize_region(region: &mut Region, indices: Option<&[usize]>, grid: u64) ->
         if indices.is_some_and(|picked| !picked.contains(&i)) {
             continue;
         }
-        let snapped = snap_round(start + note.start_tick, grid).saturating_sub(start);
-        changed |= snapped != note.start_tick;
-        note.start_tick = snapped;
+        let begin = settings
+            .target(start + note.start_tick, grid)
+            .saturating_sub(start);
+        let length = if settings.ends {
+            let end = start + note.start_tick + note.length_tick;
+            let wanted = settings.target(end, grid).saturating_sub(start);
+            if wanted > begin {
+                wanted - begin
+            } else {
+                grid.max(1)
+            }
+        } else {
+            note.length_tick
+        };
+        changed |= (begin, length) != (note.start_tick, note.length_tick);
+        note.start_tick = begin;
+        note.length_tick = length;
     }
     changed
 }
 
 pub fn quantize_notes(project: &mut Project, region_id: Id, indices: &[usize], grid: u64) -> bool {
-    region_mut(project, region_id).is_some_and(|r| quantize_region(r, Some(indices), grid))
+    let settings = project.quantize;
+    region_mut(project, region_id)
+        .is_some_and(|r| quantize_region(r, Some(indices), grid, settings))
 }
 
 pub fn quantize_regions(project: &mut Project, ids: &[Id], grid: u64) -> bool {
+    let settings = project.quantize;
     let mut changed = false;
     for region in regions_mut(project, ids) {
-        changed |= quantize_region(region, None, grid);
+        changed |= quantize_region(region, None, grid, settings);
     }
     changed
 }
@@ -2022,5 +2044,40 @@ mod tests {
         assert!(!set_warp(&mut p, region, Some(slow)));
         assert!(set_warp(&mut p, region, None));
         assert_eq!(length(&p), 1920);
+    }
+
+    #[test]
+    fn quantize_strength_swing_and_ends() {
+        use crate::model::QuantizeSettings;
+        let full = QuantizeSettings::default();
+        assert_eq!(full.target(130, 240), 240);
+        assert_eq!(full.target(100, 240), 0);
+        let half = QuantizeSettings {
+            strength: 50,
+            ..full
+        };
+        assert_eq!(half.target(200, 240), 220);
+        let swing = QuantizeSettings { swing: 50, ..full };
+        assert_eq!(swing.target(250, 240), 300);
+        assert_eq!(swing.target(470, 240), 480);
+        let mut p = Project::new("t", 48_000);
+        let track = add_track(&mut p, TrackKind::Instrument);
+        let region = add_midi_region(&mut p, track, 0, 3840).unwrap();
+        add_note(
+            &mut p,
+            region,
+            Note {
+                pitch: 60,
+                velocity: 100,
+                start_tick: 130,
+                length_tick: 200,
+                chance: crate::model::FULL_CHANCE,
+            },
+        )
+        .unwrap();
+        p.quantize.ends = true;
+        assert!(quantize_regions(&mut p, &[region], 240));
+        let note = p.find_region(region).unwrap().1.notes()[0];
+        assert_eq!((note.start_tick, note.length_tick), (240, 240));
     }
 }

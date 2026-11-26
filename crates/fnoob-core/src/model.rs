@@ -474,6 +474,41 @@ pub const DEFAULT_LANE_HEIGHT: f32 = 60.0;
 pub const MIN_LANE_HEIGHT: f32 = 24.0;
 pub const MAX_LANE_HEIGHT: f32 = 300.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuantizeSettings {
+    pub strength: u8,
+    pub swing: u8,
+    pub ends: bool,
+}
+
+impl Default for QuantizeSettings {
+    fn default() -> Self {
+        Self {
+            strength: 100,
+            swing: 0,
+            ends: false,
+        }
+    }
+}
+
+impl QuantizeSettings {
+    pub fn target(self, tick: u64, grid: u64) -> u64 {
+        if grid == 0 {
+            return tick;
+        }
+        let snapped = crate::time::snap_round(tick, grid);
+        let swung = if (snapped / grid) % 2 == 1 {
+            snapped + grid * u64::from(self.swing.min(100)) / 200
+        } else {
+            snapped
+        };
+        let strength = i64::from(self.strength.min(100));
+        let delta = swung as i64 - tick as i64;
+        (tick as i64 + delta * strength / 100).max(0) as u64
+    }
+}
+
 fn crossfade_default() -> bool {
     true
 }
@@ -1051,6 +1086,8 @@ pub struct Project {
     pub meter_changes: Vec<MeterChange>,
     #[serde(default)]
     pub scale: crate::scale::Scale,
+    #[serde(default)]
+    pub quantize: QuantizeSettings,
     pub metronome: MetronomeSettings,
     pub snap: Snap,
     pub next_id: Id,
@@ -1144,6 +1181,7 @@ impl Project {
             tempo_changes: Vec::new(),
             meter_changes: Vec::new(),
             scale: crate::scale::Scale::default(),
+            quantize: QuantizeSettings::default(),
             metronome: MetronomeSettings {
                 enabled: true,
                 count_in_enabled: false,
