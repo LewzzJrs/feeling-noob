@@ -28,7 +28,7 @@ The full plan is in [SPEC.md](SPEC.md). Features planned for later are in [docs/
 
 ## Build and run
 
-Build everything once, so the plugin scanner `fnoob-scan.exe` sits next to the app:
+Build everything once, the plugin scanner `fnoob-scan.exe` sits next to the app:
 
 ```powershell
 cargo build --workspace
